@@ -7,3 +7,10 @@ plugins {
     alias(libs.plugins.hilt) apply false
     alias(libs.plugins.ksp) apply false
 }
+
+subprojects {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}

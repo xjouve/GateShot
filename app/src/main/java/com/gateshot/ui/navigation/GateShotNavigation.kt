@@ -18,6 +18,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavHostController
@@ -117,7 +118,7 @@ fun GateShotBottomBar(
                 icon = {
                     Icon(screen.icon, contentDescription = screen.label)
                 },
-                label = { Text(screen.label, fontSize = androidx.compose.ui.unit.sp(11)) },
+                label = { Text(screen.label, fontSize = 11.sp) },
                 selected = currentRoute == screen.route,
                 onClick = {
                     if (currentRoute != screen.route) {

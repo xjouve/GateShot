@@ -6,13 +6,6 @@ pluginManagement {
     }
 }
 
-dependencyResolution {
-    repositories {
-        google()
-        mavenCentral()
-    }
-}
-
 rootProject.name = "GateShot"
 
 include(":app")

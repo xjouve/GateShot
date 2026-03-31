@@ -22,7 +22,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Speed
-import androidx.compose.material.icons.filled.SplitscreenTop
+import androidx.compose.material.icons.filled.ViewColumn
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -88,7 +88,7 @@ fun ReplayScreen(
                     modifier = Modifier.size(40.dp)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
-                        Icon(Icons.Filled.SplitscreenTop, "Split screen", tint = Color.White, modifier = Modifier.size(20.dp))
+                        Icon(Icons.Filled.ViewColumn, "Split screen", tint = Color.White, modifier = Modifier.size(20.dp))
                     }
                 }
                 Spacer(modifier = Modifier.width(8.dp))
