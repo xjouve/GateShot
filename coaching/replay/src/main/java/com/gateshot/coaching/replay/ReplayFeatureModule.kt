@@ -52,16 +52,38 @@ class ReplayFeatureModule @Inject constructor(
         player = null
     }
 
+    val overlayEngine = RunOverlayEngine()
+
     override fun endpoints(): List<ApiEndpoint<*, *>> = listOf(
         LoadClip(),
         PlayControl(),
         GetReplayStatus(),
         SetPlaybackSpeed(),
         SeekTo(),
-        SetupSplitScreen()
+        SetupSplitScreen(),
+        // Course reference capture
+        StartReferenceCapture(),
+        StopReferenceCapture(),
+        // Overlay endpoints
+        AddOverlayLayer(),
+        RemoveOverlayLayer(),
+        SetOverlayMode(),
+        SetOverlaySync(),
+        SetLayerOpacity(),
+        ToggleLayer(),
+        NavigateGate(),
+        GetOverlayConfig(),
+        GetTimingDeltas(),
+        SetWipePosition(),
+        ClearOverlay()
     )
 
-    override fun healthCheck() = ModuleHealth(name, ModuleHealth.Status.OK)
+    override fun healthCheck(): ModuleHealth {
+        val layers = overlayEngine.getConfig().layers.size
+        val mode = overlayEngine.getConfig().mode
+        return ModuleHealth(name, ModuleHealth.Status.OK,
+            if (layers > 0) "Overlay: $layers layers, mode=$mode" else "Ready")
+    }
 
     private fun getOrCreatePlayer(): ExoPlayer {
         return player ?: ExoPlayer.Builder(context).build().also {
@@ -182,7 +204,197 @@ class ReplayFeatureModule @Inject constructor(
             return ApiResponse.success(true)
         }
     }
+
+    // =============================================
+    // OVERLAY ENDPOINTS
+    // =============================================
+
+    private val courseCapture = CourseReferenceCapture()
+
+    // --- coach/overlay/reference/start ---
+    inner class StartReferenceCapture : ApiEndpoint<Unit, Boolean> {
+        override val path = "coach/overlay/reference/start"
+        override val module = "replay"
+        override val requiredMode = AppMode.COACH
+
+        override suspend fun handle(request: Unit): ApiResponse<Boolean> {
+            courseCapture.startCapture()
+            return ApiResponse.success(true)
+        }
+    }
+
+    // --- coach/overlay/reference/stop ---
+    inner class StopReferenceCapture : ApiEndpoint<Unit, Boolean> {
+        override val path = "coach/overlay/reference/stop"
+        override val module = "replay"
+        override val requiredMode = AppMode.COACH
+
+        override suspend fun handle(request: Unit): ApiResponse<Boolean> {
+            val reference = courseCapture.stopCapture()
+                ?: return ApiResponse.error(400, "Not enough frames captured. Pan slowly across the course.")
+            overlayEngine.setCourseReference(reference)
+            return ApiResponse.success(true)
+        }
+    }
+
+    // --- coach/overlay/layer/add ---
+    inner class AddOverlayLayer : ApiEndpoint<AddLayerRequest, RunOverlayEngine.OverlayLayer> {
+        override val path = "coach/overlay/layer/add"
+        override val module = "replay"
+        override val requiredMode = AppMode.COACH
+
+        override suspend fun handle(request: AddLayerRequest): ApiResponse<RunOverlayEngine.OverlayLayer> {
+            val layer = overlayEngine.addLayer(
+                clipUri = request.clipUri,
+                label = request.label,
+                color = request.color ?: "#4FC3F7",
+                gateTimestamps = request.gateTimestamps
+            )
+            return ApiResponse.success(layer)
+        }
+    }
+
+    // --- coach/overlay/layer/remove ---
+    inner class RemoveOverlayLayer : ApiEndpoint<String, Boolean> {
+        override val path = "coach/overlay/layer/remove"
+        override val module = "replay"
+        override val requiredMode = AppMode.COACH
+
+        override suspend fun handle(request: String): ApiResponse<Boolean> {
+            overlayEngine.removeLayer(request)
+            return ApiResponse.success(true)
+        }
+    }
+
+    // --- coach/overlay/mode ---
+    inner class SetOverlayMode : ApiEndpoint<String, Boolean> {
+        override val path = "coach/overlay/mode"
+        override val module = "replay"
+        override val requiredMode = AppMode.COACH
+
+        override suspend fun handle(request: String): ApiResponse<Boolean> {
+            val mode = try { RunOverlayEngine.OverlayMode.valueOf(request.uppercase()) }
+                catch (_: Exception) { return ApiResponse.error(400, "Invalid mode: $request") }
+            overlayEngine.setMode(mode)
+            return ApiResponse.success(true)
+        }
+    }
+
+    // --- coach/overlay/sync ---
+    inner class SetOverlaySync : ApiEndpoint<String, Boolean> {
+        override val path = "coach/overlay/sync"
+        override val module = "replay"
+        override val requiredMode = AppMode.COACH
+
+        override suspend fun handle(request: String): ApiResponse<Boolean> {
+            val sync = try { RunOverlayEngine.SyncMode.valueOf(request.uppercase()) }
+                catch (_: Exception) { return ApiResponse.error(400, "Invalid sync mode: $request") }
+            overlayEngine.setSyncMode(sync)
+            return ApiResponse.success(true)
+        }
+    }
+
+    // --- coach/overlay/layer/opacity ---
+    inner class SetLayerOpacity : ApiEndpoint<LayerOpacityRequest, Boolean> {
+        override val path = "coach/overlay/layer/opacity"
+        override val module = "replay"
+        override val requiredMode = AppMode.COACH
+
+        override suspend fun handle(request: LayerOpacityRequest): ApiResponse<Boolean> {
+            overlayEngine.setLayerOpacity(request.layerId, request.opacity)
+            return ApiResponse.success(true)
+        }
+    }
+
+    // --- coach/overlay/layer/toggle ---
+    inner class ToggleLayer : ApiEndpoint<String, Boolean> {
+        override val path = "coach/overlay/layer/toggle"
+        override val module = "replay"
+        override val requiredMode = AppMode.COACH
+
+        override suspend fun handle(request: String): ApiResponse<Boolean> {
+            overlayEngine.toggleLayer(request)
+            return ApiResponse.success(true)
+        }
+    }
+
+    // --- coach/overlay/gate ---
+    inner class NavigateGate : ApiEndpoint<String, Boolean> {
+        override val path = "coach/overlay/gate"
+        override val module = "replay"
+        override val requiredMode = AppMode.COACH
+
+        override suspend fun handle(request: String): ApiResponse<Boolean> {
+            when (request) {
+                "next" -> overlayEngine.nextGate()
+                "prev" -> overlayEngine.previousGate()
+                else -> {
+                    val gate = request.toIntOrNull() ?: return ApiResponse.error(400, "Invalid gate: $request")
+                    overlayEngine.navigateToGate(gate)
+                }
+            }
+            return ApiResponse.success(true)
+        }
+    }
+
+    // --- coach/overlay/config ---
+    inner class GetOverlayConfig : ApiEndpoint<Unit, RunOverlayEngine.OverlayConfig> {
+        override val path = "coach/overlay/config"
+        override val module = "replay"
+        override val requiredMode = AppMode.COACH
+
+        override suspend fun handle(request: Unit): ApiResponse<RunOverlayEngine.OverlayConfig> {
+            return ApiResponse.success(overlayEngine.getConfig())
+        }
+    }
+
+    // --- coach/overlay/deltas ---
+    inner class GetTimingDeltas : ApiEndpoint<Unit, List<GateDelta>> {
+        override val path = "coach/overlay/deltas"
+        override val module = "replay"
+        override val requiredMode = AppMode.COACH
+
+        override suspend fun handle(request: Unit): ApiResponse<List<GateDelta>> {
+            return ApiResponse.success(overlayEngine.getTimingDeltas())
+        }
+    }
+
+    // --- coach/overlay/wipe ---
+    inner class SetWipePosition : ApiEndpoint<Float, Boolean> {
+        override val path = "coach/overlay/wipe"
+        override val module = "replay"
+        override val requiredMode = AppMode.COACH
+
+        override suspend fun handle(request: Float): ApiResponse<Boolean> {
+            overlayEngine.setWipePosition(request)
+            return ApiResponse.success(true)
+        }
+    }
+
+    // --- coach/overlay/clear ---
+    inner class ClearOverlay : ApiEndpoint<Unit, Boolean> {
+        override val path = "coach/overlay/clear"
+        override val module = "replay"
+        override val requiredMode = AppMode.COACH
+
+        override suspend fun handle(request: Unit): ApiResponse<Boolean> {
+            overlayEngine.clear()
+            return ApiResponse.success(true)
+        }
+    }
 }
+
+data class AddLayerRequest(
+    val clipUri: String,
+    val label: String,
+    val color: String? = null,
+    val gateTimestamps: List<Long> = emptyList()
+)
+
+data class LayerOpacityRequest(
+    val layerId: String,
+    val opacity: Float
+)
 
 data class ReplayState(
     val isLoaded: Boolean = false,
