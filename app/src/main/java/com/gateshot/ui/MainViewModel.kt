@@ -10,6 +10,7 @@ import com.gateshot.core.event.EventBus
 import com.gateshot.core.event.collect
 import com.gateshot.core.mode.AppMode
 import com.gateshot.core.mode.ModeManager
+import com.gateshot.capture.tracking.TrackingFeatureModule
 import com.gateshot.capture.trigger.TriggerFeatureModule
 import com.gateshot.capture.trigger.TriggerZone
 import com.gateshot.capture.trigger.ZoneAddRequest
@@ -42,6 +43,12 @@ data class MainUiState(
     val bufferFrameCount: Int = 0,
     val triggerZones: List<TriggerZone> = emptyList(),
     val triggerArmed: Boolean = false,
+    val trackingEnabled: Boolean = false,
+    val trackingHasLock: Boolean = false,
+    val trackingTargetX: Float = 0f,
+    val trackingTargetY: Float = 0f,
+    val trackingRegionSize: Float = 0.15f,
+    val trackingOccluded: Boolean = false,
     val moduleStatuses: Map<String, String> = emptyMap()
 )
 
@@ -52,6 +59,7 @@ class MainViewModel @Inject constructor(
     private val endpointRegistry: EndpointRegistry,
     val cameraXPlatform: CameraXPlatform,
     private val triggerModule: TriggerFeatureModule,
+    private val trackingModule: TrackingFeatureModule,
     private val sensorPlatform: SensorPlatform
 ) : ViewModel() {
 
@@ -116,6 +124,22 @@ class MainViewModel @Inject constructor(
                 _uiState.update { it.copy(triggerZones = zones, triggerArmed = zones.isNotEmpty()) }
             }
         }
+
+        // Observe racer tracking state
+        viewModelScope.launch {
+            trackingModule.trackingState.collect { state ->
+                _uiState.update {
+                    it.copy(
+                        trackingEnabled = state.enabled,
+                        trackingHasLock = state.hasLock,
+                        trackingTargetX = state.targetX,
+                        trackingTargetY = state.targetY,
+                        trackingRegionSize = state.regionSize,
+                        trackingOccluded = state.isOccluded
+                    )
+                }
+            }
+        }
     }
 
     fun bindCameraPreview(previewView: PreviewView, lifecycleOwner: LifecycleOwner) {
@@ -177,6 +201,16 @@ class MainViewModel @Inject constructor(
         val currentIndex = presetOrder.indexOf(_uiState.value.currentPreset)
         val nextIndex = (currentIndex + 1) % presetOrder.size
         onPresetSelected(presetOrder[nextIndex])
+    }
+
+    fun onTrackingToggle() {
+        viewModelScope.launch {
+            if (_uiState.value.trackingEnabled) {
+                endpointRegistry.call<Unit, Any>("af/track/disable", Unit)
+            } else {
+                endpointRegistry.call<Unit, Any>("af/track/enable", Unit)
+            }
+        }
     }
 
     fun onClearTriggerZones() {

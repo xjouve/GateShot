@@ -82,7 +82,8 @@ fun GateShotNavHost(
                     onZoomChanged = viewModel::onZoomChanged,
                     onVideoToggle = viewModel::onVideoToggle,
                     onAddTriggerZone = viewModel::onAddTriggerZone,
-                    onClearTriggerZones = viewModel::onClearTriggerZones
+                    onClearTriggerZones = viewModel::onClearTriggerZones,
+                    onTrackingToggle = viewModel::onTrackingToggle
                 )
             }
 

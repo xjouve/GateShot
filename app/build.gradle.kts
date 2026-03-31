@@ -49,6 +49,7 @@ dependencies {
     implementation(project(":capture:burst"))
     implementation(project(":capture:preset"))
     implementation(project(":capture:trigger"))
+    implementation(project(":capture:tracking"))
     implementation(project(":session"))
     implementation(project(":processing:snow-exposure"))
     implementation(project(":processing:burst-culling"))

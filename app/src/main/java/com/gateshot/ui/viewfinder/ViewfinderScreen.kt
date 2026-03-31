@@ -44,6 +44,7 @@ import com.gateshot.ui.MainUiState
 import com.gateshot.ui.components.PresetSelector
 import com.gateshot.ui.components.ShutterButton
 import com.gateshot.ui.components.StatusBar
+import com.gateshot.ui.components.TrackingOverlay
 import com.gateshot.ui.components.ZoneOverlay
 
 @Composable
@@ -58,6 +59,7 @@ fun ViewfinderScreen(
     onVideoToggle: () -> Unit,
     onAddTriggerZone: (Float, Float) -> Unit,
     onClearTriggerZones: () -> Unit,
+    onTrackingToggle: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -113,6 +115,16 @@ fun ViewfinderScreen(
                 ZoneOverlay(
                     zones = uiState.triggerZones,
                     isArmed = uiState.triggerArmed
+                )
+            }
+            // Tracking overlay — shows AF lock bracket on the racer
+            if (uiState.trackingEnabled && uiState.trackingHasLock) {
+                TrackingOverlay(
+                    targetX = uiState.trackingTargetX,
+                    targetY = uiState.trackingTargetY,
+                    regionSize = uiState.trackingRegionSize,
+                    hasLock = uiState.trackingHasLock,
+                    isOccluded = uiState.trackingOccluded
                 )
             }
         }
@@ -189,6 +201,25 @@ fun ViewfinderScreen(
                             color = Color.Red
                         ) {}
                     }
+                }
+            }
+
+            // Racer tracking toggle — crosshair icon
+            Surface(
+                onClick = onTrackingToggle,
+                shape = RoundedCornerShape(8.dp),
+                color = if (uiState.trackingEnabled)
+                    (if (uiState.trackingHasLock) Color(0xFF4CAF50) else MaterialTheme.colorScheme.primary)
+                else Color(0x88000000),
+                modifier = Modifier.size(48.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Text(
+                        text = if (uiState.trackingEnabled) "AF" else "AF",
+                        color = Color.White,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold
+                    )
                 }
             }
         }

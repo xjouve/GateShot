@@ -19,6 +19,7 @@ object AppModule {
         burstModule: com.gateshot.capture.burst.BurstFeatureModule,
         presetModule: com.gateshot.capture.preset.PresetFeatureModule,
         triggerModule: com.gateshot.capture.trigger.TriggerFeatureModule,
+        trackingModule: com.gateshot.capture.tracking.TrackingFeatureModule,
         // Session
         sessionModule: com.gateshot.session.SessionFeatureModule,
         // Processing
@@ -34,7 +35,7 @@ object AppModule {
         annotationModule: com.gateshot.coaching.annotation.AnnotationFeatureModule
     ): Set<FeatureModule> {
         return setOf(
-            cameraModule, burstModule, presetModule, triggerModule,
+            cameraModule, burstModule, presetModule, triggerModule, trackingModule,
             sessionModule,
             snowExposureModule, burstCullingModule, bibDetectionModule, autoClipModule, exportModule, superResolutionModule,
             replayModule, timingModule, annotationModule
