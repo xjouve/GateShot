@@ -9,12 +9,14 @@ __pycache__/
 venv/
 .venv/
 
-# Android / Gradle (for future Kotlin development)
+# Android / Gradle
 build/
 .gradle/
 local.properties
 *.apk
 *.aab
+*.hprof
+captures/
 
 # OS
 .DS_Store
