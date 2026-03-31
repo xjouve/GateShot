@@ -6,6 +6,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.gateshot.ui.viewfinder.ViewfinderScreen
 
@@ -15,10 +16,15 @@ fun GateShotMainScreen(
     viewModel: MainViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val lifecycleOwner = LocalLifecycleOwner.current
 
     Box(modifier = modifier.fillMaxSize()) {
         ViewfinderScreen(
             uiState = uiState,
+            cameraXPlatform = viewModel.cameraXPlatform,
+            onCameraPreviewReady = { previewView ->
+                viewModel.bindCameraPreview(previewView, lifecycleOwner)
+            },
             onShutterPress = viewModel::onShutterPress,
             onModeToggle = viewModel::onModeToggle,
             onPresetSelected = viewModel::onPresetSelected,

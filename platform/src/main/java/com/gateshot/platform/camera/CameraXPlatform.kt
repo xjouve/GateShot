@@ -1,9 +1,12 @@
 package com.gateshot.platform.camera
 
 import android.content.Context
+import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
+import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
@@ -15,6 +18,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.suspendCancellableCoroutine
 import java.io.File
+import java.util.concurrent.Executors
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.resume
@@ -32,16 +36,31 @@ class CameraXPlatform @Inject constructor(
         private set
 
     private var cameraProvider: ProcessCameraProvider? = null
+    private var camera: Camera? = null
     private var imageCapture: ImageCapture? = null
     private var preview: Preview? = null
+    private var imageAnalysis: ImageAnalysis? = null
     private var currentConfig: CameraConfig? = null
 
     private var previewView: PreviewView? = null
     private var lifecycleOwner: LifecycleOwner? = null
 
+    private val analysisExecutor = Executors.newSingleThreadExecutor()
+    private val frameListeners = mutableListOf<(ImageProxy) -> Unit>()
+
     fun bindPreview(view: PreviewView, owner: LifecycleOwner) {
         previewView = view
         lifecycleOwner = owner
+        // If camera was already opened, rebind preview surface
+        preview?.surfaceProvider = view.surfaceProvider
+    }
+
+    fun addFrameListener(listener: (ImageProxy) -> Unit) {
+        frameListeners.add(listener)
+    }
+
+    fun removeFrameListener(listener: (ImageProxy) -> Unit) {
+        frameListeners.remove(listener)
     }
 
     override suspend fun open(config: CameraConfig) {
@@ -58,24 +77,41 @@ class CameraXPlatform @Inject constructor(
             }
 
             preview = Preview.Builder().build()
+
             imageCapture = ImageCapture.Builder()
                 .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
                 .build()
+
+            imageAnalysis = ImageAnalysis.Builder()
+                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                .build()
+                .also { analysis ->
+                    analysis.setAnalyzer(analysisExecutor) { imageProxy ->
+                        // Dispatch to all registered frame listeners (burst buffer, snow exposure, etc.)
+                        frameListeners.forEach { listener ->
+                            try {
+                                listener(imageProxy)
+                            } catch (_: Exception) { }
+                        }
+                        imageProxy.close()
+                    }
+                }
 
             provider.unbindAll()
 
             val owner = lifecycleOwner
             if (owner != null) {
-                val camera = provider.bindToLifecycle(
+                camera = provider.bindToLifecycle(
                     owner,
                     cameraSelector,
                     preview,
-                    imageCapture
+                    imageCapture,
+                    imageAnalysis
                 )
 
                 previewView?.let { preview?.surfaceProvider = it.surfaceProvider }
 
-                val cameraInfo = camera.cameraInfo
+                val cameraInfo = camera!!.cameraInfo
                 capabilities = CameraCapabilities(
                     supportedResolutions = listOf(config.resolution),
                     supportedFrameRates = listOf(30, 60),
@@ -94,17 +130,26 @@ class CameraXPlatform @Inject constructor(
 
     override suspend fun close() {
         cameraProvider?.unbindAll()
+        camera = null
         imageCapture = null
         preview = null
+        imageAnalysis = null
         _state.value = CameraState.CLOSED
     }
 
     override fun setZoom(ratio: Float) {
-        // Applied via camera control when bound
+        camera?.cameraControl?.setZoomRatio(ratio)
     }
 
     override fun setExposureCompensation(ev: Float) {
-        // Applied via camera control when bound
+        // CameraX exposure compensation is in index steps, not raw EV.
+        // Convert EV to nearest index using the compensation range/step from CameraInfo.
+        val cameraInfo = camera?.cameraInfo ?: return
+        val range = cameraInfo.exposureState.exposureCompensationRange
+        val step = cameraInfo.exposureState.exposureCompensationStep.toFloat()
+        if (step <= 0f) return
+        val index = (ev / step).toInt().coerceIn(range.lower, range.upper)
+        camera?.cameraControl?.setExposureCompensationIndex(index)
     }
 
     override suspend fun takePicture(): CaptureResult = suspendCancellableCoroutine { cont ->

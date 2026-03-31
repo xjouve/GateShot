@@ -46,7 +46,9 @@ dependencies {
     implementation(project(":core"))
     implementation(project(":platform"))
     implementation(project(":capture:camera"))
+    implementation(project(":capture:burst"))
     implementation(project(":capture:preset"))
+    implementation(project(":processing:snow-exposure"))
 
     // Compose
     implementation(platform(libs.compose.bom))
