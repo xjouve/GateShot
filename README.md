@@ -84,15 +84,59 @@ Core + API endpoint architecture with 17 independent Gradle modules:
 
 ## Building
 
+### Prerequisites
+
+- **Android Studio** (2024.3+) — download from https://developer.android.com/studio
+- **JDK 17+** — Android Studio bundles JDK 21 at `<Android Studio>/jbr/`
+- **Android SDK API 35** — installed via Android Studio SDK Manager
+
+### Build from command line
+
 ```bash
 # Clone
 git clone https://github.com/xjouve/GateShot.git
 cd GateShot
 
-# Open in Android Studio (Arctic Fox+) and sync Gradle
-# Or build from command line:
+# Point to a JDK 17+ (use Android Studio's bundled JDK if no other is installed)
+# Windows PowerShell:
+$env:JAVA_HOME = "K:\android\jbr"
+# Linux/Mac:
+export JAVA_HOME="/path/to/android-studio/jbr"
+
+# Build debug APK
 ./gradlew assembleDebug
 ```
+
+The APK will be at:
+```
+app/build/outputs/apk/debug/app-debug.apk
+```
+
+### Build from Android Studio
+
+1. **File > Open** — select the project root folder
+2. Wait for Gradle sync to complete (downloads ~1GB of dependencies on first run)
+3. Click the green **Run** button (or `Shift+F10`)
+
+### Install on Oppo Find X9 Pro
+
+1. **Enable Developer Mode** on the phone:
+   - Settings > About Phone > tap "Build Number" 7 times
+   - Settings > System > Developer Options > enable **USB Debugging**
+   - Enable **Install via USB** if prompted
+
+2. **Install via USB + ADB:**
+   ```bash
+   adb install app/build/outputs/apk/debug/app-debug.apk
+   ```
+
+3. **Or via file transfer:** copy the APK to the phone, open it in Files, and install (enable "Install from unknown sources" for your file manager first)
+
+4. **Or via Android Studio:** connect the phone via USB, select it in the device dropdown, click Run — it builds and installs automatically
+
+### First launch
+
+The app will request **Camera** and **Microphone** permissions on first launch. Grant both to enable all features (video recording, audio trigger, voice-over annotation).
 
 ## Project Structure
 
