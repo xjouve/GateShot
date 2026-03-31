@@ -9,7 +9,7 @@ import com.gateshot.platform.camera.CameraConfig
 import com.gateshot.platform.camera.CameraPlatform
 import com.gateshot.platform.camera.CameraState
 import com.gateshot.platform.camera.CaptureResult
-import kotlinx.serialization.Serializable
+import com.gateshot.platform.camera.RecordingResult
 
 class CameraEndpoints(
     private val cameraPlatform: CameraPlatform,
@@ -19,7 +19,9 @@ class CameraEndpoints(
         OpenCamera(),
         CloseCamera(),
         GetCameraStatus(),
-        TakePicture()
+        TakePicture(),
+        StartVideoRecording(),
+        StopVideoRecording()
     )
 
     // --- capture/camera/open ---
@@ -86,6 +88,45 @@ class CameraEndpoints(
                 ApiResponse.success(result)
             } catch (e: Exception) {
                 ApiResponse.moduleError(module, e.message ?: "Capture failed")
+            }
+        }
+    }
+    // --- capture/video/start ---
+    inner class StartVideoRecording : ApiEndpoint<Unit, Boolean> {
+        override val path = "capture/video/start"
+        override val module = "camera"
+        override val requiredMode: AppMode? = null
+
+        override suspend fun handle(request: Unit): ApiResponse<Boolean> {
+            if (cameraPlatform.state.value != CameraState.OPEN) {
+                return ApiResponse.error(409, "Camera is not open")
+            }
+            return try {
+                cameraPlatform.startRecording()
+                eventBus.publish(AppEvent.VideoRecordingStarted(sessionId = "video_${System.currentTimeMillis()}"))
+                ApiResponse.success(true)
+            } catch (e: Exception) {
+                ApiResponse.moduleError(module, e.message ?: "Failed to start recording")
+            }
+        }
+    }
+
+    // --- capture/video/stop ---
+    inner class StopVideoRecording : ApiEndpoint<Unit, RecordingResult> {
+        override val path = "capture/video/stop"
+        override val module = "camera"
+        override val requiredMode: AppMode? = null
+
+        override suspend fun handle(request: Unit): ApiResponse<RecordingResult> {
+            return try {
+                val result = cameraPlatform.stopRecording()
+                eventBus.publish(AppEvent.VideoRecordingStopped(
+                    sessionId = "video",
+                    clipUri = result.uri
+                ))
+                ApiResponse.success(result)
+            } catch (e: Exception) {
+                ApiResponse.moduleError(module, e.message ?: "Failed to stop recording")
             }
         }
     }

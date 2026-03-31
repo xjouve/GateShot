@@ -1,6 +1,8 @@
 package com.gateshot.platform.camera
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
@@ -9,6 +11,13 @@ import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.video.FileOutputOptions
+import androidx.camera.video.Quality
+import androidx.camera.video.QualitySelector
+import androidx.camera.video.Recorder
+import androidx.camera.video.Recording
+import androidx.camera.video.VideoCapture
+import androidx.camera.video.VideoRecordEvent
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
@@ -32,6 +41,9 @@ class CameraXPlatform @Inject constructor(
     private val _state = MutableStateFlow(CameraState.CLOSED)
     override val state: StateFlow<CameraState> = _state.asStateFlow()
 
+    private val _isRecording = MutableStateFlow(false)
+    override val isRecording: StateFlow<Boolean> = _isRecording.asStateFlow()
+
     override var capabilities: CameraCapabilities? = null
         private set
 
@@ -40,6 +52,8 @@ class CameraXPlatform @Inject constructor(
     private var imageCapture: ImageCapture? = null
     private var preview: Preview? = null
     private var imageAnalysis: ImageAnalysis? = null
+    private var videoCapture: VideoCapture<Recorder>? = null
+    private var activeRecording: Recording? = null
     private var currentConfig: CameraConfig? = null
 
     private var previewView: PreviewView? = null
@@ -48,10 +62,14 @@ class CameraXPlatform @Inject constructor(
     private val analysisExecutor = Executors.newSingleThreadExecutor()
     private val frameListeners = mutableListOf<(ImageProxy) -> Unit>()
 
+    // Video recording state for stopRecording to return
+    private var recordingStartTime: Long = 0
+    private var recordingFile: File? = null
+    private var pendingRecordingResult: ((RecordingResult) -> Unit)? = null
+
     fun bindPreview(view: PreviewView, owner: LifecycleOwner) {
         previewView = view
         lifecycleOwner = owner
-        // If camera was already opened, rebind preview surface
         preview?.surfaceProvider = view.surfaceProvider
     }
 
@@ -87,34 +105,55 @@ class CameraXPlatform @Inject constructor(
                 .build()
                 .also { analysis ->
                     analysis.setAnalyzer(analysisExecutor) { imageProxy ->
-                        // Dispatch to all registered frame listeners (burst buffer, snow exposure, etc.)
                         frameListeners.forEach { listener ->
-                            try {
-                                listener(imageProxy)
-                            } catch (_: Exception) { }
+                            try { listener(imageProxy) } catch (_: Exception) { }
                         }
                         imageProxy.close()
                     }
                 }
 
+            // Video recorder
+            val qualitySelector = QualitySelector.from(
+                when {
+                    config.frameRate >= 120 -> Quality.FHD
+                    config.resolution.width >= 3840 -> Quality.UHD
+                    config.resolution.width >= 1920 -> Quality.FHD
+                    else -> Quality.HD
+                }
+            )
+            val recorder = Recorder.Builder()
+                .setQualitySelector(qualitySelector)
+                .build()
+            videoCapture = VideoCapture.withOutput(recorder)
+
             provider.unbindAll()
 
             val owner = lifecycleOwner
             if (owner != null) {
-                camera = provider.bindToLifecycle(
-                    owner,
-                    cameraSelector,
-                    preview,
-                    imageCapture,
-                    imageAnalysis
-                )
+                // Bind preview + imageCapture + imageAnalysis + videoCapture
+                // Note: CameraX may not support all 4 simultaneously on all devices.
+                // Fallback: drop imageAnalysis if binding fails.
+                camera = try {
+                    provider.bindToLifecycle(
+                        owner, cameraSelector,
+                        preview, imageCapture, imageAnalysis, videoCapture
+                    )
+                } catch (_: Exception) {
+                    // Fallback: bind without imageAnalysis
+                    provider.unbindAll()
+                    imageAnalysis = null
+                    provider.bindToLifecycle(
+                        owner, cameraSelector,
+                        preview, imageCapture, videoCapture
+                    )
+                }
 
                 previewView?.let { preview?.surfaceProvider = it.surfaceProvider }
 
                 val cameraInfo = camera!!.cameraInfo
                 capabilities = CameraCapabilities(
                     supportedResolutions = listOf(config.resolution),
-                    supportedFrameRates = listOf(30, 60),
+                    supportedFrameRates = listOf(30, 60, 120),
                     hasOpticalStabilization = true,
                     maxZoomRatio = cameraInfo.zoomState.value?.maxZoomRatio ?: 1f,
                     hasFlash = cameraInfo.hasFlashUnit()
@@ -129,11 +168,15 @@ class CameraXPlatform @Inject constructor(
     }
 
     override suspend fun close() {
+        activeRecording?.stop()
+        activeRecording = null
+        _isRecording.value = false
         cameraProvider?.unbindAll()
         camera = null
         imageCapture = null
         preview = null
         imageAnalysis = null
+        videoCapture = null
         _state.value = CameraState.CLOSED
     }
 
@@ -142,8 +185,6 @@ class CameraXPlatform @Inject constructor(
     }
 
     override fun setExposureCompensation(ev: Float) {
-        // CameraX exposure compensation is in index steps, not raw EV.
-        // Convert EV to nearest index using the compensation range/step from CameraInfo.
         val cameraInfo = camera?.cameraInfo ?: return
         val range = cameraInfo.exposureState.exposureCompensationRange
         val step = cameraInfo.exposureState.exposureCompensationStep.toFloat()
@@ -186,20 +227,65 @@ class CameraXPlatform @Inject constructor(
         )
     }
 
+    @androidx.annotation.OptIn(androidx.camera.video.ExperimentalPersistentRecording::class)
     override suspend fun startRecording() {
-        // Video recording requires VideoCapture use case — will be expanded in video module
+        val vc = videoCapture ?: throw IllegalStateException("VideoCapture not initialized")
+
+        val videoFile = File(
+            context.cacheDir,
+            "gateshot_video_${System.currentTimeMillis()}.mp4"
+        )
+        recordingFile = videoFile
+        recordingStartTime = System.currentTimeMillis()
+
+        val outputOptions = FileOutputOptions.Builder(videoFile).build()
+
+        val hasAudioPermission = ContextCompat.checkSelfPermission(
+            context, Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+
+        val pendingRecording = vc.output
+            .prepareRecording(context, outputOptions)
+            .let { if (hasAudioPermission) it.withAudioEnabled() else it }
+
+        activeRecording = pendingRecording.start(
+            ContextCompat.getMainExecutor(context)
+        ) { event ->
+            when (event) {
+                is VideoRecordEvent.Start -> {
+                    _isRecording.value = true
+                }
+                is VideoRecordEvent.Finalize -> {
+                    _isRecording.value = false
+                    val result = RecordingResult(
+                        uri = videoFile.absolutePath,
+                        durationMs = System.currentTimeMillis() - recordingStartTime,
+                        fileSize = videoFile.length()
+                    )
+                    pendingRecordingResult?.invoke(result)
+                    pendingRecordingResult = null
+                }
+            }
+        }
     }
 
-    override suspend fun stopRecording(): RecordingResult {
-        return RecordingResult(uri = "", durationMs = 0, fileSize = 0)
+    override suspend fun stopRecording(): RecordingResult = suspendCancellableCoroutine { cont ->
+        val recording = activeRecording
+        if (recording == null) {
+            cont.resume(RecordingResult(uri = "", durationMs = 0, fileSize = 0))
+            return@suspendCancellableCoroutine
+        }
+        pendingRecordingResult = { result -> cont.resume(result) }
+        recording.stop()
+        activeRecording = null
     }
 
     override fun getSupportedConfigs(): List<CameraConfig> {
         return listOf(
-            CameraConfig(LensFacing.BACK, android.util.Size(3840, 2160), 30),
-            CameraConfig(LensFacing.BACK, android.util.Size(1920, 1080), 60),
-            CameraConfig(LensFacing.BACK, android.util.Size(1920, 1080), 120),
-            CameraConfig(LensFacing.FRONT, android.util.Size(1920, 1080), 30)
+            CameraConfig(LensFacing.BACK, android.util.Size(3840, 2160), 30, true),
+            CameraConfig(LensFacing.BACK, android.util.Size(1920, 1080), 60, true),
+            CameraConfig(LensFacing.BACK, android.util.Size(1920, 1080), 120, true),
+            CameraConfig(LensFacing.FRONT, android.util.Size(1920, 1080), 30, false)
         )
     }
 

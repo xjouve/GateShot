@@ -3,11 +3,13 @@ package com.gateshot.ui.viewfinder
 import android.view.ViewGroup
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -42,6 +44,7 @@ import com.gateshot.ui.MainUiState
 import com.gateshot.ui.components.PresetSelector
 import com.gateshot.ui.components.ShutterButton
 import com.gateshot.ui.components.StatusBar
+import com.gateshot.ui.components.ZoneOverlay
 
 @Composable
 fun ViewfinderScreen(
@@ -52,6 +55,9 @@ fun ViewfinderScreen(
     onModeToggle: () -> Unit,
     onPresetSelected: (String) -> Unit,
     onZoomChanged: (Float) -> Unit,
+    onVideoToggle: () -> Unit,
+    onAddTriggerZone: (Float, Float) -> Unit,
+    onClearTriggerZones: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -85,6 +91,31 @@ fun ViewfinderScreen(
                     }
                 }
         )
+
+        // Trigger zone overlay + long-press to add zone
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(Unit) {
+                    detectTapGestures(
+                        onLongPress = { offset ->
+                            val normX = offset.x / size.width
+                            val normY = offset.y / size.height
+                            onAddTriggerZone(normX, normY)
+                        },
+                        onDoubleTap = {
+                            onClearTriggerZones()
+                        }
+                    )
+                }
+        ) {
+            if (uiState.triggerZones.isNotEmpty()) {
+                ZoneOverlay(
+                    zones = uiState.triggerZones,
+                    isArmed = uiState.triggerArmed
+                )
+            }
+        }
 
         // Top bar — status + mode toggle
         StatusBar(
@@ -131,9 +162,35 @@ fun ViewfinderScreen(
 
             // Shutter button — extra large for glove mode
             ShutterButton(
-                isRecording = uiState.isRecording,
+                isRecording = false,
                 onClick = onShutterPress
             )
+
+            // Video record button — red circle, toggles recording
+            Surface(
+                onClick = onVideoToggle,
+                shape = CircleShape,
+                color = if (uiState.isRecording) MaterialTheme.colorScheme.error else Color(0xFF880000),
+                modifier = Modifier.size(48.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    if (uiState.isRecording) {
+                        // Stop icon (square)
+                        Surface(
+                            modifier = Modifier.size(18.dp),
+                            shape = RoundedCornerShape(2.dp),
+                            color = Color.White
+                        ) {}
+                    } else {
+                        // Record icon (circle)
+                        Surface(
+                            modifier = Modifier.size(20.dp),
+                            shape = CircleShape,
+                            color = Color.Red
+                        ) {}
+                    }
+                }
+            }
         }
 
         // Bottom bar — shot count + lens status + storage

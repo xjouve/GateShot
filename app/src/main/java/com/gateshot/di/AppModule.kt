@@ -17,8 +17,17 @@ object AppModule {
         cameraModule: com.gateshot.capture.camera.CameraFeatureModule,
         burstModule: com.gateshot.capture.burst.BurstFeatureModule,
         presetModule: com.gateshot.capture.preset.PresetFeatureModule,
+        triggerModule: com.gateshot.capture.trigger.TriggerFeatureModule,
+        sessionModule: com.gateshot.session.SessionFeatureModule,
         snowExposureModule: com.gateshot.processing.snow.SnowExposureModule
     ): Set<FeatureModule> {
-        return setOf(cameraModule, burstModule, presetModule, snowExposureModule)
+        return setOf(
+            cameraModule,
+            burstModule,
+            presetModule,
+            triggerModule,
+            sessionModule,
+            snowExposureModule
+        )
     }
 }

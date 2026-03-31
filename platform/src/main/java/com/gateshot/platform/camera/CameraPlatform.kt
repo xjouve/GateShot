@@ -29,6 +29,7 @@ enum class CameraState {
 
 interface CameraPlatform {
     val state: StateFlow<CameraState>
+    val isRecording: StateFlow<Boolean>
     val capabilities: CameraCapabilities?
 
     suspend fun open(config: CameraConfig)

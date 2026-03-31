@@ -10,6 +10,9 @@ import com.gateshot.core.event.EventBus
 import com.gateshot.core.event.collect
 import com.gateshot.core.mode.AppMode
 import com.gateshot.core.mode.ModeManager
+import com.gateshot.capture.trigger.TriggerFeatureModule
+import com.gateshot.capture.trigger.TriggerZone
+import com.gateshot.capture.trigger.ZoneAddRequest
 import com.gateshot.platform.camera.CameraConfig
 import com.gateshot.platform.camera.CameraXPlatform
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -36,6 +39,8 @@ data class MainUiState(
     val currentEvBias: Float = 0f,
     val isFlatLight: Boolean = false,
     val bufferFrameCount: Int = 0,
+    val triggerZones: List<TriggerZone> = emptyList(),
+    val triggerArmed: Boolean = false,
     val moduleStatuses: Map<String, String> = emptyMap()
 )
 
@@ -44,7 +49,8 @@ class MainViewModel @Inject constructor(
     private val modeManager: ModeManager,
     private val eventBus: EventBus,
     private val endpointRegistry: EndpointRegistry,
-    val cameraXPlatform: CameraXPlatform
+    val cameraXPlatform: CameraXPlatform,
+    private val triggerModule: TriggerFeatureModule
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(MainUiState())
@@ -55,6 +61,13 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch {
             modeManager.currentMode.collect { mode ->
                 _uiState.update { it.copy(mode = mode) }
+            }
+        }
+
+        // Observe recording state
+        viewModelScope.launch {
+            cameraXPlatform.isRecording.collect { recording ->
+                _uiState.update { it.copy(isRecording = recording) }
             }
         }
 
@@ -72,13 +85,24 @@ class MainViewModel @Inject constructor(
             _uiState.update { it.copy(lensAttached = false) }
         }
         eventBus.collect<AppEvent.PresetApplied>(viewModelScope) { event ->
-            _uiState.update { it.copy(currentPreset = event.presetName) }
+            if (event.presetName == "__cycle_next__") {
+                cyclePreset()
+            } else {
+                _uiState.update { it.copy(currentPreset = event.presetName) }
+            }
         }
         eventBus.collect<AppEvent.BurstCompleted>(viewModelScope) { event ->
             _uiState.update { it.copy(shotCount = it.shotCount + event.frameCount) }
         }
         eventBus.collect<AppEvent.ExposureAdjusted>(viewModelScope) { event ->
             _uiState.update { it.copy(currentEvBias = event.evBias) }
+        }
+
+        // Observe trigger zones
+        viewModelScope.launch {
+            triggerModule.zones.collect { zones ->
+                _uiState.update { it.copy(triggerZones = zones, triggerArmed = zones.isNotEmpty()) }
+            }
         }
     }
 
@@ -93,11 +117,21 @@ class MainViewModel @Inject constructor(
     fun onShutterPress() {
         viewModelScope.launch {
             eventBus.publish(AppEvent.ShutterPressed())
-            // Also take a photo directly for now until burst module handles it
+            // Take a photo directly (burst module also listens to ShutterPressed)
             try {
                 cameraXPlatform.takePicture()
                 _uiState.update { it.copy(shotCount = it.shotCount + 1) }
             } catch (_: Exception) { }
+        }
+    }
+
+    fun onVideoToggle() {
+        viewModelScope.launch {
+            if (_uiState.value.isRecording) {
+                endpointRegistry.call<Unit, Any>("capture/video/stop", Unit)
+            } else {
+                endpointRegistry.call<Unit, Any>("capture/video/start", Unit)
+            }
         }
     }
 
@@ -114,5 +148,28 @@ class MainViewModel @Inject constructor(
     fun onZoomChanged(zoom: Float) {
         _uiState.update { it.copy(zoomLevel = zoom) }
         cameraXPlatform.setZoom(zoom)
+    }
+
+    fun onAddTriggerZone(normalizedX: Float, normalizedY: Float) {
+        viewModelScope.launch {
+            endpointRegistry.call<ZoneAddRequest, Any>(
+                "af/zone/add",
+                ZoneAddRequest(normalizedX, normalizedY)
+            )
+        }
+    }
+
+    private val presetOrder = listOf("slalom_gs", "speed", "panning", "finish", "atmosphere", "training")
+
+    private fun cyclePreset() {
+        val currentIndex = presetOrder.indexOf(_uiState.value.currentPreset)
+        val nextIndex = (currentIndex + 1) % presetOrder.size
+        onPresetSelected(presetOrder[nextIndex])
+    }
+
+    fun onClearTriggerZones() {
+        viewModelScope.launch {
+            endpointRegistry.call<Unit, Any>("af/zone/clear", Unit)
+        }
     }
 }

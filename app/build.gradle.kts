@@ -48,6 +48,8 @@ dependencies {
     implementation(project(":capture:camera"))
     implementation(project(":capture:burst"))
     implementation(project(":capture:preset"))
+    implementation(project(":capture:trigger"))
+    implementation(project(":session"))
     implementation(project(":processing:snow-exposure"))
 
     // Compose
@@ -76,4 +78,5 @@ dependencies {
     implementation(libs.camerax.camera2)
     implementation(libs.camerax.lifecycle)
     implementation(libs.camerax.view)
+    implementation(libs.camerax.video)
 }

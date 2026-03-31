@@ -28,7 +28,10 @@ fun GateShotMainScreen(
             onShutterPress = viewModel::onShutterPress,
             onModeToggle = viewModel::onModeToggle,
             onPresetSelected = viewModel::onPresetSelected,
-            onZoomChanged = viewModel::onZoomChanged
+            onZoomChanged = viewModel::onZoomChanged,
+            onVideoToggle = viewModel::onVideoToggle,
+            onAddTriggerZone = viewModel::onAddTriggerZone,
+            onClearTriggerZones = viewModel::onClearTriggerZones
         )
     }
 }
