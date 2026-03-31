@@ -15,6 +15,7 @@ import com.gateshot.capture.trigger.TriggerZone
 import com.gateshot.capture.trigger.ZoneAddRequest
 import com.gateshot.platform.camera.CameraConfig
 import com.gateshot.platform.camera.CameraXPlatform
+import com.gateshot.platform.sensor.SensorPlatform
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -50,7 +51,8 @@ class MainViewModel @Inject constructor(
     private val eventBus: EventBus,
     private val endpointRegistry: EndpointRegistry,
     val cameraXPlatform: CameraXPlatform,
-    private val triggerModule: TriggerFeatureModule
+    private val triggerModule: TriggerFeatureModule,
+    private val sensorPlatform: SensorPlatform
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(MainUiState())
@@ -96,6 +98,16 @@ class MainViewModel @Inject constructor(
         }
         eventBus.collect<AppEvent.ExposureAdjusted>(viewModelScope) { event ->
             _uiState.update { it.copy(currentEvBias = event.evBias) }
+        }
+
+        // Poll battery status every 30 seconds
+        viewModelScope.launch {
+            while (true) {
+                val battLevel = sensorPlatform.getBatteryLevel()
+                val battTemp = sensorPlatform.getBatteryTemperature() ?: 20f
+                _uiState.update { it.copy(batteryLevel = battLevel, batteryTemp = battTemp) }
+                kotlinx.coroutines.delay(30_000)
+            }
         }
 
         // Observe trigger zones

@@ -2,6 +2,8 @@ package com.gateshot.platform.di
 
 import com.gateshot.platform.camera.CameraPlatform
 import com.gateshot.platform.camera.CameraXPlatform
+import com.gateshot.platform.sensor.SensorPlatform
+import com.gateshot.platform.sensor.SensorPlatformImpl
 import dagger.Binds
 import dagger.Module
 import dagger.hilt.InstallIn
@@ -13,4 +15,7 @@ abstract class PlatformModule {
 
     @Binds
     abstract fun bindCameraPlatform(impl: CameraXPlatform): CameraPlatform
+
+    @Binds
+    abstract fun bindSensorPlatform(impl: SensorPlatformImpl): SensorPlatform
 }

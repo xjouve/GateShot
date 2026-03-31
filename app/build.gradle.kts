@@ -51,6 +51,13 @@ dependencies {
     implementation(project(":capture:trigger"))
     implementation(project(":session"))
     implementation(project(":processing:snow-exposure"))
+    implementation(project(":processing:burst-culling"))
+    implementation(project(":processing:bib-detection"))
+    implementation(project(":processing:autoclip"))
+    implementation(project(":processing:export"))
+    implementation(project(":coaching:replay"))
+    implementation(project(":coaching:timing"))
+    implementation(project(":coaching:annotation"))
 
     // Compose
     implementation(platform(libs.compose.bom))
@@ -79,4 +86,7 @@ dependencies {
     implementation(libs.camerax.lifecycle)
     implementation(libs.camerax.view)
     implementation(libs.camerax.video)
+
+    // ExoPlayer (for replay)
+    implementation(libs.exoplayer)
 }
