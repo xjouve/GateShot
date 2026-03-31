@@ -78,9 +78,12 @@ Core + API endpoint architecture with 17 independent Gradle modules:
 
 ## Hardware Target
 
-- **Oppo Find X9 Pro** (16GB RAM / 512GB storage)
-- **Hasselblad Telephoto Lens Kit** (magnetic mount)
-- Android 10+ (API 29)
+- **Oppo Find X9 Pro** — MediaTek Dimensity 9500, 16GB RAM, 512GB storage, 7000+ mAh battery
+- **Camera system:** 50MP main (f/1.5, 23mm) + 50MP ultra-wide (16mm) + **200MP telephoto** (1/1.56", f/2.1, 70mm, 5x optical, OIS) + 2MP color spectrum
+- **Hasselblad Teleconverter Kit** — 3.28x magnification, 230mm equivalent, 10x optical zoom, 13 elements/3 groups
+- **Video:** 4K@120fps Dolby Vision, 1080p@240fps, 720p@480fps slow-motion
+- **Lossless zoom:** up to 13.2x from 200MP crop, 200x digital max
+- Android 16 (ColorOS 16), API 29+ target
 
 ## Building
 

@@ -184,10 +184,10 @@ object DefaultPresets {
         camera = CameraPreset(
             resolutionWidth = 3840,
             resolutionHeight = 2160,
-            frameRate = 60,
+            frameRate = 120,            // 4K@120fps — X9 Pro supports Dolby Vision at this rate
             shutterSpeedMin = "1/500",
             shutterSpeedMax = "1/1000",
-            preferRaw = false       // Video-first, JPEG is fine
+            preferRaw = false           // Video-first, JPEG is fine
         ),
         burst = BurstPreset(
             mode = BurstMode.SINGLE,

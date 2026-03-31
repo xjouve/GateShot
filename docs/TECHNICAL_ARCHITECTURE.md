@@ -290,7 +290,7 @@ Every feature is accessible through API endpoints. The UI never talks directly t
 | `lens/detect` | GET | Current lens status (built-in / telephoto attached) | All |
 | `lens/profile/get` | GET | Active lens correction profile | All |
 | `lens/profile/set` | POST | Override lens profile | All |
-| `lens/zoom/set` | POST | Set zoom level (1x, 3x, 5x, custom) | All |
+| `lens/zoom/set` | POST | Set zoom level (1x, 5x, 10x, 13.2x, custom) | All |
 | `lens/zoom/get` | GET | Current zoom level | All |
 | `lens/stabilization/config` | POST | Configure OIS+EIS mode (standard, tele, panning, tripod) | All |
 
@@ -905,7 +905,7 @@ Discipline presets are stored as composite configs that span multiple modules:
       "eis": "off"
     },
     "lens": {
-      "default_zoom": "3x"
+      "default_zoom": "5x"
     }
   },
   "user_overrides": {}

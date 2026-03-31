@@ -3,7 +3,7 @@
 
 **Version:** 0.1 — Initial Feature Definition
 **Date:** 2026-03-31
-**Hardware target:** Oppo Find X9 Pro (16GB/512GB) + Hasselblad Telephoto Lens Kit
+**Hardware target:** Oppo Find X9 Pro (16GB/512GB, Dimensity 9500, 200MP telephoto) + Hasselblad Teleconverter Kit (230mm/10x optical)
 
 ---
 
@@ -70,7 +70,7 @@ Each preset configures shutter speed, burst behavior, AF strategy, exposure bias
 ### 1.6 Training Analysis (Video-First)
 
 - **Context:** Coaching-oriented capture. Priority is usable footage over artistic quality.
-- **Resolution:** 4K at 60fps (default), with 120fps / 240fps slow-motion options.
+- **Resolution:** 4K at 120fps Dolby Vision (default — the X9 Pro supports this natively), with 1080p@240fps and 720p@480fps slow-motion options.
 - **Framing:** Wider than competition shooting to capture full body and gate context.
 - **AF strategy:** Continuous tracking, permissive (don't rack focus aggressively — coaches prefer consistent framing over cinematic focus pulls).
 - **Audio:** Record ambient (start beeps, coach shouts) — useful for syncing and annotation later.
@@ -189,8 +189,10 @@ A 30-frame burst at a gate passage produces 25 near-identical frames and 5 that 
 
 ### 5.1 High Frame Rate Capture
 
-- 120fps at 1080p: smooth slow-motion for technique review.
-- 240fps at 720p/1080p: ultra slow-motion for edge angle, boot pressure, hand position analysis.
+- 4K at 120fps with Dolby Vision: smooth slow-motion at full resolution for technique review.
+- 1080p at 240fps: ultra slow-motion for edge angle, boot pressure, hand position analysis.
+- 720p at 480fps: maximum slow-motion for extreme detail (edge engagement, ski flex).
+- 4K Log recording at 120fps for studio-grade color grading in post.
 - Quick toggle between real-time and slow-motion from the shooting interface (one tap, not buried in settings).
 
 ### 5.2 Auto-Clip by Run
@@ -266,32 +268,40 @@ In a race, there's approximately 20-40 seconds between starters.
 
 ---
 
-## 7. Hasselblad Telephoto Lens Kit Integration
+## 7. Hasselblad Teleconverter Kit Integration
+
+The Hasselblad Professional Teleconverter (3.28x magnification, 13 elements in 3 groups, 3 ED elements, 9-layer AR coating, 180g) attaches magnetically to the dedicated protective case. It extends the 200MP telephoto from 70mm/5x to **230mm/10x optical zoom**.
 
 ### 7.1 Automatic Lens Detection
 
-- Detect when the magnetic telephoto lens is mounted (magnetometer or focal length analysis on first frames).
-- Auto-switch to telephoto-optimized AF algorithms.
-- Notification: "Telephoto lens detected — switched to tele profile."
+- Detect when the magnetic teleconverter is mounted (magnetometer change from magnetic case alignment).
+- Auto-switch to "Hasselblad Telephoto" mode (matches stock camera app behavior).
+- Auto-activate lens deconvolution pipeline (super-resolution module) to counteract teleconverter softness.
+- Notification: "Hasselblad teleconverter detected — 230mm / 10x optical."
 
 ### 7.2 Telephoto-Specific Stabilization
 
-- Telephoto magnifies camera shake proportionally.
-- Engage maximum OIS + EIS combined pipeline.
-- Predictive stabilization: analyze shake pattern and pre-compensate.
+- At 230mm, camera shake is magnified 10x vs wide angle. Critical for ski racing.
+- Engage maximum OIS (native telephoto OIS) + EIS combined pipeline.
+- Predictive stabilization: analyze gyroscope pattern and pre-compensate.
 - Option: tripod/monopod detection — disable stabilization to avoid fighting the mount.
 
 ### 7.3 Quick Focal Length Toggle
 
-- One-tap switch between wide (built-in) and telephoto (Hasselblad attachment).
-- Smooth digital zoom bridge between the two focal lengths.
-- Preset zoom positions: 1x (wide), 3x (telephoto base), 5x (telephoto + digital crop).
+- One-tap switch between zoom positions:
+  - **1x** (23mm wide — course overview, atmosphere)
+  - **5x** (70mm telephoto native — slalom/GS close range)
+  - **10x** (230mm with teleconverter — speed events, distant subjects)
+  - **13.2x** (max lossless crop from 200MP — tightest usable framing)
+- Smooth digital zoom bridge between positions.
+- Beyond 13.2x: super-resolution module auto-engages for quality recovery.
 
 ### 7.4 Lens Profile Correction
 
-- Automatic vignette correction for the add-on telephoto optics.
-- Chromatic aberration correction tuned to the specific Hasselblad telephoto lens.
-- Distortion correction for the telephoto attachment's optical signature.
+- Automatic vignette correction calibrated for the Hasselblad teleconverter optics.
+- Lateral chromatic aberration correction (radial R/B channel shift from 13-element design).
+- PSF deconvolution to recover sharpness lost through the additional optical elements.
+- All corrections applied automatically when teleconverter is detected — zero user action required.
 
 ---
 
@@ -606,19 +616,47 @@ The app becomes a competitive advantage for athletes and teams.
 
 ## 11. Technical Considerations (Preliminary)
 
+### Hardware — Oppo Find X9 Pro Camera System
+
+| Sensor | Resolution | Sensor Size | Aperture | Focal Length | Features |
+|--------|-----------|-------------|----------|-------------|----------|
+| Main (wide) | 50MP | 1/2.8" | f/1.5 | 23mm | PDAF, OIS |
+| Ultra-wide | 50MP | 1/2.76" | f/2.0 | 16mm | — |
+| Telephoto | **200MP** | **1/1.56"** | f/2.1 | 70mm (5x) | Periscope, PDAF, OIS |
+| Color spectrum | 2MP | — | — | — | 6x8 grid white balance |
+
+- **Hasselblad Teleconverter:** 3.28x magnification = 230mm equivalent (10x optical). 13 elements in 3 groups, 3 ED elements, 9-layer AR coating.
+- **Lossless crop:** Up to 13.2x from 200MP sensor.
+- **Digital zoom:** Up to 200x (photo), 50x (video).
+- **Note:** The 200MP telephoto has the **largest sensor** (1/1.56") — bigger than the main camera (1/2.8").
+
+### Video Capabilities
+
+| Mode | Resolution | Frame Rate |
+|------|-----------|------------|
+| Standard | 4K | 30/60/120 fps |
+| Dolby Vision | 4K | 120 fps |
+| Log recording | 4K | 120 fps |
+| Slow-motion | 4K | 120 fps |
+| Slow-motion | 1080p | 240 fps |
+| Slow-motion | 720p | 480 fps |
+
 ### Platform
 - Native Android (Kotlin) for direct Camera2 / CameraX API access.
-- Oppo Find X9 Pro runs ColorOS (Android-based). Full Camera2 API support required — verify HAL3 compatibility.
+- Oppo Find X9 Pro runs ColorOS 16 (Android 16). Full Camera2 API support required.
+- SoC: **MediaTek Dimensity 9500** — octa-core, dedicated APU for AI inference.
 
 ### Performance Constraints
 - Pre-capture buffer requires continuous frame capture to a ring buffer in memory. 16GB RAM is generous — allocate up to 2GB for buffer at 4K.
-- AI features (bib detection, pose estimation, burst culling) must run on-device for field use (no reliable internet on a mountainside). Leverage NPU (neural processing unit) on the Dimensity/Snapdragon chipset.
-- 120/240fps capture depends on hardware ISP capabilities — verify supported resolutions at each frame rate.
+- AI features (bib detection, pose estimation, burst culling) must run on-device for field use (no reliable internet on a mountainside). Leverage the MediaTek Dimensity 9500 APU via NNAPI.
+- 4K 120fps capture confirmed supported. 1080p 240fps for slow-motion analysis.
+- 200MP telephoto produces ~60MB per RAW frame — burst buffer must account for this.
 
 ### Storage
-- A full day of shooting can produce 50-100GB. 512GB internal storage provides ~5 full days.
-- Micro-SD or USB-C external storage support for extended events.
+- A full day of shooting at 200MP can produce 100-200GB. 512GB internal storage provides ~3 full days.
+- No micro-SD — USB-C external storage for extended events.
 - Aggressive thumbnail and proxy workflow: browse proxies, export originals.
+- **7000+ mAh battery** with 80W fast charging — generous for all-day shooting.
 
 ### Connectivity
 - Primary operation must be fully offline. No internet dependency for any capture or analysis feature.

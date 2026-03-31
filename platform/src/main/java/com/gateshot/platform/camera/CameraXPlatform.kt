@@ -153,7 +153,7 @@ class CameraXPlatform @Inject constructor(
                 val cameraInfo = camera!!.cameraInfo
                 capabilities = CameraCapabilities(
                     supportedResolutions = listOf(config.resolution),
-                    supportedFrameRates = listOf(30, 60, 120),
+                    supportedFrameRates = listOf(30, 60, 120, 240, 480),
                     hasOpticalStabilization = true,
                     maxZoomRatio = cameraInfo.zoomState.value?.maxZoomRatio ?: 1f,
                     hasFlash = cameraInfo.hasFlashUnit()
@@ -281,10 +281,20 @@ class CameraXPlatform @Inject constructor(
     }
 
     override fun getSupportedConfigs(): List<CameraConfig> {
+        // Oppo Find X9 Pro actual capabilities
         return listOf(
+            // 4K video
             CameraConfig(LensFacing.BACK, android.util.Size(3840, 2160), 30, true),
+            CameraConfig(LensFacing.BACK, android.util.Size(3840, 2160), 60, true),
+            CameraConfig(LensFacing.BACK, android.util.Size(3840, 2160), 120, true),  // 4K Dolby Vision
+            // 1080p
+            CameraConfig(LensFacing.BACK, android.util.Size(1920, 1080), 30, true),
             CameraConfig(LensFacing.BACK, android.util.Size(1920, 1080), 60, true),
             CameraConfig(LensFacing.BACK, android.util.Size(1920, 1080), 120, true),
+            CameraConfig(LensFacing.BACK, android.util.Size(1920, 1080), 240, true),  // Slow-motion
+            // 720p slow-motion
+            CameraConfig(LensFacing.BACK, android.util.Size(1280, 720), 480, true),   // Max slow-motion
+            // Front camera
             CameraConfig(LensFacing.FRONT, android.util.Size(1920, 1080), 30, false)
         )
     }
