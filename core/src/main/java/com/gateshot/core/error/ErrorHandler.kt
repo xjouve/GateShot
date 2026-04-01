@@ -1,6 +1,6 @@
 package com.gateshot.core.error
 
-import android.util.Log
+import com.gateshot.core.log.GateShotLogger
 import com.gateshot.core.module.ModuleHealth
 import com.gateshot.core.module.Severity
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -10,7 +10,9 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
-class ErrorHandler @Inject constructor() {
+class ErrorHandler @Inject constructor(
+    private val logger: GateShotLogger
+) {
 
     private val moduleHealthMap = mutableMapOf<String, ModuleHealth>()
     private val _errors = MutableStateFlow<List<ErrorRecord>>(emptyList())
@@ -35,10 +37,10 @@ class ErrorHandler @Inject constructor() {
         moduleHealthMap[module] = ModuleHealth(module, healthStatus, error.message)
 
         when (severity) {
-            Severity.INFO -> Log.i(TAG, "[$module] ${error.message}")
-            Severity.WARNING -> Log.w(TAG, "[$module] ${error.message}")
-            Severity.DEGRADED -> Log.e(TAG, "[$module] DEGRADED: ${error.message}", error)
-            Severity.CRITICAL -> Log.e(TAG, "[$module] CRITICAL: ${error.message}", error)
+            Severity.INFO -> logger.i(module, error.message ?: "Unknown error")
+            Severity.WARNING -> logger.w(module, error.message ?: "Unknown error", error)
+            Severity.DEGRADED -> logger.e(module, "DEGRADED: ${error.message}", error)
+            Severity.CRITICAL -> logger.e(module, "CRITICAL: ${error.message}", error)
         }
     }
 
@@ -55,8 +57,4 @@ class ErrorHandler @Inject constructor() {
         val severity: Severity,
         val timestamp: Long
     )
-
-    companion object {
-        private const val TAG = "ErrorHandler"
-    }
 }

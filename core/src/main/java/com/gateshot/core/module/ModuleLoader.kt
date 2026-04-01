@@ -1,10 +1,10 @@
 package com.gateshot.core.module
 
-import android.util.Log
 import com.gateshot.core.api.EndpointRegistry
 import com.gateshot.core.event.AppEvent
 import com.gateshot.core.event.EventBus
 import com.gateshot.core.error.ErrorHandler
+import com.gateshot.core.log.GateShotLogger
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -12,7 +12,8 @@ import javax.inject.Singleton
 class ModuleLoader @Inject constructor(
     private val endpointRegistry: EndpointRegistry,
     private val eventBus: EventBus,
-    private val errorHandler: ErrorHandler
+    private val errorHandler: ErrorHandler,
+    private val logger: GateShotLogger
 ) {
     private val modules = mutableMapOf<String, FeatureModule>()
     private val loadOrder = mutableListOf<String>()
@@ -33,7 +34,7 @@ class ModuleLoader @Inject constructor(
             // Check dependencies
             for (dep in module.dependencies) {
                 if (dep !in loadOrder) {
-                    Log.w(TAG, "Module '${module.name}' depends on '$dep' which is not loaded. Skipping.")
+                    logger.w(TAG, "Module '${module.name}' depends on '$dep' which is not loaded. Skipping.")
                     errorHandler.reportError(
                         module.name,
                         IllegalStateException("Missing dependency: $dep"),
@@ -52,9 +53,9 @@ class ModuleLoader @Inject constructor(
 
             loadOrder.add(module.name)
             eventBus.publish(AppEvent.ModuleLoaded(module.name))
-            Log.i(TAG, "Module '${module.name}' v${module.version} loaded (${module.endpoints().size} endpoints)")
+            logger.i(TAG, "Module '${module.name}' v${module.version} loaded (${module.endpoints().size} endpoints)")
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to load module '${module.name}'", e)
+            logger.e(TAG, "Failed to load module '${module.name}'", e)
             errorHandler.reportError(module.name, e, Severity.DEGRADED)
             eventBus.publish(AppEvent.ModuleError(module.name, e.message ?: "Unknown error"))
         }
@@ -65,7 +66,7 @@ class ModuleLoader @Inject constructor(
             try {
                 modules[name]?.shutdown()
             } catch (e: Exception) {
-                Log.e(TAG, "Error shutting down module '$name'", e)
+                logger.e(TAG, "Error shutting down module '$name'", e)
             }
         }
         loadOrder.clear()
