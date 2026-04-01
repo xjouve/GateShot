@@ -60,6 +60,8 @@ dependencies {
     implementation(project(":coaching:replay"))
     implementation(project(":coaching:timing"))
     implementation(project(":coaching:annotation"))
+    implementation(project(":coaching:athlete"))
+    implementation(project(":coaching:pose"))
 
     // Compose
     implementation(platform(libs.compose.bom))

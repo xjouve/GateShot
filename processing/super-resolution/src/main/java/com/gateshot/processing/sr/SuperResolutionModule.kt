@@ -8,6 +8,7 @@ import com.gateshot.core.api.ApiResponse
 import com.gateshot.core.config.ConfigStore
 import com.gateshot.core.event.AppEvent
 import com.gateshot.core.event.EventBus
+import com.gateshot.core.event.collect
 import com.gateshot.core.mode.AppMode
 import com.gateshot.core.module.FeatureModule
 import com.gateshot.core.module.ModuleHealth
@@ -68,10 +69,10 @@ class SuperResolutionModule @Inject constructor(
         aiUpscaler.initialize()
 
         // Detect teleconverter
-        com.gateshot.core.event.collect<AppEvent.LensDetected>(scope) {
+        eventBus.collect<AppEvent.LensDetected>(scope) {
             hasTelevonverter = true
         }
-        com.gateshot.core.event.collect<AppEvent.LensRemoved>(scope) {
+        eventBus.collect<AppEvent.LensRemoved>(scope) {
             hasTelevonverter = false
         }
     }

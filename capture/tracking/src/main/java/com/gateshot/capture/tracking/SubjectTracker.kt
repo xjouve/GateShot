@@ -128,7 +128,7 @@ class SubjectTracker {
                 target = handleOcclusion(locked, subjects, width, height)
             } else if (racerCandidates.isNotEmpty()) {
                 // No lock yet — acquire the fastest racer
-                val fastest = racerCandidates.maxByDescending { it.speed }
+                val fastest = racerCandidates.maxByOrNull { it.speed } ?: return null
                 lockedSubject = fastest
                 positionHistory.clear()
                 positionHistory.add(Pair(fastest.centerX, fastest.centerY))

@@ -32,13 +32,15 @@ object AppModule {
         // Coaching
         replayModule: com.gateshot.coaching.replay.ReplayFeatureModule,
         timingModule: com.gateshot.coaching.timing.TimingFeatureModule,
-        annotationModule: com.gateshot.coaching.annotation.AnnotationFeatureModule
+        annotationModule: com.gateshot.coaching.annotation.AnnotationFeatureModule,
+        athleteModule: com.gateshot.coaching.athlete.AthleteFeatureModule,
+        poseModule: com.gateshot.coaching.pose.PoseEstimationModule
     ): Set<FeatureModule> {
         return setOf(
             cameraModule, burstModule, presetModule, triggerModule, trackingModule,
             sessionModule,
             snowExposureModule, burstCullingModule, bibDetectionModule, autoClipModule, exportModule, superResolutionModule,
-            replayModule, timingModule, annotationModule
+            replayModule, timingModule, annotationModule, athleteModule, poseModule
         )
     }
 }

@@ -5,6 +5,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Camera
 import androidx.compose.material.icons.filled.Draw
 import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SlowMotionVideo
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
@@ -31,6 +32,7 @@ import com.gateshot.ui.MainViewModel
 import com.gateshot.ui.annotation.AnnotationScreen
 import com.gateshot.ui.gallery.GalleryScreen
 import com.gateshot.ui.replay.ReplayScreen
+import com.gateshot.ui.settings.SettingsScreen
 import com.gateshot.ui.viewfinder.ViewfinderScreen
 
 sealed class Screen(val route: String, val label: String, val icon: ImageVector, val coachOnly: Boolean = false) {
@@ -38,9 +40,10 @@ sealed class Screen(val route: String, val label: String, val icon: ImageVector,
     data object Gallery : Screen("gallery", "Gallery", Icons.Filled.PhotoLibrary)
     data object Replay : Screen("replay", "Replay", Icons.Filled.SlowMotionVideo, coachOnly = true)
     data object Annotation : Screen("annotation", "Annotate", Icons.Filled.Draw, coachOnly = true)
+    data object Settings : Screen("settings", "Settings", Icons.Filled.Settings)
 }
 
-val allScreens = listOf(Screen.Viewfinder, Screen.Gallery, Screen.Replay, Screen.Annotation)
+val allScreens = listOf(Screen.Viewfinder, Screen.Gallery, Screen.Replay, Screen.Annotation, Screen.Settings)
 
 @Composable
 fun GateShotNavHost(
@@ -97,6 +100,10 @@ fun GateShotNavHost(
 
             composable(Screen.Annotation.route) {
                 AnnotationScreen(viewModel = viewModel)
+            }
+
+            composable(Screen.Settings.route) {
+                SettingsScreen(viewModel = viewModel)
             }
         }
     }
