@@ -570,4 +570,334 @@ This covers the core capture pipeline, the signature differentiators, and the mo
 
 ---
 
+## TEST SUITE 7 — In-House Tests (No Snow Required)
+
+These tests can be performed at home, in the office, or anywhere indoors. They validate all functionality that doesn't depend on snow, racers, or ski slopes.
+
+### T7.1 — App Launch & Permissions
+**Goal:** Verify clean install, permissions, and first-run behavior.
+1. Uninstall GateShot if previously installed
+2. Install the APK
+3. Launch — verify onboarding appears
+4. Swipe through all 7 pages — verify text, icons, tips are displayed
+5. Tap "Get Started"
+6. Deny camera permission — verify the app doesn't crash (graceful handling)
+7. Reopen — grant both permissions — verify camera preview appears
+8. Kill the app and reopen — verify onboarding does NOT appear again
+9. Verify status bar shows battery level and temperature (should show room temp ~20-25°C)
+
+**Pass criteria:** Clean lifecycle. No crash on denied permission. Onboarding shown once.
+
+---
+
+### T7.2 — UI Navigation & Layout
+**Goal:** Verify all screens are accessible and laid out correctly.
+1. Verify bottom nav shows: Shoot, Gallery, Settings (3 tabs in Shoot mode)
+2. Tap Gallery — verify Gallery screen loads
+3. Tap Settings — verify Settings screen loads with all sections
+4. Scroll through Settings — verify: Tracking, Audio Trigger, Pre-Capture Buffer, Snow Exposure, Zoom Enhancement, Export, Session, About sections all present
+5. Tap [Coach] toggle — verify Replay and Annotate tabs appear (now 5 tabs)
+6. Tap Replay — verify Replay screen loads with transport controls
+7. Tap Annotate — verify Annotation screen loads with drawing tools
+8. Toggle Coach off — verify Replay and Annotate disappear
+9. Rotate phone to landscape — verify UI adapts (no elements cut off)
+10. Rotate back to portrait — verify UI restores
+
+**Pass criteria:** All 5 screens accessible. Coach toggle shows/hides correct tabs. No layout breakage.
+
+---
+
+### T7.3 — Camera Preview & Zoom (Indoor)
+**Goal:** Verify live camera, zoom, and lens switching.
+1. Verify live camera preview is visible (point at any indoor scene)
+2. Pinch to zoom from 1x to 5x — verify smooth zoom
+3. Continue to 10x, 15x — verify zoom indicator updates correctly
+4. Zoom back to 1x — verify smooth
+5. Verify zoom shows "1.0x", "5.0x", etc. in the zoom indicator
+6. Take a photo at 1x — verify shot count increments
+7. Take a photo at 5x — verify shot count increments
+8. Take a photo at 10x — compare sharpness with 5x (should be softer but usable)
+
+**With teleconverter (if available):**
+9. Attach teleconverter — verify "TELE" indicator appears
+10. Zoom to 10x — take photo — compare with 10x without teleconverter
+11. Remove teleconverter — verify "TELE" disappears
+
+**Pass criteria:** Smooth zoom. Photos captured at all zoom levels. Teleconverter detected.
+
+---
+
+### T7.4 — Photo Capture & Burst (Indoors)
+**Goal:** Verify photo capture works without racers.
+
+**Test A — Single shot:**
+1. Point at any static scene
+2. Tap shutter — verify photo taken (shot count increments)
+3. Press Volume Up — verify photo taken
+4. Check Gallery — verify photos appear
+
+**Test B — Burst with moving object:**
+1. Have someone walk past the camera at normal speed
+2. Press shutter — verify burst fires
+3. Check Gallery — verify multiple frames captured
+4. Look for frames from BEFORE the shutter press (pre-buffer frames)
+
+**Test C — Moving object for tracking simulation:**
+1. Enable racer tracking
+2. Have someone walk briskly past the camera (or toss a ball across the frame)
+3. Check if tracking brackets appear on the moving object
+4. Note: walking speed may be below the racer threshold — tracking may classify as "OFFICIAL". This is correct behavior. To trigger racer lock, you'd need something moving very fast.
+
+**Pass criteria:** Single and burst capture work. Pre-buffer captures earlier frames. Tracking responds to motion.
+
+---
+
+### T7.5 — Video Recording (Indoor)
+**Goal:** Verify video start/stop/playback.
+1. Tap the red record button — verify recording indicator appears
+2. Record 10 seconds of any scene
+3. Tap stop — verify recording stops
+4. Switch to Gallery — verify video appears
+5. Switch to Replay (Coach mode) — verify clip loads
+6. Play at 1x — verify smooth playback
+7. Set speed to 0.25x — verify slow-motion (smoother if recorded at 120fps)
+8. Set speed to 2x — verify fast playback
+9. Use frame-forward/backward — verify frame-accurate stepping
+10. Scrub the timeline — verify responsive seeking
+
+**Pass criteria:** Record, stop, playback, speed control, and seeking all work.
+
+---
+
+### T7.6 — Preset Cycling
+**Goal:** Verify all 6 presets switch correctly.
+1. Note the current preset (default: SL/GS)
+2. Press Volume Down — verify preset changes to DH/SG (Speed)
+3. Press Volume Down — PAN (Panning)
+4. Press Volume Down — FIN (Finish)
+5. Press Volume Down — WIDE (Atmosphere)
+6. Press Volume Down — TRAIN (Training Analysis)
+7. Press Volume Down — wraps back to SL/GS
+8. Alternatively, tap each preset button on the left side — verify each activates
+
+**Pass criteria:** All 6 presets cycle correctly. Active preset highlighted visually.
+
+---
+
+### T7.7 — Gate-Zone Trigger (Indoor Simulation)
+**Goal:** Verify zone placement, visual overlay, and motion detection.
+1. Point camera at a doorway or hallway
+2. Long-press on the left side of the frame — verify blue zone ellipse appears
+3. Long-press on the right side — verify second zone appears
+4. Have someone walk through the first zone's area
+5. Check if the shutter fires (it may or may not depending on walking speed vs threshold)
+6. Double-tap — verify both zones disappear
+7. Verify no more auto-captures after zones are cleared
+
+**Pass criteria:** Zones appear on long-press, clear on double-tap. Motion detection triggers on movement through zone.
+
+---
+
+### T7.8 — Annotation Tools (Drawing)
+**Goal:** Verify telestrator drawing tools without needing ski footage.
+1. Switch to Coach mode
+2. Go to Annotate screen
+3. Verify the "Paused video frame" placeholder (or load a real clip if available)
+4. Select FREEHAND tool — draw a squiggle on the screen
+5. Select LINE tool — draw a straight line
+6. Select ARROW tool — draw an arrow — verify arrowhead appears
+7. Select CIRCLE tool — draw a circle
+8. Change color to Yellow — draw another stroke — verify yellow
+9. Change to Blue — draw another — verify blue
+10. Tap Undo — verify last stroke removed
+11. Tap Undo 3 more times — verify strokes removed in reverse order
+12. Tap Clear — verify all remaining strokes removed
+13. Draw something and tap Save — verify annotated frame export (check toast/file)
+
+**Pass criteria:** All 4 tools draw correctly. 4 colors work. Undo removes in order. Clear removes all. Save exports.
+
+---
+
+### T7.9 — Settings Controls
+**Goal:** Verify all settings toggles and sliders respond.
+1. Open Settings
+2. **Tracking section:**
+   - Toggle "Enable AF Tracking" — verify switch moves
+   - Slide "Min racer speed" — verify value changes in real-time
+   - Slide "AF region size" — verify percentage updates
+   - Slide "Occlusion hold time" — verify frames + ms display updates
+3. **Audio Trigger section:**
+   - Toggle "Enable audio trigger" — verify switch moves
+   - Slide "Sensitivity" — verify percentage updates
+4. **Pre-Capture Buffer section:**
+   - Slide "Buffer duration" — verify seconds and memory estimate update
+5. **Snow Exposure section:**
+   - Toggle "Auto snow compensation" — verify switch
+   - Disable auto — verify "Manual EV bias" slider appears
+   - Slide EV — verify value changes
+   - Toggle "Auto flat light detection" — verify switch
+6. **Zoom Enhancement section:**
+   - Toggle "Auto enhance zoom" — verify switch
+7. **Export section:**
+   - Toggle "Watermark on Social shares" — verify watermark text appears
+8. **About section:**
+   - Verify version "GateShot v0.1.0" displayed
+   - Verify "21 modules" text
+
+**Pass criteria:** All toggles and sliders respond. Values update in real-time. No crashes.
+
+---
+
+### T7.10 — Debug Log Viewer
+**Goal:** Verify log capture, filtering, and export.
+1. Navigate around the app (switch tabs, take photos, toggle features) for 1 minute
+2. Open Settings → scroll to bottom or navigate to Debug Log
+3. Verify log entries are appearing (monospace, color-coded)
+4. Tap "ERR" filter — verify only errors shown (if any)
+5. Tap "WARN" filter — verify only warnings+ shown
+6. Tap "ALL" — verify all entries return
+7. Tap a module name chip (e.g., "camera") — verify filtered to that module
+8. Tap "Share" — verify Android share sheet opens
+9. Share to yourself via email/notes — verify the log text is readable
+10. Tap "Save" — verify toast "Log saved: gateshot_log_XXXXXXXX.txt"
+11. Find the file at `/Android/data/com.gateshot/files/` — open it — verify readable log text
+12. Tap "Clear" — verify log entries disappear
+
+**Pass criteria:** Logs captured, filtered, shared, saved to file, and cleared.
+
+---
+
+### T7.11 — Battery & Temperature Monitoring
+**Goal:** Verify real sensor readings (no snow needed).
+1. Check status bar — verify battery percentage matches system battery level
+2. Verify temperature display shows a reasonable room temperature (15-30°C)
+3. Use the phone heavily (record video, zoom in/out, enable tracking) for 5 minutes
+4. Check temperature again — may have risen slightly
+5. Put the phone in a refrigerator for 5 minutes (⚠️ remove before condensation!)
+6. Check temperature — verify it dropped
+7. If below 5°C — verify yellow warning color in status bar
+
+**Pass criteria:** Battery % matches system. Temperature changes with actual conditions. Warnings at thresholds.
+
+---
+
+### T7.12 — Snow Exposure on White Surface (Simulated)
+**Goal:** Test snow exposure without snow using white paper/wall.
+1. Point camera at a large white surface (white wall, white paper, white tablecloth)
+2. Check EV indicator in bottom bar — should show positive compensation
+3. Take a photo — the white surface should appear white, not gray
+4. Compare with stock camera app — stock will likely make white appear gray
+5. Point at a dark surface (dark desk, black jacket) — verify EV drops to 0
+6. Point back at white — verify EV rises again
+
+**Pass criteria:** EV adjusts based on white surface detection. White rendered as white, not gray.
+
+---
+
+### T7.13 — Replay Transport Controls
+**Goal:** Verify all replay UI controls without ski footage.
+1. Record a 30-second video of anything (walk around the room)
+2. Switch to Coach mode → Replay tab
+3. Verify clip auto-loads
+4. **Play/Pause:** tap play, verify playback. Tap pause, verify stops.
+5. **Speed presets:** tap 0.25x — verify slow. Tap 2x — verify fast. Tap 1x — normal.
+6. **Frame step:** tap frame-forward — verify advances one frame (~33ms). Tap frame-backward.
+7. **Skip:** tap rewind 5s — verify jumps back. Tap forward 5s — verify jumps ahead.
+8. **Timeline scrub:** drag the slider — verify video seeks to position.
+9. **Split-screen toggle:** tap the split-screen icon — verify layout changes to two panes.
+10. **Speed indicator:** verify current speed shown in the speed bar.
+
+**Pass criteria:** All 10 transport controls respond correctly.
+
+---
+
+### T7.14 — Glove Simulation
+**Goal:** Verify touch targets are large enough.
+1. Wear thick winter gloves (or oven mitts as a worst case)
+2. Try to tap the shutter button — verify it responds
+3. Try to tap a preset button — verify it responds
+4. Try to tap the Coach toggle — verify it responds
+5. Try to tap the record button — verify it responds
+6. Try to swipe between tabs — verify navigation works
+7. Press Volume Up — verify shutter fires (backup when screen is unresponsive)
+8. Press Volume Down — verify preset cycles
+
+**Pass criteria:** All primary controls usable with thick gloves. Volume buttons always work as backup.
+
+---
+
+### T7.15 — App Stability & Memory
+**Goal:** Verify no crashes or memory leaks during extended indoor use.
+1. Use the app continuously for 30 minutes:
+   - Take 50+ photos (mix of single and burst)
+   - Record 5+ videos (10-30s each)
+   - Switch between all 5 screens repeatedly
+   - Toggle Coach mode on/off 10 times
+   - Enable/disable tracking 5 times
+   - Place and clear trigger zones 5 times
+   - Open and close Settings 5 times
+   - Zoom in/out continuously for 1 minute
+2. After 30 minutes:
+   - Check that the app is still responsive
+   - Check that shot count is accurate
+   - Check Gallery — all media present
+   - Check Debug Log — look for any ERROR entries
+   - Check battery drain — should be reasonable (<15% for 30 min)
+
+**Pass criteria:** Zero crashes. No freezes. Shot count accurate. All media preserved.
+
+---
+
+### T7.16 — Multiple App Lifecycle Events
+**Goal:** Verify app handles Android lifecycle correctly.
+
+**Test A — Home button:**
+1. Press Home button during shooting
+2. Return to app — verify camera resumes, settings preserved
+
+**Test B — Recent apps:**
+1. Open recent apps view
+2. Switch to another app
+3. Switch back to GateShot — verify state restored
+
+**Test C — Screen off/on:**
+1. Press power button to turn screen off
+2. Turn screen back on, unlock
+3. Verify GateShot resumes (camera may need to re-open)
+
+**Test D — Notification during recording:**
+1. Start video recording
+2. Receive a notification (set a timer or have someone message you)
+3. Verify recording continues
+4. Dismiss notification — verify viewfinder still active
+
+**Test E — Low memory simulation:**
+1. Open several heavy apps (games, Chrome with many tabs)
+2. Switch back to GateShot
+3. Verify app restores without data loss
+
+**Pass criteria:** App survives all lifecycle events. No data loss. Camera resumes.
+
+---
+
+## In-House Test Priority (First 60 Minutes)
+
+| Order | Test | Time | What it validates |
+|-------|------|------|-------------------|
+| 1 | T7.1 | 5 min | Install, permissions, onboarding |
+| 2 | T7.2 | 5 min | All screens and navigation |
+| 3 | T7.3 | 5 min | Camera preview and zoom |
+| 4 | T7.4 | 5 min | Photo capture and burst |
+| 5 | T7.5 | 5 min | Video recording and playback |
+| 6 | T7.6 | 3 min | Preset cycling |
+| 7 | T7.9 | 5 min | All settings controls |
+| 8 | T7.10 | 5 min | Debug log viewer and export |
+| 9 | T7.8 | 5 min | Drawing tools |
+| 10 | T7.12 | 5 min | Snow exposure simulation |
+| 11 | T7.15 | 10 min | Stability soak (abbreviated) |
+
+This covers all core functionality in ~60 minutes without leaving your desk.
+
+---
+
 *GateShot v0.1 — Field Testing Protocol*
