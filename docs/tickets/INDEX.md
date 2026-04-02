@@ -12,3 +12,7 @@
 | [008](008-zoom-wrong-camera.md) | 1x zoom already zoomed in | Medium | Fixed |
 | [009](009-screen-sleep-during-use.md) | Screen turns off during use | Medium | Fixed |
 | [010](010-blue-tint-viewfinder.md) | Blue tint on viewfinder | High | Fixed |
+| [011](011-sr-not-wired.md) | SR pipeline never called on shutter press | Critical | Fixed |
+| [012](012-sr-invisible-enhancement.md) | SR enhancement produces no visible difference | High | Fixed |
+| [013](013-sr-freezes-viewfinder.md) | SR enhancement freezes viewfinder | High | Fixed |
+| [014](014-zoom-resets-on-tab-nav.md) | Zoom resets to 1x on tab navigation | Medium | Fixed |

@@ -111,43 +111,43 @@ class SuperResolutionModule @Inject constructor(
 
         return when (zone) {
             TelephotoOptimizer.QualityZone.OPTICAL_NATIVE -> {
-                // Native 200MP — just denoise the tiny pixels
+                // Native 200MP — clean image, sharpen only (no denoise needed)
                 EnhancementPipeline(
-                    denoise = true, denoiseFrameCount = 3,
+                    denoise = false, denoiseFrameCount = 0,
                     deconvolve = false,
                     upscale = false,
-                    sharpen = true, sharpenStrength = 0.2f,
-                    description = "Native 200MP telephoto — light denoise + sharpen"
+                    sharpen = true, sharpenStrength = 0.6f,
+                    description = "Native 200MP telephoto — sharpen"
                 )
             }
             TelephotoOptimizer.QualityZone.OPTICAL_TELE -> {
-                // With Hasselblad teleconverter — deconvolve + denoise
+                // With Hasselblad teleconverter — deconvolve + sharpen
                 EnhancementPipeline(
-                    denoise = true, denoiseFrameCount = 5,
+                    denoise = false, denoiseFrameCount = 0,
                     deconvolve = true,
                     upscale = false,
-                    sharpen = true, sharpenStrength = 0.4f,
-                    description = "Hasselblad teleconverter — deconvolution + denoise"
+                    sharpen = true, sharpenStrength = 0.7f,
+                    description = "Hasselblad teleconverter — deconvolution + sharpen"
                 )
             }
             TelephotoOptimizer.QualityZone.LOSSLESS_CROP -> {
-                // 200MP crop — denoise is critical (tiny pixels cropped = noisy)
+                // 200MP crop — light denoise + strong sharpen
                 EnhancementPipeline(
                     denoise = true, denoiseFrameCount = 8,
                     deconvolve = hasTelevonverter,
                     upscale = false,
-                    sharpen = true, sharpenStrength = 0.5f,
-                    description = "200MP lossless crop — multi-frame denoise"
+                    sharpen = true, sharpenStrength = 0.8f,
+                    description = "200MP lossless crop — denoise + sharpen"
                 )
             }
             TelephotoOptimizer.QualityZone.ENHANCED_CROP -> {
-                // Beyond lossless — multi-frame SR + AI upscale
+                // Beyond lossless — denoise + sharpen + AI upscale
                 EnhancementPipeline(
                     denoise = true, denoiseFrameCount = 10,
                     deconvolve = hasTelevonverter,
                     upscale = true, upscaleFactor = 2,
-                    sharpen = true, sharpenStrength = 0.6f,
-                    description = "Enhanced crop — multi-frame SR + AI upscale 2x"
+                    sharpen = true, sharpenStrength = 0.8f,
+                    description = "Enhanced crop — SR + AI upscale 2x"
                 )
             }
             TelephotoOptimizer.QualityZone.DIGITAL_ZOOM -> {
@@ -156,7 +156,7 @@ class SuperResolutionModule @Inject constructor(
                     denoise = true, denoiseFrameCount = 12,
                     deconvolve = hasTelevonverter,
                     upscale = true, upscaleFactor = 4,
-                    sharpen = true, sharpenStrength = 0.7f,
+                    sharpen = true, sharpenStrength = 0.9f,
                     description = "Digital zoom — max SR + AI upscale 4x"
                 )
             }
@@ -207,12 +207,17 @@ class SuperResolutionModule @Inject constructor(
             current = lensDeconvolution.deconvolve(current, currentW, currentH)
         }
 
-        // Step 2: Sharpening
+        // Step 2: Spatial denoise — only for high zoom where noise is visible
+        if (pipeline.denoise) {
+            current = spatialDenoise(current, currentW, currentH)
+        }
+
+        // Step 3: Sharpening — runs AFTER denoise to restore edges
         if (pipeline.sharpen) {
             current = telephotoOptimizer.sharpen(current, currentW, currentH, pipeline.sharpenStrength)
         }
 
-        // Step 3: AI upscale (if needed)
+        // Step 4: AI upscale (if needed)
         if (pipeline.upscale) {
             val result = aiUpscaler.upscale(current, currentW, currentH)
             current = result.pixels
@@ -307,6 +312,53 @@ class SuperResolutionModule @Inject constructor(
             qualityZone = telephotoOptimizer.getQualityZone(zoomLevel, hasTelevonverter).label,
             framesUsed = frames.size
         )
+    }
+
+    /**
+     * Edge-aware spatial denoise for single frames.
+     * Bilateral-like filter: smooths flat regions while preserving edges.
+     */
+    private fun spatialDenoise(pixels: IntArray, width: Int, height: Int): IntArray {
+        val output = pixels.copyOf()
+        val radius = 1  // 3x3 kernel — lighter touch to preserve detail
+        val colorThreshold = 15 // Only average very similar pixels (noise-level differences)
+
+        for (y in radius until height - radius) {
+            for (x in radius until width - radius) {
+                val idx = y * width + x
+                val centerR = (pixels[idx] shr 16) and 0xFF
+                val centerG = (pixels[idx] shr 8) and 0xFF
+                val centerB = pixels[idx] and 0xFF
+
+                var sumR = 0L; var sumG = 0L; var sumB = 0L; var count = 0
+
+                for (dy in -radius..radius) {
+                    for (dx in -radius..radius) {
+                        val nIdx = (y + dy) * width + (x + dx)
+                        val nr = (pixels[nIdx] shr 16) and 0xFF
+                        val ng = (pixels[nIdx] shr 8) and 0xFF
+                        val nb = pixels[nIdx] and 0xFF
+
+                        val colorDist = kotlin.math.abs(nr - centerR) +
+                            kotlin.math.abs(ng - centerG) +
+                            kotlin.math.abs(nb - centerB)
+
+                        if (colorDist <= colorThreshold) {
+                            sumR += nr; sumG += ng; sumB += nb
+                            count++
+                        }
+                    }
+                }
+
+                if (count > 0) {
+                    output[idx] = android.graphics.Color.argb(255,
+                        (sumR / count).toInt(),
+                        (sumG / count).toInt(),
+                        (sumB / count).toInt())
+                }
+            }
+        }
+        return output
     }
 
     // --- enhance/photo ---

@@ -209,7 +209,7 @@ class TelephotoOptimizer {
         width: Int,
         height: Int,
         strength: Float = 0.5f,  // 0-1
-        radius: Int = 1
+        radius: Int = 2
     ): IntArray {
         val output = pixels.copyOf()
         val amount = strength * 2f  // Scale to useful range

@@ -198,9 +198,13 @@ class MainViewModel @Inject constructor(
 
     fun bindCameraPreview(previewView: PreviewView, lifecycleOwner: LifecycleOwner) {
         cameraXPlatform.bindPreview(previewView, lifecycleOwner)
-        // Auto-open camera after binding
+        // Auto-open camera after binding, then restore zoom level
         viewModelScope.launch {
             cameraXPlatform.open(CameraConfig())
+            val savedZoom = _uiState.value.zoomLevel
+            if (savedZoom != 1f) {
+                cameraXPlatform.setZoom(savedZoom)
+            }
         }
     }
 
@@ -211,13 +215,72 @@ class MainViewModel @Inject constructor(
         isCapturing = true
         viewModelScope.launch {
             try {
-                // Take a single photo. Don't publish ShutterPressed — that triggers
-                // the burst module which captures 8+ frames. For single-shot mode,
-                // we call takePicture() directly.
                 val result = cameraXPlatform.takePicture()
                 _uiState.update { it.copy(shotCount = it.shotCount + 1) }
+
+                // Run SR enhancement in background so viewfinder stays responsive
+                val srEnabled = loadSettingBool("sr", "auto_enhance", true)
+                val zoom = _uiState.value.zoomLevel
+                android.util.Log.i("SR", "Shutter: srEnabled=$srEnabled zoom=$zoom threshold=${zoom >= 5f}")
+                if (srEnabled && zoom >= 5f) {
+                    viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                        enhanceCapturedPhoto(result.uri, zoom)
+                    }
+                }
             } catch (_: Exception) { }
             finally { isCapturing = false }
+        }
+    }
+
+    private suspend fun enhanceCapturedPhoto(filePath: String, zoomLevel: Float) {
+        try {
+            val file = java.io.File(filePath)
+            if (!file.exists()) return
+
+            // Downscale for processing to avoid OOM on full-res images
+            val opts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            android.graphics.BitmapFactory.decodeFile(filePath, opts)
+            val fullW = opts.outWidth
+            val fullH = opts.outHeight
+            android.util.Log.i("SR", "Enhancing $filePath (${fullW}x${fullH}) at zoom=${zoomLevel}x")
+
+            val bitmap = android.graphics.BitmapFactory.decodeFile(filePath) ?: return
+            val width = bitmap.width
+            val height = bitmap.height
+            val pixels = IntArray(width * height)
+            bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
+            bitmap.recycle()
+
+            // Save a "before" copy for A/B comparison
+            val beforeFile = java.io.File(file.parent, file.nameWithoutExtension + "_before.jpg")
+            file.copyTo(beforeFile, overwrite = true)
+
+            val startMs = System.currentTimeMillis()
+            val response = endpointRegistry.call<com.gateshot.processing.sr.EnhancePhotoRequest,
+                com.gateshot.processing.sr.EnhanceResult>(
+                "enhance/photo",
+                com.gateshot.processing.sr.EnhancePhotoRequest(pixels, width, height, zoomLevel)
+            )
+
+            val enhanced = response.dataOrNull()
+            if (enhanced != null) {
+                val elapsed = System.currentTimeMillis() - startMs
+                android.util.Log.i("SR", "Enhanced in ${elapsed}ms: ${enhanced.pipeline} (${enhanced.qualityZone})")
+
+                val enhancedBitmap = android.graphics.Bitmap.createBitmap(
+                    enhanced.width, enhanced.height, android.graphics.Bitmap.Config.ARGB_8888
+                )
+                enhancedBitmap.setPixels(enhanced.pixels, 0, enhanced.width, 0, 0, enhanced.width, enhanced.height)
+                java.io.FileOutputStream(file).use { out ->
+                    enhancedBitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 100, out)
+                }
+                enhancedBitmap.recycle()
+                android.util.Log.i("SR", "Saved enhanced photo to $filePath")
+            } else {
+                android.util.Log.e("SR", "Enhancement returned null: ${response}")
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("SR", "Enhancement failed: ${e.message}", e)
         }
     }
 
