@@ -218,13 +218,19 @@ class MainViewModel @Inject constructor(
                 val result = cameraXPlatform.takePicture()
                 _uiState.update { it.copy(shotCount = it.shotCount + 1) }
 
-                // Run SR enhancement in background so viewfinder stays responsive
-                val srEnabled = loadSettingBool("sr", "auto_enhance", true)
-                val zoom = _uiState.value.zoomLevel
-                android.util.Log.i("SR", "Shutter: srEnabled=$srEnabled zoom=$zoom threshold=${zoom >= 5f}")
-                if (srEnabled && zoom >= 5f) {
-                    viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                // Run post-processing in background
+                viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                    // SR enhancement for zoom >= 5x
+                    val srEnabled = loadSettingBool("sr", "auto_enhance", true)
+                    val zoom = _uiState.value.zoomLevel
+                    if (srEnabled && zoom >= 5f) {
                         enhanceCapturedPhoto(result.uri, zoom)
+                    }
+
+                    // Hasselblad color grading
+                    val hassEnabled = loadSettingBool("color", "hasselblad_enabled", false)
+                    if (hassEnabled) {
+                        applyHasselbladGrading(result.uri)
                     }
                 }
             } catch (_: Exception) { }
@@ -282,6 +288,97 @@ class MainViewModel @Inject constructor(
         } catch (e: Exception) {
             android.util.Log.e("SR", "Enhancement failed: ${e.message}", e)
         }
+    }
+
+    /**
+     * Apply Hasselblad color grading as post-processing on a captured JPEG.
+     * Uses per-channel LUT derived from the native Oppo Hasselblad mode.
+     * This preserves the ISP's default brightness/tone mapping and only
+     * applies the color character on top.
+     */
+    private fun applyHasselbladGrading(filePath: String) {
+        try {
+            val file = java.io.File(filePath)
+            if (!file.exists()) return
+
+            val bitmap = android.graphics.BitmapFactory.decodeFile(filePath) ?: return
+            val w = bitmap.width
+            val h = bitmap.height
+            val pixels = IntArray(w * h)
+            bitmap.getPixels(pixels, 0, w, 0, 0, w, h)
+            bitmap.recycle()
+
+            // Build per-channel LUTs (256 entries each)
+            // Hasselblad character: lifted shadows, warm midtones (R>G>B in shadows),
+            // soft highlight rolloff, slightly desaturated
+            val rLut = IntArray(256)
+            val gLut = IntArray(256)
+            val bLut = IntArray(256)
+
+            for (i in 0..255) {
+                val t = i / 255f
+
+                // Shadow lift: subtle — native Hasselblad has deep but not crushed blacks
+                val shadowLiftR = 0.015f
+                val shadowLiftG = 0.010f
+                val shadowLiftB = 0.005f
+
+                var r = shadowLiftR + (1f - shadowLiftR) * t
+                var g = shadowLiftG + (1f - shadowLiftG) * t
+                var b = shadowLiftB + (1f - shadowLiftB) * t
+
+                // S-curve contrast: stronger to match native Hasselblad's darker rendering
+                r = applySCurve(r, 0.20f)
+                g = applySCurve(g, 0.18f)
+                b = applySCurve(b, 0.16f)
+
+                // Soft highlight rolloff
+                r = softHighlight(r, 0.97f)
+                g = softHighlight(g, 0.97f)
+                b = softHighlight(b, 0.96f)
+
+                // Slight desaturation in shadows (pull channels toward luminance)
+                if (t < 0.3f) {
+                    val lum = 0.299f * r + 0.587f * g + 0.114f * b
+                    val blend = 0.15f * (1f - t / 0.3f) // 15% desaturation at black, 0% at 0.3
+                    r = r * (1f - blend) + lum * blend
+                    g = g * (1f - blend) + lum * blend
+                    b = b * (1f - blend) + lum * blend
+                }
+
+                rLut[i] = (r * 255f).toInt().coerceIn(0, 255)
+                gLut[i] = (g * 255f).toInt().coerceIn(0, 255)
+                bLut[i] = (b * 255f).toInt().coerceIn(0, 255)
+            }
+
+            // Apply LUT to all pixels
+            for (i in pixels.indices) {
+                val a = (pixels[i] shr 24) and 0xFF
+                val r = (pixels[i] shr 16) and 0xFF
+                val g = (pixels[i] shr 8) and 0xFF
+                val b = pixels[i] and 0xFF
+                pixels[i] = (a shl 24) or (rLut[r] shl 16) or (gLut[g] shl 8) or bLut[b]
+            }
+
+            val result = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888)
+            result.setPixels(pixels, 0, w, 0, 0, w, h)
+            java.io.FileOutputStream(file).use { out ->
+                result.compress(android.graphics.Bitmap.CompressFormat.JPEG, 100, out)
+            }
+            result.recycle()
+        } catch (_: Exception) { }
+    }
+
+    private fun applySCurve(x: Float, amount: Float): Float {
+        // Attempt sigmoid-like contrast: pulls midtones toward 0 or 1
+        return x + amount * x * (1f - x) * (2f * x - 1f)
+    }
+
+    private fun softHighlight(x: Float, ceiling: Float): Float {
+        if (x <= ceiling) return x
+        // Soft compress above ceiling
+        val excess = x - ceiling
+        return ceiling + excess * 0.3f
     }
 
     fun onVideoToggle() {
@@ -425,6 +522,19 @@ class MainViewModel @Inject constructor(
                     val ev = value as Float
                     cameraXPlatform.setExposureCompensation(ev)
                     _uiState.update { it.copy(currentEvBias = ev) }
+                }
+            }
+            section == "color" && key == "hasselblad_enabled" -> {
+                if (value == true) {
+                    val curve = com.gateshot.capture.preset.HasselbladProfile.buildTonemapCurve()
+                    cameraXPlatform.setTonemapCurve(com.gateshot.platform.camera.TonemapConfig(
+                        enabled = true,
+                        curveRed = curve.red,
+                        curveGreen = curve.green,
+                        curveBlue = curve.blue
+                    ))
+                } else {
+                    cameraXPlatform.setTonemapCurve(com.gateshot.platform.camera.TonemapConfig())
                 }
             }
         }

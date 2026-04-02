@@ -99,6 +99,13 @@ data class AfRegion(
     val weight: Int = 1000 // Metering weight (0-1000)
 )
 
+data class TonemapConfig(
+    val enabled: Boolean = false,
+    val curveRed: FloatArray? = null,
+    val curveGreen: FloatArray? = null,
+    val curveBlue: FloatArray? = null
+)
+
 interface CameraPlatform {
     val state: StateFlow<CameraState>
     val isRecording: StateFlow<Boolean>
@@ -115,6 +122,7 @@ interface CameraPlatform {
     fun setFocusDistance(dioptres: Float)
     fun setIspPipeline(config: IspPipelineConfig)
     fun setWhiteBalanceGains(gains: WhiteBalanceGains)
+    fun setTonemapCurve(config: TonemapConfig)
     suspend fun takePicture(): CaptureResult
     suspend fun takeRawPicture(): CaptureResult
     suspend fun takeBracketedBurst(evSteps: List<Float>): List<CaptureResult>

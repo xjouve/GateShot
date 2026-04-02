@@ -14,6 +14,7 @@ import com.gateshot.platform.camera.CameraXPlatform
 import com.gateshot.platform.camera.ManualExposure
 import com.gateshot.platform.camera.StabilizationConfig
 import com.gateshot.platform.camera.IspPipelineConfig
+import com.gateshot.platform.camera.TonemapConfig
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -117,6 +118,20 @@ class PresetFeatureModule @Inject constructor(
         cameraPlatform.setIspPipeline(IspPipelineConfig(
             faceDetection = preset.autofocus.facePriority
         ))
+
+        // Color profile: Hasselblad tone curves (if enabled)
+        val hasselbladEnabled = userPrefs.getBoolean("color_hasselblad_enabled", false)
+        if (hasselbladEnabled) {
+            val curve = HasselbladProfile.buildTonemapCurve()
+            cameraPlatform.setTonemapCurve(TonemapConfig(
+                enabled = true,
+                curveRed = curve.red,
+                curveGreen = curve.green,
+                curveBlue = curve.blue
+            ))
+        } else {
+            cameraPlatform.setTonemapCurve(TonemapConfig())
+        }
 
         eventBus.publish(AppEvent.PresetApplied(preset.id))
     }

@@ -90,6 +90,7 @@ class CameraXPlatform @Inject constructor(
     private var activeIspConfig = IspPipelineConfig()
     private var activeWbGains: WhiteBalanceGains? = null
     private var activeEvCompensation: Float = 0f
+    private var activeTonemapConfig = TonemapConfig()
 
     // Capture metadata readback
     override var lastCaptureMetadata: CaptureMetadata? = null
@@ -231,6 +232,11 @@ class CameraXPlatform @Inject constructor(
 
     override fun setExposureCompensation(ev: Float) {
         activeEvCompensation = ev
+        applyCaptureRequestSettings()
+    }
+
+    override fun setTonemapCurve(config: TonemapConfig) {
+        activeTonemapConfig = config
         applyCaptureRequestSettings()
     }
 
@@ -403,6 +409,11 @@ class CameraXPlatform @Inject constructor(
                     CameraMetadata.COLOR_CORRECTION_MODE_FAST
                 )
             }
+
+            // Hasselblad color profile is applied as post-processing on
+            // saved photos, not via TONEMAP_CURVE, because CONTRAST_CURVE
+            // mode replaces the ISP's default tone mapping and produces
+            // images that are too dark.
 
             // ── AF regions ──────────────────────────────────────────────────
             if (activeAfRegions.isNotEmpty()) {

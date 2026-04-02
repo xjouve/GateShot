@@ -187,6 +187,23 @@ fun SettingsScreen(
             )
         }
 
+        // --- Color Profile ---
+        SettingsSection("Color Profile") {
+            var hasselbladEnabled by remember {
+                mutableStateOf(viewModel.loadSettingBool("color", "hasselblad_enabled", false))
+            }
+
+            SettingsToggle(
+                title = "Hasselblad color profile",
+                subtitle = "Film-look tone curves: lifted blacks, soft highlights, warm midtones",
+                checked = hasselbladEnabled,
+                onCheckedChange = {
+                    hasselbladEnabled = it
+                    viewModel.saveSetting("color", "hasselblad_enabled", it)
+                }
+            )
+        }
+
         // --- Export ---
         SettingsSection("Export & Sharing") {
             var watermarkEnabled by remember { mutableStateOf(false) }
