@@ -34,6 +34,10 @@ class ExportModule @Inject constructor(
 
     private var watermarkConfig = WatermarkConfig()
 
+    // File star ratings: path → rating (0-5)
+    // Persisted in memory during session; in production would use a Room DB
+    private val fileRatings = mutableMapOf<String, Int>()
+
     override suspend fun initialize() {}
     override suspend fun shutdown() {}
 
@@ -41,7 +45,8 @@ class ExportModule @Inject constructor(
         QuickShare(),
         BatchShare(),
         ConfigureWatermark(),
-        ExportRaw()
+        ExportRaw(),
+        RateFile()
     )
 
     override fun healthCheck() = ModuleHealth(name, ModuleHealth.Status.OK)
@@ -204,12 +209,32 @@ class ExportModule @Inject constructor(
         override val requiredMode: AppMode? = null
 
         override suspend fun handle(request: RawExportRequest): ApiResponse<List<String>> {
-            // Collect files matching the filter criteria
             val files = request.filePaths.filter { path ->
                 val file = File(path)
-                file.exists() && (request.minStarRating == null || true)
+                if (!file.exists()) return@filter false
+
+                // Filter by star rating if specified
+                val minRating = request.minStarRating
+                if (minRating != null) {
+                    val rating = fileRatings[path] ?: 0
+                    rating >= minRating
+                } else {
+                    true
+                }
             }
             return ApiResponse.success(files)
+        }
+    }
+
+    // --- export/rate ---
+    inner class RateFile : ApiEndpoint<FileRatingRequest, Boolean> {
+        override val path = "export/rate"
+        override val module = "export"
+        override val requiredMode: AppMode? = null
+
+        override suspend fun handle(request: FileRatingRequest): ApiResponse<Boolean> {
+            fileRatings[request.filePath] = request.rating.coerceIn(0, 5)
+            return ApiResponse.success(true)
         }
     }
 }
@@ -237,4 +262,9 @@ data class WatermarkConfig(
 data class RawExportRequest(
     val filePaths: List<String>,
     val minStarRating: Int? = null
+)
+
+data class FileRatingRequest(
+    val filePath: String,
+    val rating: Int
 )

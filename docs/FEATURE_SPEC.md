@@ -620,15 +620,15 @@ The app becomes a competitive advantage for athletes and teams.
 
 | Sensor | Resolution | Sensor Size | Aperture | Focal Length | Features |
 |--------|-----------|-------------|----------|-------------|----------|
-| Main (wide) | 50MP | 1/2.8" | f/1.5 | 23mm | PDAF, OIS |
-| Ultra-wide | 50MP | 1/2.76" | f/2.0 | 16mm | — |
+| Main (wide) | 50MP | 1/1.28" | f/1.5 | 23mm | PDAF, OIS |
+| Ultra-wide | 50MP | — | f/2.0 | 15mm (120° FoV) | — |
 | Telephoto | **200MP** | **1/1.56"** | f/2.1 | 70mm (5x) | Periscope, PDAF, OIS |
-| Color spectrum | 2MP | — | — | — | 6x8 grid white balance |
+| True Color | — | — | — | — | 9 spectral channels, 48 zones |
 
 - **Hasselblad Teleconverter:** 3.28x magnification = 230mm equivalent (10x optical). 13 elements in 3 groups, 3 ED elements, 9-layer AR coating.
 - **Lossless crop:** Up to 13.2x from 200MP sensor.
 - **Digital zoom:** Up to 200x (photo), 50x (video).
-- **Note:** The 200MP telephoto has the **largest sensor** (1/1.56") — bigger than the main camera (1/2.8").
+- **Note:** The main camera has the **largest sensor** (1/1.28") but the 200MP telephoto (1/1.56") has the highest resolution, enabling lossless crop zoom.
 
 ### Video Capabilities
 
@@ -656,7 +656,7 @@ The app becomes a competitive advantage for athletes and teams.
 - A full day of shooting at 200MP can produce 100-200GB. 512GB internal storage provides ~3 full days.
 - No micro-SD — USB-C external storage for extended events.
 - Aggressive thumbnail and proxy workflow: browse proxies, export originals.
-- **7000+ mAh battery** with 80W fast charging — generous for all-day shooting.
+- **7500 mAh battery** (silicon-carbon anode) with 80W wired / 50W wireless charging — generous for all-day shooting.
 
 ### Connectivity
 - Primary operation must be fully offline. No internet dependency for any capture or analysis feature.

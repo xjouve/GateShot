@@ -93,4 +93,5 @@ dependencies {
 
     // ExoPlayer (for replay)
     implementation(libs.exoplayer)
+    implementation(libs.exoplayer.ui)
 }

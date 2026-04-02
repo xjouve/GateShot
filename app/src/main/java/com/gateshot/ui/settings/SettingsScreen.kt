@@ -54,10 +54,10 @@ fun SettingsScreen(
 
         // --- Racer Tracking ---
         SettingsSection("Racer Tracking") {
-            var trackingEnabled by remember { mutableStateOf(false) }
-            var trackingSpeed by remember { mutableFloatStateOf(8f) }
-            var afRegionSize by remember { mutableFloatStateOf(0.15f) }
-            var occlusionTimeout by remember { mutableFloatStateOf(20f) }
+            var trackingEnabled by remember { mutableStateOf(viewModel.loadSettingBool("tracking", "enabled", false)) }
+            var trackingSpeed by remember { mutableFloatStateOf(viewModel.loadSettingFloat("tracking", "min_speed", 8f)) }
+            var afRegionSize by remember { mutableFloatStateOf(viewModel.loadSettingFloat("tracking", "af_region_size", 0.15f)) }
+            var occlusionTimeout by remember { mutableFloatStateOf(viewModel.loadSettingFloat("tracking", "occlusion_timeout", 20f)) }
 
             SettingsToggle(
                 title = "Enable AF Tracking",
@@ -65,7 +65,8 @@ fun SettingsScreen(
                 checked = trackingEnabled,
                 onCheckedChange = {
                     trackingEnabled = it
-                    if (it) viewModel.onTrackingToggle() else viewModel.onTrackingToggle()
+                    viewModel.saveSetting("tracking", "enabled", it)
+                    viewModel.onTrackingToggle()
                 }
             )
             SettingsSlider(
@@ -74,7 +75,7 @@ fun SettingsScreen(
                 value = trackingSpeed,
                 range = 3f..20f,
                 unit = " px/frame",
-                onValueChange = { trackingSpeed = it }
+                onValueChange = { trackingSpeed = it; viewModel.saveSetting("tracking", "min_speed", it) }
             )
             SettingsSlider(
                 title = "AF region size",
@@ -83,7 +84,7 @@ fun SettingsScreen(
                 range = 0.05f..0.3f,
                 unit = "",
                 formatValue = { "${(it * 100).toInt()}% of frame" },
-                onValueChange = { afRegionSize = it }
+                onValueChange = { afRegionSize = it; viewModel.saveSetting("tracking", "af_region_size", it) }
             )
             SettingsSlider(
                 title = "Occlusion hold time",
@@ -92,20 +93,20 @@ fun SettingsScreen(
                 range = 5f..60f,
                 unit = " frames",
                 formatValue = { "${it.toInt()} frames (${(it / 30 * 1000).toInt()}ms)" },
-                onValueChange = { occlusionTimeout = it }
+                onValueChange = { occlusionTimeout = it; viewModel.saveSetting("tracking", "occlusion_timeout", it) }
             )
         }
 
         // --- Audio Trigger ---
         SettingsSection("Audio Trigger") {
-            var audioEnabled by remember { mutableStateOf(false) }
-            var audioSensitivity by remember { mutableFloatStateOf(0.5f) }
+            var audioEnabled by remember { mutableStateOf(viewModel.loadSettingBool("trigger", "audio_enabled", false)) }
+            var audioSensitivity by remember { mutableFloatStateOf(viewModel.loadSettingFloat("trigger", "audio_sensitivity", 0.5f)) }
 
             SettingsToggle(
                 title = "Enable audio trigger",
                 subtitle = "Auto-fires shutter when start gate beep is detected",
                 checked = audioEnabled,
-                onCheckedChange = { audioEnabled = it }
+                onCheckedChange = { audioEnabled = it; viewModel.saveSetting("trigger", "audio_enabled", it) }
             )
             SettingsSlider(
                 title = "Sensitivity",
@@ -114,13 +115,13 @@ fun SettingsScreen(
                 range = 0.1f..1.0f,
                 unit = "",
                 formatValue = { "${(it * 100).toInt()}%" },
-                onValueChange = { audioSensitivity = it }
+                onValueChange = { audioSensitivity = it; viewModel.saveSetting("trigger", "audio_sensitivity", it) }
             )
         }
 
         // --- Pre-Capture Buffer ---
         SettingsSection("Pre-Capture Buffer") {
-            var bufferDuration by remember { mutableFloatStateOf(1.5f) }
+            var bufferDuration by remember { mutableFloatStateOf(viewModel.loadSettingFloat("burst", "buffer_duration", 1.5f)) }
 
             SettingsSlider(
                 title = "Buffer duration",
@@ -128,7 +129,7 @@ fun SettingsScreen(
                 value = bufferDuration,
                 range = 0.5f..3.0f,
                 unit = "s",
-                onValueChange = { bufferDuration = it }
+                onValueChange = { bufferDuration = it; viewModel.saveSetting("burst", "buffer_duration", it) }
             )
             Text(
                 text = "Memory usage: ~${(bufferDuration * 30 * 33).toInt()} MB at 4K",
@@ -140,15 +141,15 @@ fun SettingsScreen(
 
         // --- Snow Exposure ---
         SettingsSection("Snow Exposure") {
-            var snowAuto by remember { mutableStateOf(true) }
-            var manualEv by remember { mutableFloatStateOf(1.5f) }
-            var flatLightAuto by remember { mutableStateOf(true) }
+            var snowAuto by remember { mutableStateOf(viewModel.loadSettingBool("exposure", "snow_compensation", true)) }
+            var manualEv by remember { mutableFloatStateOf(viewModel.loadSettingFloat("exposure", "ev_bias", 1.5f)) }
+            var flatLightAuto by remember { mutableStateOf(viewModel.loadSettingBool("exposure", "flat_light_auto", true)) }
 
             SettingsToggle(
                 title = "Auto snow compensation",
                 subtitle = "Automatically detects snow and adjusts exposure",
                 checked = snowAuto,
-                onCheckedChange = { snowAuto = it }
+                onCheckedChange = { snowAuto = it; viewModel.saveSetting("exposure", "snow_compensation", it) }
             )
             if (!snowAuto) {
                 SettingsSlider(
@@ -157,26 +158,26 @@ fun SettingsScreen(
                     value = manualEv,
                     range = 0f..3f,
                     unit = " EV",
-                    onValueChange = { manualEv = it }
+                    onValueChange = { manualEv = it; viewModel.saveSetting("exposure", "ev_bias", it) }
                 )
             }
             SettingsToggle(
                 title = "Auto flat light detection",
                 subtitle = "Boosts viewfinder contrast on overcast days",
                 checked = flatLightAuto,
-                onCheckedChange = { flatLightAuto = it }
+                onCheckedChange = { flatLightAuto = it; viewModel.saveSetting("exposure", "flat_light_auto", it) }
             )
         }
 
         // --- Super Resolution ---
         SettingsSection("Zoom Enhancement") {
-            var srEnabled by remember { mutableStateOf(true) }
+            var srEnabled by remember { mutableStateOf(viewModel.loadSettingBool("sr", "auto_enhance", true)) }
 
             SettingsToggle(
                 title = "Auto enhance zoom",
                 subtitle = "Multi-frame denoise + AI upscale beyond 13.2x",
                 checked = srEnabled,
-                onCheckedChange = { srEnabled = it }
+                onCheckedChange = { srEnabled = it; viewModel.saveSetting("sr", "auto_enhance", it) }
             )
             Text(
                 text = "Pipeline: denoise at 5x+, deconvolution with teleconverter, AI upscale at 13.2x+",
@@ -195,7 +196,7 @@ fun SettingsScreen(
                 title = "Watermark on Social shares",
                 subtitle = "Adds text watermark to Social preset exports",
                 checked = watermarkEnabled,
-                onCheckedChange = { watermarkEnabled = it }
+                onCheckedChange = { watermarkEnabled = it; viewModel.saveSetting("export", "watermark_enabled", it) }
             )
             if (watermarkEnabled) {
                 Text(

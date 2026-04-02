@@ -1,5 +1,7 @@
 package com.gateshot.capture.preset
 
+import android.content.Context
+import android.content.SharedPreferences
 import com.gateshot.core.api.ApiEndpoint
 import com.gateshot.core.api.ApiResponse
 import com.gateshot.core.config.ConfigStore
@@ -8,14 +10,24 @@ import com.gateshot.core.event.EventBus
 import com.gateshot.core.mode.AppMode
 import com.gateshot.core.module.FeatureModule
 import com.gateshot.core.module.ModuleHealth
+import com.gateshot.platform.camera.CameraXPlatform
+import com.gateshot.platform.camera.ManualExposure
+import com.gateshot.platform.camera.StabilizationConfig
+import com.gateshot.platform.camera.IspPipelineConfig
+import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
 class PresetFeatureModule @Inject constructor(
+    @ApplicationContext private val appContext: Context,
     private val configStore: ConfigStore,
-    private val eventBus: EventBus
+    private val eventBus: EventBus,
+    private val cameraPlatform: CameraXPlatform
 ) : FeatureModule {
+
+    private val userPrefs: SharedPreferences
+        get() = appContext.getSharedPreferences("gateshot_config", Context.MODE_PRIVATE)
 
     override val name = "preset"
     override val version = "0.1.0"
@@ -67,6 +79,44 @@ class PresetFeatureModule @Inject constructor(
 
         configStore.set("stabilization", "ois", preset.stabilization.ois.name)
         configStore.set("stabilization", "eis", preset.stabilization.eis.name)
+
+        // Apply camera settings directly — ConfigStore alone is not enough
+        // because most modules don't poll it for changes.
+        // User settings from SharedPreferences override preset defaults.
+
+        // Shutter speed: use the max (fastest) shutter as the target
+        val shutterNs = parseShutterSpeed(preset.camera.shutterSpeedMax)
+        cameraPlatform.setManualExposure(ManualExposure(
+            shutterSpeedNs = shutterNs,
+            iso = null,  // Let AE pick ISO within the shutter constraint
+            enabled = shutterNs != null
+        ))
+
+        // Exposure: user override from settings takes priority over preset
+        val snowCompEnabled = userPrefs.getBoolean("exposure_snow_compensation", preset.exposure.snowCompensation)
+        val evBias = if (snowCompEnabled) {
+            // When snow comp is on, the SnowExposureModule handles EV dynamically
+            preset.exposure.evBias
+        } else {
+            // When snow comp is off, use the user's manual EV setting (default 0 = no bias)
+            userPrefs.getFloat("exposure_ev_bias", 0f)
+        }
+        configStore.set("exposure", "snow_compensation", snowCompEnabled)
+        configStore.set("exposure", "ev_bias", evBias)
+        configStore.set("exposure", "flat_light_auto",
+            userPrefs.getBoolean("exposure_flat_light_auto", preset.exposure.flatLightAuto))
+        cameraPlatform.setExposureCompensation(evBias)
+
+        // Stabilization
+        cameraPlatform.setStabilization(StabilizationConfig(
+            opticalStabilization = preset.stabilization.ois != OisMode.OFF,
+            videoStabilization = preset.stabilization.eis != EisMode.OFF
+        ))
+
+        // ISP: face detection from AF preset
+        cameraPlatform.setIspPipeline(IspPipelineConfig(
+            faceDetection = preset.autofocus.facePriority
+        ))
 
         eventBus.publish(AppEvent.PresetApplied(preset.id))
     }
@@ -121,6 +171,16 @@ class PresetFeatureModule @Inject constructor(
             applyPreset(DefaultPresets.SLALOM_GS)
             return ApiResponse.success(true)
         }
+    }
+
+    /** Parse "1/2000" → nanoseconds (500_000ns). Returns null if unparseable. */
+    private fun parseShutterSpeed(fraction: String): Long? {
+        val parts = fraction.split("/")
+        if (parts.size != 2) return null
+        val numerator = parts[0].toLongOrNull() ?: return null
+        val denominator = parts[1].toLongOrNull() ?: return null
+        if (denominator == 0L) return null
+        return numerator * 1_000_000_000L / denominator
     }
 }
 

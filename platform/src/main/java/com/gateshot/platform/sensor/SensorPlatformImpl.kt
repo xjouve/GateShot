@@ -31,6 +31,10 @@ class SensorPlatformImpl @Inject constructor(
         Sensor.TYPE_GYROSCOPE
     ) { event -> GyroscopeData(event.values[0], event.values[1], event.values[2]) }
 
+    override fun getAccelerometerReadings(): Flow<AccelerometerData> = sensorFlow(
+        Sensor.TYPE_ACCELEROMETER
+    ) { event -> AccelerometerData(event.values[0], event.values[1], event.values[2]) }
+
     override fun getBatteryTemperature(): Float? {
         val intent = context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
         val temp = intent?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, -1) ?: -1
@@ -55,11 +59,29 @@ class SensorPlatformImpl @Inject constructor(
         }
     }
 
+    // Cache the latest ambient temperature reading from the sensor listener
+    @Volatile
+    private var latestAmbientTemp: Float? = null
+    private var ambientTempListener: SensorEventListener? = null
+
     override fun getAmbientTemperature(): Float? {
         val sensor = sensorManager.getDefaultSensor(Sensor.TYPE_AMBIENT_TEMPERATURE)
             ?: return null
-        // Would need a listener, returning null for now — phone battery temp is the proxy
-        return null
+
+        // Register a one-shot listener if not already listening
+        if (ambientTempListener == null) {
+            ambientTempListener = object : SensorEventListener {
+                override fun onSensorChanged(event: SensorEvent) {
+                    latestAmbientTemp = event.values[0]
+                }
+                override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+            }
+            sensorManager.registerListener(
+                ambientTempListener, sensor, SensorManager.SENSOR_DELAY_NORMAL
+            )
+        }
+
+        return latestAmbientTemp
     }
 
     private fun <T> sensorFlow(sensorType: Int, transform: (SensorEvent) -> T): Flow<T> = callbackFlow {
@@ -74,7 +96,11 @@ class SensorPlatformImpl @Inject constructor(
             }
             override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
         }
-        sensorManager.registerListener(listener, sensor, SensorManager.SENSOR_DELAY_UI)
+        // Use SENSOR_DELAY_FASTEST for gyroscope (needed for frame alignment integration)
+        // and SENSOR_DELAY_UI for others to save power
+        val delay = if (sensorType == Sensor.TYPE_GYROSCOPE)
+            SensorManager.SENSOR_DELAY_FASTEST else SensorManager.SENSOR_DELAY_UI
+        sensorManager.registerListener(listener, sensor, delay)
         awaitClose { sensorManager.unregisterListener(listener) }
     }
 }

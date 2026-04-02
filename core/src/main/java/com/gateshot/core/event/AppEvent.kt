@@ -20,6 +20,12 @@ sealed interface AppEvent {
     data class SplitRecorded(val gateNumber: Int, val timestamp: Long) : AppEvent
     data class AnnotationAdded(val clipId: String, val type: String) : AppEvent
 
+    // Motion & stabilization events
+    data class PanningDetected(val direction: String, val speedDegPerSec: Float) : AppEvent
+    data class PanningStopped(val totalAngleDeg: Float) : AppEvent
+    data class MountDetected(val isMounted: Boolean) : AppEvent
+    data class GateCrossing(val gateId: Int, val gateColor: String) : AppEvent
+
     // System events
     data class ModeChanged(val newMode: AppMode) : AppEvent
     data class LensDetected(val lensType: String) : AppEvent

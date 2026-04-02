@@ -7,7 +7,7 @@ import kotlin.math.roundToInt
 /**
  * 200MP Telephoto Crop Optimizer.
  *
- * The X9 Pro's 200MP telephoto (1/1.56" sensor, 70mm) is the LARGEST sensor
+ * The X9 Pro's 200MP telephoto (1/1.56" sensor, 70mm) has the HIGHEST resolution
  * in the system. At 200MP, we can crop aggressively and still retain excellent
  * detail — OPPO claims lossless quality to 13.2x.
  *

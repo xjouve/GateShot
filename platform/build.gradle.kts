@@ -32,6 +32,7 @@ dependencies {
     implementation(libs.camerax.lifecycle)
     implementation(libs.camerax.view)
     implementation(libs.camerax.video)
+    implementation(libs.exifinterface)
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
 }

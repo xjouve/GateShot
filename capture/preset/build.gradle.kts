@@ -26,6 +26,7 @@ android {
 
 dependencies {
     implementation(project(":core"))
+    implementation(project(":platform"))
     implementation(libs.core.ktx)
     implementation(libs.coroutines.core)
     implementation(libs.serialization.json)

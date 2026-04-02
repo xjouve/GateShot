@@ -438,7 +438,7 @@ Configure a text watermark (photographer name, event, date) that's applied to So
 - GateShot monitors your battery temperature in real-time (shown in status bar)
 - **12°** = normal. **5°** = warning (yellow). **0°** = critical (red)
 - Below 0°C: battery capacity drops 2-3x. Keep the phone in your jacket pocket between runs.
-- The 7000+ mAh battery and 80W fast charging help — charge during lunch break
+- The 7500 mAh battery and 80W fast charging help — charge during lunch break
 
 ### Glove Operation
 
@@ -462,13 +462,13 @@ Configure a text watermark (photographer name, event, date) that's applied to So
 | Spec | Value |
 |------|-------|
 | Camera (telephoto) | **200MP**, 1/1.56" sensor, f/2.1, 70mm, 5x optical, OIS |
-| Camera (main) | 50MP, 1/2.8", f/1.5, 23mm, OIS |
-| Camera (ultra-wide) | 50MP, 16mm |
+| Camera (main) | 50MP, 1/1.28", f/1.5, 23mm, OIS |
+| Camera (ultra-wide) | 50MP, 15mm (120° FoV) |
 | Video | 4K@120fps Dolby Vision, 1080p@240fps, 720p@480fps |
 | Processor | MediaTek Dimensity 9500 |
 | RAM | 16GB |
 | Storage | 512GB |
-| Battery | 7000+ mAh, 80W fast charging |
+| Battery | 7500 mAh, 80W wired / 50W wireless charging |
 | Durability | IP68 (rain/snow resistant) |
 
 ### Hasselblad Teleconverter Kit

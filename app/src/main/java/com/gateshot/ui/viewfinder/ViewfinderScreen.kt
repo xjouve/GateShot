@@ -64,14 +64,17 @@ fun ViewfinderScreen(
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    var currentZoom by remember { mutableFloatStateOf(1f) }
+    var currentZoom by remember { mutableFloatStateOf(uiState.zoomLevel) }
+
+    // Oppo Find X9 Pro lens presets: ultra-wide, main, telephoto portrait, telephoto
+    val zoomPresets = remember { listOf(0.6f, 1f, 2f, 5f) }
 
     Box(
         modifier = modifier
             .fillMaxSize()
             .background(Color.Black)
     ) {
-        // Live camera preview
+        // Live camera preview with pinch-to-zoom
         AndroidView(
             factory = { ctx ->
                 PreviewView(ctx).apply {
@@ -80,7 +83,9 @@ fun ViewfinderScreen(
                         ViewGroup.LayoutParams.MATCH_PARENT
                     )
                     scaleType = PreviewView.ScaleType.FILL_CENTER
-                    implementationMode = PreviewView.ImplementationMode.PERFORMANCE
+                    implementationMode = PreviewView.ImplementationMode.COMPATIBLE
+                    // Disable native touch handling so Compose buttons on top receive clicks
+                    setOnTouchListener { _, _ -> false }
                     onCameraPreviewReady(this)
                 }
             },
@@ -88,29 +93,15 @@ fun ViewfinderScreen(
                 .fillMaxSize()
                 .pointerInput(Unit) {
                     detectTransformGestures { _, _, zoom, _ ->
-                        currentZoom = (currentZoom * zoom).coerceIn(1f, 10f)
-                        onZoomChanged(currentZoom)
+                        val newZoom = (currentZoom * zoom).coerceIn(0.6f, 20f)
+                        currentZoom = newZoom
+                        onZoomChanged(newZoom)
                     }
                 }
         )
 
-        // Trigger zone overlay + long-press to add zone
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .pointerInput(Unit) {
-                    detectTapGestures(
-                        onLongPress = { offset ->
-                            val normX = offset.x / size.width
-                            val normY = offset.y / size.height
-                            onAddTriggerZone(normX, normY)
-                        },
-                        onDoubleTap = {
-                            onClearTriggerZones()
-                        }
-                    )
-                }
-        ) {
+        // Trigger zone and tracking overlays — no gesture handling, just visuals
+        Box(modifier = Modifier.fillMaxSize()) {
             if (uiState.triggerZones.isNotEmpty()) {
                 ZoneOverlay(
                     zones = uiState.triggerZones,
@@ -156,8 +147,14 @@ fun ViewfinderScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(24.dp)
         ) {
-            // Zoom indicator
+            // Zoom selector — tap to cycle through lens presets
             Surface(
+                onClick = {
+                    // Find next preset above current zoom, or wrap to first
+                    val next = zoomPresets.firstOrNull { it > currentZoom } ?: zoomPresets.first()
+                    currentZoom = next
+                    onZoomChanged(next)
+                },
                 shape = RoundedCornerShape(20.dp),
                 color = Color(0x88000000),
                 modifier = Modifier.size(56.dp)

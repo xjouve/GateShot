@@ -1,6 +1,8 @@
 package com.gateshot.coaching.pose
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import com.gateshot.core.api.ApiEndpoint
 import com.gateshot.core.api.ApiResponse
 import com.gateshot.core.mode.AppMode
@@ -8,6 +10,15 @@ import com.gateshot.core.module.FeatureModule
 import com.gateshot.core.module.ModuleHealth
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.serialization.Serializable
+import org.tensorflow.lite.Interpreter
+import org.tensorflow.lite.gpu.GpuDelegate
+import org.tensorflow.lite.nnapi.NnApiDelegate
+import java.io.File
+import java.io.FileInputStream
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.nio.MappedByteBuffer
+import java.nio.channels.FileChannel
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.math.PI
@@ -18,8 +29,8 @@ import kotlin.math.sqrt
 /**
  * Pose Estimation Module — Skeleton overlay for ski racing technique analysis.
  *
- * Uses MoveNet (17 keypoints) or MediaPipe (33 keypoints) via TFLite to
- * extract body joint positions from video frames.
+ * Uses MoveNet Lightning (17 keypoints) via TFLite on the Dimensity 9500 NPU
+ * to extract body joint positions from video frames.
  *
  * Key angles for ski racing:
  * - Knee angle: flexion/extension (ideal: 100-130° in turn, depends on discipline)
@@ -28,7 +39,7 @@ import kotlin.math.sqrt
  * - Ankle flexion: forward lean of the shin (critical for pressure control)
  * - Shoulder alignment: rotation relative to ski direction
  *
- * The Dimensity 9500 APU can run MoveNet at ~15ms per frame — fast enough
+ * The Dimensity 9500 APU runs MoveNet at ~15ms per frame — fast enough
  * for real-time overlay during replay playback.
  */
 @Singleton
@@ -37,7 +48,7 @@ class PoseEstimationModule @Inject constructor(
 ) : FeatureModule {
 
     override val name = "pose"
-    override val version = "0.1.0"
+    override val version = "0.2.0"
     override val requiredMode = AppMode.COACH
 
     // MoveNet keypoint indices (17 keypoints)
@@ -60,6 +71,19 @@ class PoseEstimationModule @Inject constructor(
         const val LEFT_ANKLE = 15
         const val RIGHT_ANKLE = 16
 
+        // MoveNet input size
+        private const val MODEL_INPUT_SIZE = 192
+
+        // Minimum confidence to consider a keypoint detected
+        private const val MIN_KEYPOINT_CONFIDENCE = 0.2f
+
+        // Model file names (searched in order)
+        private val MODEL_CANDIDATES = listOf(
+            "movenet_lightning.tflite",
+            "movenet_thunder.tflite",
+            "pose_model.tflite"
+        )
+
         // Skeleton connections for drawing
         val SKELETON_CONNECTIONS = listOf(
             LEFT_SHOULDER to RIGHT_SHOULDER,
@@ -77,8 +101,18 @@ class PoseEstimationModule @Inject constructor(
         )
     }
 
-    override suspend fun initialize() {}
-    override suspend fun shutdown() {}
+    private var interpreter: Interpreter? = null
+    private var isModelLoaded = false
+
+    override suspend fun initialize() {
+        loadModel()
+    }
+
+    override suspend fun shutdown() {
+        interpreter?.close()
+        interpreter = null
+        isModelLoaded = false
+    }
 
     override fun endpoints(): List<ApiEndpoint<*, *>> = listOf(
         EstimatePose(),
@@ -87,37 +121,195 @@ class PoseEstimationModule @Inject constructor(
         ComparePoses()
     )
 
-    override fun healthCheck() = ModuleHealth(name, ModuleHealth.Status.OK)
+    override fun healthCheck(): ModuleHealth {
+        val status = if (isModelLoaded) ModuleHealth.Status.OK else ModuleHealth.Status.DEGRADED
+        val msg = if (isModelLoaded) "MoveNet loaded, NPU inference ready" else "Model not loaded"
+        return ModuleHealth(name, status, msg)
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // TFLite Model Loading
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private fun loadModel() {
+        val modelFile = findModelFile()
+        if (modelFile == null) {
+            isModelLoaded = false
+            return
+        }
+
+        try {
+            val options = Interpreter.Options()
+
+            // Try NNAPI (Dimensity 9500 APU) first — fastest for pose estimation
+            try {
+                val nnApiDelegate = NnApiDelegate(
+                    NnApiDelegate.Options().apply {
+                        setAllowFp16(true)
+                    }
+                )
+                options.addDelegate(nnApiDelegate)
+            } catch (_: Exception) {
+                // NNAPI not available — try GPU
+                try {
+                    val gpuDelegate = GpuDelegate()
+                    options.addDelegate(gpuDelegate)
+                } catch (_: Exception) {
+                    // Fall back to CPU with 4 threads
+                    options.setNumThreads(4)
+                }
+            }
+
+            val mappedModel = loadMappedFile(modelFile)
+            interpreter = Interpreter(mappedModel, options)
+            isModelLoaded = true
+        } catch (e: Exception) {
+            isModelLoaded = false
+        }
+    }
+
+    private fun findModelFile(): File? {
+        val modelDir = File(context.filesDir, "models")
+        for (name in MODEL_CANDIDATES) {
+            val file = File(modelDir, name)
+            if (file.exists()) return file
+        }
+        // Also check assets directory (bundled with APK)
+        for (name in MODEL_CANDIDATES) {
+            try {
+                val assetList = context.assets.list("") ?: continue
+                if (name in assetList) {
+                    // Copy asset to filesDir for TFLite to memory-map
+                    val outFile = File(modelDir.also { it.mkdirs() }, name)
+                    context.assets.open(name).use { input ->
+                        outFile.outputStream().use { output ->
+                            input.copyTo(output)
+                        }
+                    }
+                    return outFile
+                }
+            } catch (_: Exception) { }
+        }
+        return null
+    }
+
+    private fun loadMappedFile(file: File): MappedByteBuffer {
+        FileInputStream(file).use { fis ->
+            val channel = fis.channel
+            return channel.map(FileChannel.MapMode.READ_ONLY, 0, channel.size())
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Pose Estimation — TFLite MoveNet Inference
+    // ─────────────────────────────────────────────────────────────────────────
 
     /**
-     * Estimate pose from a single frame.
-     * In production: runs TFLite MoveNet model.
-     * Current: returns placeholder skeleton for UI development.
+     * Run MoveNet inference on a frame to extract 17 body keypoints.
+     *
+     * MoveNet Lightning input: [1, 192, 192, 3] (RGB uint8)
+     * MoveNet Lightning output: [1, 1, 17, 3] (y, x, confidence for each keypoint)
+     *
+     * For frames from video replay, the caller provides width/height and
+     * optionally pixel data. When pixel data is available, we run real inference.
      */
-    private fun estimatePoseFromFrame(frameWidth: Int, frameHeight: Int): SkeletonData {
-        // Placeholder: generate a skiing pose skeleton
-        // In production, this feeds the frame through TFLite MoveNet
-        val keypoints = listOf(
-            Keypoint(NOSE, 0.50f, 0.15f, 0.9f),
-            Keypoint(LEFT_EYE, 0.49f, 0.13f, 0.85f),
-            Keypoint(RIGHT_EYE, 0.51f, 0.13f, 0.85f),
-            Keypoint(LEFT_EAR, 0.47f, 0.14f, 0.7f),
-            Keypoint(RIGHT_EAR, 0.53f, 0.14f, 0.7f),
-            Keypoint(LEFT_SHOULDER, 0.44f, 0.25f, 0.9f),
-            Keypoint(RIGHT_SHOULDER, 0.56f, 0.25f, 0.9f),
-            Keypoint(LEFT_ELBOW, 0.38f, 0.35f, 0.85f),
-            Keypoint(RIGHT_ELBOW, 0.62f, 0.35f, 0.85f),
-            Keypoint(LEFT_WRIST, 0.35f, 0.30f, 0.8f),
-            Keypoint(RIGHT_WRIST, 0.65f, 0.30f, 0.8f),
-            Keypoint(LEFT_HIP, 0.46f, 0.50f, 0.9f),
-            Keypoint(RIGHT_HIP, 0.54f, 0.50f, 0.9f),
-            Keypoint(LEFT_KNEE, 0.42f, 0.68f, 0.9f),
-            Keypoint(RIGHT_KNEE, 0.52f, 0.65f, 0.9f),
-            Keypoint(LEFT_ANKLE, 0.40f, 0.85f, 0.85f),
-            Keypoint(RIGHT_ANKLE, 0.50f, 0.82f, 0.85f)
-        )
-        return SkeletonData(keypoints = keypoints, confidence = 0.85f)
+    fun estimatePoseFromFrame(
+        frameWidth: Int,
+        frameHeight: Int,
+        framePixels: IntArray? = null
+    ): SkeletonData {
+        val model = interpreter
+        if (model == null || framePixels == null) {
+            // No model or no pixel data — return empty skeleton
+            return SkeletonData(keypoints = emptyList(), confidence = 0f)
+        }
+
+        // Prepare input: resize frame to 192×192 and convert to RGB ByteBuffer
+        val inputBuffer = prepareInput(framePixels, frameWidth, frameHeight)
+
+        // Prepare output: [1, 1, 17, 3]
+        val outputArray = Array(1) { Array(1) { Array(17) { FloatArray(3) } } }
+
+        // Run inference
+        model.run(inputBuffer, outputArray)
+
+        // Parse output to keypoints
+        val keypoints = mutableListOf<Keypoint>()
+        val rawKeypoints = outputArray[0][0]
+
+        for (i in 0 until 17) {
+            val y = rawKeypoints[i][0]  // MoveNet outputs Y first
+            val x = rawKeypoints[i][1]
+            val confidence = rawKeypoints[i][2]
+
+            keypoints.add(Keypoint(
+                id = i,
+                x = x,  // Already normalized 0-1
+                y = y,
+                confidence = confidence
+            ))
+        }
+
+        // Overall skeleton confidence = average of detected keypoints
+        val detectedKeypoints = keypoints.filter { it.confidence >= MIN_KEYPOINT_CONFIDENCE }
+        val overallConfidence = if (detectedKeypoints.isNotEmpty()) {
+            detectedKeypoints.map { it.confidence }.average().toFloat()
+        } else 0f
+
+        return SkeletonData(keypoints = keypoints, confidence = overallConfidence)
     }
+
+    /**
+     * Prepare input tensor for MoveNet.
+     *
+     * Resizes the frame to 192×192 using nearest-neighbor sampling (fast),
+     * and packs RGB values into a ByteBuffer in NHWC format.
+     */
+    private fun prepareInput(pixels: IntArray, width: Int, height: Int): ByteBuffer {
+        val inputSize = MODEL_INPUT_SIZE
+        val buffer = ByteBuffer.allocateDirect(1 * inputSize * inputSize * 3 * 4)
+        buffer.order(ByteOrder.nativeOrder())
+
+        val xRatio = width.toFloat() / inputSize
+        val yRatio = height.toFloat() / inputSize
+
+        for (y in 0 until inputSize) {
+            for (x in 0 until inputSize) {
+                val srcX = (x * xRatio).toInt().coerceIn(0, width - 1)
+                val srcY = (y * yRatio).toInt().coerceIn(0, height - 1)
+                val srcIdx = srcY * width + srcX
+
+                val pixel = if (srcIdx < pixels.size) pixels[srcIdx] else 0
+
+                // Extract RGB and normalize to 0-1 float (MoveNet expects float input)
+                val r = ((pixel shr 16) and 0xFF) / 255f
+                val g = ((pixel shr 8) and 0xFF) / 255f
+                val b = (pixel and 0xFF) / 255f
+
+                buffer.putFloat(r)
+                buffer.putFloat(g)
+                buffer.putFloat(b)
+            }
+        }
+
+        buffer.rewind()
+        return buffer
+    }
+
+    /**
+     * Estimate pose from a bitmap (for static image analysis).
+     */
+    fun estimatePoseFromBitmap(bitmap: Bitmap): SkeletonData {
+        val width = bitmap.width
+        val height = bitmap.height
+        val pixels = IntArray(width * height)
+        bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
+        return estimatePoseFromFrame(width, height, pixels)
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Angle Computation
+    // ─────────────────────────────────────────────────────────────────────────
 
     /**
      * Compute ski-racing-specific joint angles from keypoints.
@@ -139,6 +331,10 @@ class PoseEstimationModule @Inject constructor(
 
     private fun computeAngle(a: Keypoint?, b: Keypoint?, c: Keypoint?): Float {
         if (a == null || b == null || c == null) return 0f
+        if (a.confidence < MIN_KEYPOINT_CONFIDENCE ||
+            b.confidence < MIN_KEYPOINT_CONFIDENCE ||
+            c.confidence < MIN_KEYPOINT_CONFIDENCE) return 0f
+
         val ba = Pair(a.x - b.x, a.y - b.y)
         val bc = Pair(c.x - b.x, c.y - b.y)
         val dot = ba.first * bc.first + ba.second * bc.second
@@ -167,6 +363,10 @@ class PoseEstimationModule @Inject constructor(
         return (atan2(dy.toDouble(), dx.toDouble()) * 180 / PI).toFloat()
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // API Endpoints
+    // ─────────────────────────────────────────────────────────────────────────
+
     // --- coach/analysis/pose/run ---
     inner class EstimatePose : ApiEndpoint<PoseRequest, PoseResult> {
         override val path = "coach/analysis/pose/run"
@@ -174,7 +374,12 @@ class PoseEstimationModule @Inject constructor(
         override val requiredMode = AppMode.COACH
 
         override suspend fun handle(request: PoseRequest): ApiResponse<PoseResult> {
-            val skeleton = estimatePoseFromFrame(request.frameWidth, request.frameHeight)
+            val skeleton = estimatePoseFromFrame(
+                request.frameWidth, request.frameHeight, request.framePixels
+            )
+            if (skeleton.keypoints.isEmpty()) {
+                return ApiResponse.error(500, "Pose model not loaded or no frame data provided")
+            }
             val angles = computeSkiAngles(skeleton)
             return ApiResponse.success(PoseResult(skeleton, angles, request.frameNumber))
         }
@@ -187,10 +392,12 @@ class PoseEstimationModule @Inject constructor(
         override val requiredMode = AppMode.COACH
 
         override suspend fun handle(request: PoseBatchRequest): ApiResponse<List<PoseResult>> {
-            val results = (0 until request.frameCount).map { frame ->
-                val skeleton = estimatePoseFromFrame(request.frameWidth, request.frameHeight)
+            val results = request.frames.mapIndexed { index, framePixels ->
+                val skeleton = estimatePoseFromFrame(
+                    request.frameWidth, request.frameHeight, framePixels
+                )
                 val angles = computeSkiAngles(skeleton)
-                PoseResult(skeleton, angles, frame)
+                PoseResult(skeleton, angles, index)
             }
             return ApiResponse.success(results)
         }
@@ -245,8 +452,25 @@ data class SkiAngles(
     val rightElbowAngle: Float = 0f
 )
 
-data class PoseRequest(val frameWidth: Int, val frameHeight: Int, val frameNumber: Int = 0)
-data class PoseBatchRequest(val frameWidth: Int, val frameHeight: Int, val frameCount: Int)
+data class PoseRequest(
+    val frameWidth: Int,
+    val frameHeight: Int,
+    val frameNumber: Int = 0,
+    val framePixels: IntArray? = null
+) {
+    override fun equals(other: Any?) = this === other
+    override fun hashCode() = framePixels?.contentHashCode() ?: 0
+}
+
+data class PoseBatchRequest(
+    val frameWidth: Int,
+    val frameHeight: Int,
+    val frames: List<IntArray>
+) {
+    override fun equals(other: Any?) = this === other
+    override fun hashCode() = frames.hashCode()
+}
+
 data class PoseResult(val skeleton: SkeletonData, val angles: SkiAngles, val frameNumber: Int)
 data class PoseCompareRequest(val skeletonA: SkeletonData, val skeletonB: SkeletonData)
 data class PoseComparison(

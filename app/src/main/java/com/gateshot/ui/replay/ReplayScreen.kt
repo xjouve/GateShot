@@ -1,5 +1,7 @@
 package com.gateshot.ui.replay
 
+import android.net.Uri
+import android.view.ViewGroup
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -32,32 +34,101 @@ import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.PlayerView
 import com.gateshot.ui.MainViewModel
+import kotlinx.coroutines.delay
+import java.io.File
 
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 @Composable
 fun ReplayScreen(
     viewModel: MainViewModel,
     modifier: Modifier = Modifier
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val context = LocalContext.current
 
     var isPlaying by remember { mutableStateOf(false) }
-    var currentPosition by remember { mutableFloatStateOf(0f) }
+    var currentPosition by remember { mutableLongStateOf(0L) }
     var playbackSpeed by remember { mutableFloatStateOf(1.0f) }
     var showSplitScreen by remember { mutableStateOf(false) }
-    val totalDuration = 30_000f  // Placeholder 30s
+    var totalDuration by remember { mutableLongStateOf(0L) }
+    var isSeeking by remember { mutableStateOf(false) }
+
+    // Find the most recent video file to load
+    val videoFile = remember {
+        val videoDir = File(context.getExternalFilesDir(null), "GateShot/videos")
+        videoDir.listFiles()
+            ?.filter { it.extension == "mp4" }
+            ?.maxByOrNull { it.lastModified() }
+    }
+
+    // Create ExoPlayer instance
+    val exoPlayer = remember {
+        ExoPlayer.Builder(context).build().apply {
+            repeatMode = Player.REPEAT_MODE_OFF
+            playWhenReady = false
+        }
+    }
+
+    // Load video when available
+    LaunchedEffect(videoFile) {
+        if (videoFile != null && videoFile.exists()) {
+            val mediaItem = MediaItem.fromUri(Uri.fromFile(videoFile))
+            exoPlayer.setMediaItem(mediaItem)
+            exoPlayer.prepare()
+        }
+    }
+
+    // Listen to player state changes
+    DisposableEffect(exoPlayer) {
+        val listener = object : Player.Listener {
+            override fun onPlaybackStateChanged(state: Int) {
+                if (state == Player.STATE_READY) {
+                    totalDuration = exoPlayer.duration
+                }
+            }
+
+            override fun onIsPlayingChanged(playing: Boolean) {
+                isPlaying = playing
+            }
+        }
+        exoPlayer.addListener(listener)
+        onDispose {
+            exoPlayer.removeListener(listener)
+            exoPlayer.release()
+        }
+    }
+
+    // Update position while playing
+    LaunchedEffect(isPlaying) {
+        while (isPlaying) {
+            if (!isSeeking) {
+                currentPosition = exoPlayer.currentPosition
+            }
+            delay(100)
+        }
+    }
 
     Column(
         modifier = modifier
@@ -74,13 +145,12 @@ fun ReplayScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = "Replay",
+                text = if (videoFile != null) videoFile.name else "Replay",
                 color = Color.White,
                 fontSize = 20.sp,
                 fontWeight = FontWeight.Bold
             )
             Row {
-                // Split screen toggle
                 Surface(
                     onClick = { showSplitScreen = !showSplitScreen },
                     shape = RoundedCornerShape(8.dp),
@@ -92,9 +162,8 @@ fun ReplayScreen(
                     }
                 }
                 Spacer(modifier = Modifier.width(8.dp))
-                // Split timing button
                 Surface(
-                    onClick = { /* Record split */ },
+                    onClick = { viewModel.onRecordSplit(currentPosition) },
                     shape = RoundedCornerShape(8.dp),
                     color = Color(0xFF444444),
                     modifier = Modifier.size(40.dp)
@@ -106,7 +175,7 @@ fun ReplayScreen(
             }
         }
 
-        // Video area
+        // Video player area
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -114,44 +183,21 @@ fun ReplayScreen(
                 .background(Color(0xFF111111)),
             contentAlignment = Alignment.Center
         ) {
-            if (showSplitScreen) {
-                // Split screen layout
-                Row(modifier = Modifier.fillMaxSize()) {
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxSize()
-                            .background(Color(0xFF1A1A1A)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text("RUN 1", color = Color(0xFF4FC3F7), fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text("Video A", color = Color.Gray, fontSize = 14.sp)
+            if (videoFile != null && videoFile.exists()) {
+                AndroidView(
+                    factory = { ctx ->
+                        PlayerView(ctx).apply {
+                            player = exoPlayer
+                            useController = false  // We have our own controls
+                            layoutParams = ViewGroup.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                ViewGroup.LayoutParams.MATCH_PARENT
+                            )
                         }
-                    }
-                    Box(
-                        modifier = Modifier
-                            .width(2.dp)
-                            .fillMaxSize()
-                            .background(MaterialTheme.colorScheme.primary)
-                    )
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxSize()
-                            .background(Color(0xFF1A1A1A)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text("RUN 2", color = Color(0xFFFF7043), fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text("Video B", color = Color.Gray, fontSize = 14.sp)
-                        }
-                    }
-                }
+                    },
+                    modifier = Modifier.fillMaxSize()
+                )
             } else {
-                // Single video
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text("No clip loaded", color = Color.Gray, fontSize = 16.sp)
                     Spacer(modifier = Modifier.height(8.dp))
@@ -160,7 +206,7 @@ fun ReplayScreen(
             }
         }
 
-        // Speed indicator
+        // Speed indicator + presets
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -174,11 +220,13 @@ fun ReplayScreen(
                 Spacer(modifier = Modifier.width(4.dp))
                 Text("${playbackSpeed}x", color = Color.White, fontSize = 12.sp)
             }
-            // Speed presets — large buttons for gloves
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf(0.25f, 0.5f, 1.0f, 2.0f).forEach { speed ->
                     Surface(
-                        onClick = { playbackSpeed = speed },
+                        onClick = {
+                            playbackSpeed = speed
+                            exoPlayer.setPlaybackSpeed(speed)
+                        },
                         shape = RoundedCornerShape(8.dp),
                         color = if (playbackSpeed == speed) MaterialTheme.colorScheme.primary else Color(0xFF333333),
                         modifier = Modifier.size(width = 48.dp, height = 32.dp)
@@ -202,10 +250,18 @@ fun ReplayScreen(
                 .background(Color(0xFF1A1A1A))
                 .padding(horizontal = 16.dp)
         ) {
+            val maxDuration = if (totalDuration > 0) totalDuration.toFloat() else 1f
             Slider(
-                value = currentPosition,
-                onValueChange = { currentPosition = it },
-                valueRange = 0f..totalDuration,
+                value = currentPosition.toFloat().coerceIn(0f, maxDuration),
+                onValueChange = {
+                    isSeeking = true
+                    currentPosition = it.toLong()
+                },
+                onValueChangeFinished = {
+                    exoPlayer.seekTo(currentPosition)
+                    isSeeking = false
+                },
+                valueRange = 0f..maxDuration,
                 colors = SliderDefaults.colors(
                     thumbColor = MaterialTheme.colorScheme.primary,
                     activeTrackColor = MaterialTheme.colorScheme.primary,
@@ -217,12 +273,12 @@ fun ReplayScreen(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Text(formatTime(currentPosition.toLong()), color = Color.Gray, fontSize = 11.sp)
-                Text(formatTime(totalDuration.toLong()), color = Color.Gray, fontSize = 11.sp)
+                Text(formatTime(currentPosition), color = Color.Gray, fontSize = 11.sp)
+                Text(formatTime(totalDuration), color = Color.Gray, fontSize = 11.sp)
             }
         }
 
-        // Transport controls — extra large for gloves
+        // Transport controls
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -231,17 +287,31 @@ fun ReplayScreen(
             horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Frame back
-            IconButton(onClick = { currentPosition = (currentPosition - 33).coerceAtLeast(0f) }, modifier = Modifier.size(48.dp)) {
+            // Frame back (~33ms at 30fps)
+            IconButton(onClick = {
+                val newPos = (exoPlayer.currentPosition - 33).coerceAtLeast(0)
+                exoPlayer.seekTo(newPos)
+                currentPosition = newPos
+            }, modifier = Modifier.size(48.dp)) {
                 Icon(Icons.Filled.SkipPrevious, "Frame back", tint = Color.White, modifier = Modifier.size(28.dp))
             }
             // Rewind 5s
-            IconButton(onClick = { currentPosition = (currentPosition - 5000).coerceAtLeast(0f) }, modifier = Modifier.size(48.dp)) {
+            IconButton(onClick = {
+                val newPos = (exoPlayer.currentPosition - 5000).coerceAtLeast(0)
+                exoPlayer.seekTo(newPos)
+                currentPosition = newPos
+            }, modifier = Modifier.size(48.dp)) {
                 Icon(Icons.Filled.FastRewind, "Rewind", tint = Color.White, modifier = Modifier.size(28.dp))
             }
-            // Play/Pause — largest button
+            // Play/Pause
             Surface(
-                onClick = { isPlaying = !isPlaying },
+                onClick = {
+                    if (exoPlayer.isPlaying) {
+                        exoPlayer.pause()
+                    } else {
+                        exoPlayer.play()
+                    }
+                },
                 shape = CircleShape,
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.size(64.dp)
@@ -256,11 +326,19 @@ fun ReplayScreen(
                 }
             }
             // Forward 5s
-            IconButton(onClick = { currentPosition = (currentPosition + 5000).coerceAtMost(totalDuration) }, modifier = Modifier.size(48.dp)) {
+            IconButton(onClick = {
+                val newPos = (exoPlayer.currentPosition + 5000).coerceAtMost(exoPlayer.duration)
+                exoPlayer.seekTo(newPos)
+                currentPosition = newPos
+            }, modifier = Modifier.size(48.dp)) {
                 Icon(Icons.Filled.FastForward, "Forward", tint = Color.White, modifier = Modifier.size(28.dp))
             }
             // Frame forward
-            IconButton(onClick = { currentPosition = (currentPosition + 33).coerceAtMost(totalDuration) }, modifier = Modifier.size(48.dp)) {
+            IconButton(onClick = {
+                val newPos = (exoPlayer.currentPosition + 33).coerceAtMost(exoPlayer.duration)
+                exoPlayer.seekTo(newPos)
+                currentPosition = newPos
+            }, modifier = Modifier.size(48.dp)) {
                 Icon(Icons.Filled.SkipNext, "Frame forward", tint = Color.White, modifier = Modifier.size(28.dp))
             }
         }

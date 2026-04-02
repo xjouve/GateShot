@@ -2,6 +2,7 @@ package com.gateshot.ui.gallery
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -16,6 +17,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -36,6 +38,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -50,6 +53,7 @@ import com.gateshot.ui.MainViewModel
 data class GalleryItem(
     val id: Long,
     val fileName: String,
+    val filePath: String = "",
     val isVideo: Boolean,
     val starRating: Int,
     val bibNumber: Int?,
@@ -62,19 +66,32 @@ fun GalleryScreen(
     modifier: Modifier = Modifier
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val context = androidx.compose.ui.platform.LocalContext.current
 
-    // Placeholder gallery items — in production, loaded from Room via session endpoints
-    val items = remember {
-        (1..uiState.shotCount.coerceAtLeast(6)).map { i ->
-            GalleryItem(
-                id = i.toLong(),
-                fileName = "IMG_${"$i".padStart(4, '0')}.jpg",
-                isVideo = i % 5 == 0,
-                starRating = if (i % 3 == 0) 4 else 0,
-                bibNumber = if (i % 4 == 0) (i * 7) % 60 + 1 else null,
-                timestamp = System.currentTimeMillis() - (i * 30_000L)
-            )
+    // Load gallery items from actual capture files on disk
+    var refreshKey by remember { mutableIntStateOf(0) }
+    val items = remember(uiState.shotCount, refreshKey) {
+        val gateShotDir = java.io.File(context.getExternalFilesDir(null), "GateShot")
+        val mediaFiles = mutableListOf<GalleryItem>()
+
+        if (gateShotDir.exists()) {
+            gateShotDir.walkTopDown()
+                .filter { it.isFile && (it.extension in listOf("jpg", "jpeg", "heif", "mp4", "dng", "png")) }
+                .sortedByDescending { it.lastModified() }
+                .take(200)
+                .forEachIndexed { index, file ->
+                    mediaFiles.add(GalleryItem(
+                        id = index.toLong(),
+                        fileName = file.name,
+                        filePath = file.absolutePath,
+                        isVideo = file.extension == "mp4",
+                        starRating = 0,
+                        bibNumber = null,
+                        timestamp = file.lastModified()
+                    ))
+                }
         }
+        mediaFiles
     }
 
     var selectedFilter by remember { mutableStateOf("all") }
@@ -149,7 +166,7 @@ fun GalleryScreen(
             modifier = Modifier.fillMaxSize()
         ) {
             items(filtered) { item ->
-                GalleryThumbnail(item = item)
+                GalleryThumbnail(item = item, onDelete = { refreshKey++ })
             }
         }
     }
@@ -158,29 +175,92 @@ fun GalleryScreen(
 @Composable
 fun GalleryThumbnail(
     item: GalleryItem,
+    onDelete: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var starRating by remember { mutableIntStateOf(item.starRating) }
+    var showFullPreview by remember { mutableStateOf(false) }
+    val context = androidx.compose.ui.platform.LocalContext.current
+
+    // Full-screen preview dialog
+    if (showFullPreview && item.filePath.isNotEmpty()) {
+        androidx.compose.ui.window.Dialog(onDismissRequest = { showFullPreview = false }) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black)
+                    .clickable { showFullPreview = false },
+                contentAlignment = Alignment.Center
+            ) {
+                if (item.isVideo) {
+                    Text("Video: ${item.fileName}", color = Color.White, fontSize = 16.sp)
+                } else {
+                    val fullBitmap = remember(item.filePath) {
+                        try {
+                            val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = 2 }
+                            android.graphics.BitmapFactory.decodeFile(item.filePath, opts)
+                        } catch (_: Exception) { null }
+                    }
+                    if (fullBitmap != null) {
+                        Image(
+                            bitmap = fullBitmap.asImageBitmap(),
+                            contentDescription = item.fileName,
+                            contentScale = androidx.compose.ui.layout.ContentScale.Fit,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                }
+            }
+        }
+    }
 
     Box(
         modifier = modifier
             .aspectRatio(1f)
             .background(Color(0xFF2A2A2A), RoundedCornerShape(4.dp))
-            .clickable { /* Open full preview */ }
+            .clickable { showFullPreview = true }
     ) {
-        // Placeholder thumbnail
-        Box(
-            modifier = Modifier.fillMaxSize(),
-            contentAlignment = Alignment.Center
-        ) {
-            if (item.isVideo) {
+        // Thumbnail from file
+        if (item.filePath.isNotEmpty()) {
+            val bitmap = remember(item.filePath) {
+                try {
+                    val opts = android.graphics.BitmapFactory.Options().apply {
+                        inSampleSize = 8  // Downsample for thumbnail
+                    }
+                    android.graphics.BitmapFactory.decodeFile(item.filePath, opts)
+                } catch (_: Exception) { null }
+            }
+            if (bitmap != null) {
+                androidx.compose.foundation.Image(
+                    bitmap = bitmap.asImageBitmap(),
+                    contentDescription = item.fileName,
+                    contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+        }
+
+        // Video icon overlay
+        if (item.isVideo) {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
                 Icon(
                     Icons.Filled.Videocam,
                     contentDescription = "Video",
-                    tint = Color.White,
+                    tint = Color.White.copy(alpha = 0.7f),
                     modifier = Modifier.size(32.dp)
                 )
-            } else {
+            }
+        }
+
+        // Empty gallery message
+        if (item.filePath.isEmpty()) {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
                 Text(
                     text = item.fileName.takeLast(8),
                     color = Color.Gray,
@@ -249,10 +329,33 @@ fun GalleryThumbnail(
                     modifier = Modifier.size(20.dp)
                 )
             }
-            IconButton(onClick = { /* Share */ }, modifier = Modifier.size(48.dp)) {
+            IconButton(onClick = {
+                if (item.filePath.isNotEmpty()) {
+                    val file = java.io.File(item.filePath)
+                    if (file.exists()) {
+                        val uri = androidx.core.content.FileProvider.getUriForFile(
+                            context, "${context.packageName}.fileprovider", file
+                        )
+                        val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                            type = if (item.isVideo) "video/mp4" else "image/jpeg"
+                            putExtra(android.content.Intent.EXTRA_STREAM, uri)
+                            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
+                        context.startActivity(android.content.Intent.createChooser(intent, "Share").apply {
+                            addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                        })
+                    }
+                }
+            }, modifier = Modifier.size(48.dp)) {
                 Icon(Icons.Filled.Share, contentDescription = "Share", tint = Color.White, modifier = Modifier.size(20.dp))
             }
-            IconButton(onClick = { /* Delete */ }, modifier = Modifier.size(48.dp)) {
+            IconButton(onClick = {
+                if (item.filePath.isNotEmpty()) {
+                    java.io.File(item.filePath).delete()
+                    onDelete()
+                }
+            }, modifier = Modifier.size(48.dp)) {
                 Icon(Icons.Filled.Delete, contentDescription = "Delete", tint = Color(0xFFEF5350), modifier = Modifier.size(20.dp))
             }
         }

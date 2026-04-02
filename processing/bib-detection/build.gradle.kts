@@ -18,7 +18,9 @@ dependencies {
     implementation(project(":platform"))
     implementation(libs.core.ktx)
     implementation(libs.coroutines.core)
+    implementation(libs.coroutines.play)
     implementation(libs.camerax.core)
+    implementation(libs.mlkit.text)
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
 }

@@ -1,6 +1,7 @@
 package com.gateshot.processing.snow
 
 import androidx.camera.core.ImageProxy
+import android.content.Context
 import com.gateshot.core.api.ApiEndpoint
 import com.gateshot.core.api.ApiResponse
 import com.gateshot.core.config.ConfigStore
@@ -10,11 +11,12 @@ import com.gateshot.core.event.collect
 import com.gateshot.core.mode.AppMode
 import com.gateshot.core.module.FeatureModule
 import com.gateshot.core.module.ModuleHealth
-import com.gateshot.platform.camera.CameraPlatform
 import com.gateshot.platform.camera.CameraXPlatform
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -23,13 +25,15 @@ import javax.inject.Singleton
 
 @Singleton
 class SnowExposureModule @Inject constructor(
+    @ApplicationContext private val appContext: Context,
     private val cameraPlatform: CameraXPlatform,
     private val eventBus: EventBus,
-    private val configStore: ConfigStore
+    private val configStore: ConfigStore,
+    private val trueColorWb: TrueColorWhiteBalance
 ) : FeatureModule {
 
     override val name = "snow_exposure"
-    override val version = "0.1.0"
+    override val version = "0.2.0"
     override val requiredMode: AppMode? = null
     override val dependencies = listOf("camera")
 
@@ -45,28 +49,48 @@ class SnowExposureModule @Inject constructor(
 
     // Analyze every Nth frame (don't burn CPU on every single frame)
     private var frameCounter = 0
-    private val analyzeEveryNFrames = 5  // ~6 analyses/sec at 30fps
-
+    // With the preview-bitmap fallback delivering ~2fps,
+    // analyze every frame (no skipping needed at this rate).
+    // Read isEnabled directly from SharedPrefs each frame to
+    // ensure toggle changes take effect immediately.
     private val frameListener: (ImageProxy) -> Unit = { imageProxy ->
         frameCounter++
-        if (isEnabled && frameCounter % analyzeEveryNFrames == 0) {
+        isEnabled = userPrefs.getBoolean("exposure_snow_compensation", true)
+        if (isEnabled) {
             analyzeFrame(imageProxy)
         }
     }
 
+    private val userPrefs get() =
+        appContext.getSharedPreferences("gateshot_config", Context.MODE_PRIVATE)
+
+    private fun refreshSettings() {
+        isEnabled = userPrefs.getBoolean("exposure_snow_compensation", true)
+        flatLightModeEnabled = userPrefs.getBoolean("exposure_flat_light_auto", true)
+    }
+
     override suspend fun initialize() {
+        refreshSettings()
+
         cameraPlatform.addFrameListener(frameListener)
 
-        // React to preset changes
-        eventBus.collect<AppEvent.PresetApplied>(scope) {
-            // Read snow compensation settings from config
-            isEnabled = configStore.get("exposure", "snow_compensation", true)
-            flatLightModeEnabled = configStore.get("exposure", "flat_light_auto", true)
+        // Start True Color sensor white balance tracking
+        trueColorWb.start()
+
+        // React to preset changes and config updates
+        eventBus.collect<AppEvent.PresetApplied>(scope) { refreshSettings() }
+
+        // Observe config changes (from Settings screen)
+        scope.launch {
+            configStore.observeChanges("exposure", "snow_compensation").collect {
+                refreshSettings()
+            }
         }
     }
 
     override suspend fun shutdown() {
         cameraPlatform.removeFrameListener(frameListener)
+        trueColorWb.stop()
     }
 
     override fun endpoints(): List<ApiEndpoint<*, *>> = listOf(
@@ -74,16 +98,23 @@ class SnowExposureModule @Inject constructor(
         SetSnowOverride(),
         EnableFlatLight(),
         DisableFlatLight(),
-        AnalyzeScene()
+        AnalyzeScene(),
+        GetWhiteBalance()
     )
 
     override fun healthCheck(): ModuleHealth {
         val analysis = _latestAnalysis.value
-        val msg = if (analysis != null) {
-            "Snow: ${(analysis.snowCoveragePercent * 100).toInt()}%, EV: +${analysis.recommendedEvBias}" +
-                if (analysis.isFlatLight) " [FLAT LIGHT]" else ""
-        } else {
-            "Waiting for first frame analysis"
+        val wb = trueColorWb.currentWhiteBalance.value
+        val msg = buildString {
+            if (analysis != null) {
+                append("Snow: ${(analysis.snowCoveragePercent * 100).toInt()}%, EV: +${analysis.recommendedEvBias}")
+                if (analysis.isFlatLight) append(" [FLAT LIGHT]")
+            } else {
+                append("Waiting for first frame analysis")
+            }
+            if (wb != null) {
+                append(" | WB: ${wb.cctKelvin}K ${wb.lightingCondition}")
+            }
         }
         return ModuleHealth(name, ModuleHealth.Status.OK, msg)
     }
@@ -93,10 +124,12 @@ class SnowExposureModule @Inject constructor(
             val analysis = analyzer.analyze(imageProxy)
             _latestAnalysis.value = analysis
 
+            // When snow compensation is disabled, don't touch exposure —
+            // let the preset or user setting control it directly.
+            if (!isEnabled) return
+
             // Apply exposure compensation
-            val effectiveEv = userEvOverride ?: analysis.recommendedEvBias
-            val presetBaseEv = configStore.get("exposure", "ev_bias", 0f)
-            val finalEv = if (isEnabled) effectiveEv else presetBaseEv
+            val finalEv = userEvOverride ?: analysis.recommendedEvBias
 
             cameraPlatform.setExposureCompensation(finalEv)
 
@@ -104,7 +137,9 @@ class SnowExposureModule @Inject constructor(
             eventBus.tryPublish(
                 AppEvent.ExposureAdjusted(finalEv, "snow=${(analysis.snowCoveragePercent * 100).toInt()}%")
             )
-        } catch (_: Exception) { }
+        } catch (e: Exception) {
+            android.util.Log.e("SnowExposure", "analyzeFrame error: ${e.message}", e)
+        }
     }
 
     // --- exposure/snow/status ---
@@ -174,6 +209,29 @@ class SnowExposureModule @Inject constructor(
             return ApiResponse.success(_latestAnalysis.value)
         }
     }
+
+    // --- exposure/whitebalance ---
+    inner class GetWhiteBalance : ApiEndpoint<Unit, WhiteBalanceResponse?> {
+        override val path = "exposure/whitebalance"
+        override val module = "snow_exposure"
+        override val requiredMode: AppMode? = null
+
+        override suspend fun handle(request: Unit): ApiResponse<WhiteBalanceResponse?> {
+            val wb = trueColorWb.currentWhiteBalance.value
+                ?: return ApiResponse.success(null)
+            return ApiResponse.success(
+                WhiteBalanceResponse(
+                    redGain = wb.redGain,
+                    greenGain = wb.greenGain,
+                    blueGain = wb.blueGain,
+                    cctKelvin = wb.cctKelvin,
+                    tint = wb.tint,
+                    lightingCondition = wb.lightingCondition.name,
+                    confidence = wb.confidence
+                )
+            )
+        }
+    }
 }
 
 data class SnowStatusResponse(
@@ -188,4 +246,14 @@ data class SnowStatusResponse(
 data class SnowOverrideRequest(
     val evBias: Float = 0f,
     val clearOverride: Boolean = false
+)
+
+data class WhiteBalanceResponse(
+    val redGain: Float,
+    val greenGain: Float,
+    val blueGain: Float,
+    val cctKelvin: Int,
+    val tint: Float,
+    val lightingCondition: String,
+    val confidence: Float
 )

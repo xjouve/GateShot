@@ -36,8 +36,8 @@ import javax.inject.Singleton
  * 20x+       → AI upscale + aggressive denoise
  *
  * The key insight: the 200MP telephoto sensor (1/1.56", 0.5µm pixels)
- * is the LARGEST sensor in the system. It produces enormous resolution
- * but noisy pixels. Our job is to reduce that noise and sharpen beyond
+ * has the HIGHEST resolution in the system. It produces enormous resolution
+ * but noisy pixels (the main camera's 1/1.28" sensor is physically larger). Our job is to reduce that noise and sharpen beyond
  * the crop limit.
  */
 @Singleton
@@ -45,11 +45,13 @@ class SuperResolutionModule @Inject constructor(
     @ApplicationContext private val context: Context,
     private val cameraPlatform: CameraXPlatform,
     private val eventBus: EventBus,
-    private val configStore: ConfigStore
+    private val configStore: ConfigStore,
+    private val gyroAssist: GyroAssist,
+    private val lowLightFusion: LowLightFusion
 ) : FeatureModule {
 
     override val name = "super_resolution"
-    override val version = "0.1.0"
+    override val version = "0.2.0"
     override val requiredMode: AppMode? = null
     override val dependencies = listOf("camera")
 
@@ -68,17 +70,24 @@ class SuperResolutionModule @Inject constructor(
     override suspend fun initialize() {
         aiUpscaler.initialize()
 
+        // Wire gyroscope to frame aligner for faster, more robust alignment
+        aligner.setGyroAssist(gyroAssist)
+        gyroAssist.start()
+
         // Detect teleconverter
         eventBus.collect<AppEvent.LensDetected>(scope) {
             hasTelevonverter = true
+            gyroAssist.setTelevonverter(true)
         }
         eventBus.collect<AppEvent.LensRemoved>(scope) {
             hasTelevonverter = false
+            gyroAssist.setTelevonverter(false)
         }
     }
 
     override suspend fun shutdown() {
         aiUpscaler.release()
+        gyroAssist.stop()
     }
 
     override fun endpoints(): List<ApiEndpoint<*, *>> = listOf(
@@ -156,18 +165,42 @@ class SuperResolutionModule @Inject constructor(
 
     /**
      * Run the full enhancement pipeline on a single photo.
+     *
+     * @param mainCameraPixels Optional: simultaneous capture from the main camera
+     *        (1/1.28" sensor, 23mm). If provided and the scene is dark, the main
+     *        camera's cleaner signal guides telephoto denoising.
      */
     private fun enhanceSingle(
         pixels: IntArray,
         width: Int,
         height: Int,
-        zoomLevel: Float
+        zoomLevel: Float,
+        mainCameraPixels: IntArray? = null,
+        mainCameraWidth: Int = 0,
+        mainCameraHeight: Int = 0
     ): EnhanceResult {
         val startTime = System.currentTimeMillis()
         val pipeline = selectPipeline(zoomLevel)
         var current = pixels
         var currentW = width
         var currentH = height
+
+        // Step 0: Low-light fusion with main camera (if available and scene is dark)
+        if (mainCameraPixels != null && mainCameraWidth > 0 &&
+            lowLightFusion.shouldActivateFusion(pixels, width, height)
+        ) {
+            val fusionResult = lowLightFusion.fuse(
+                LowLightFusion.FusionInput(
+                    telephotoPixels = current,
+                    telephotoWidth = currentW,
+                    telephotoHeight = currentH,
+                    mainPixels = mainCameraPixels,
+                    mainWidth = mainCameraWidth,
+                    mainHeight = mainCameraHeight
+                )
+            )
+            current = fusionResult.pixels
+        }
 
         // Step 1: Lens deconvolution (if teleconverter is attached)
         if (pipeline.deconvolve) {

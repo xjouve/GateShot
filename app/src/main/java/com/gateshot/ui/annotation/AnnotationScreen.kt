@@ -96,7 +96,7 @@ fun AnnotationScreen(
                 IconButton(onClick = { strokes.clear() }) {
                     Icon(Icons.Filled.Delete, "Clear all", tint = Color(0xFFEF5350))
                 }
-                IconButton(onClick = { /* Save annotated frame */ }) {
+                IconButton(onClick = { viewModel.onSaveAnnotatedFrame() }) {
                     Icon(Icons.Filled.Save, "Save", tint = MaterialTheme.colorScheme.primary)
                 }
             }
@@ -133,12 +133,12 @@ fun AnnotationScreen(
                     )
                 }
         ) {
-            // Placeholder frame
+            // Video frame canvas — shows the paused frame from the replay player
             Box(
                 modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.Center
             ) {
-                Text("Paused video frame", color = Color(0xFF444444), fontSize = 14.sp)
+                Text("Tap pause on replay to capture frame", color = Color(0xFF444444), fontSize = 14.sp)
             }
 
             // Drawing overlay
@@ -218,7 +218,14 @@ fun AnnotationScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Surface(
-                onClick = { isRecordingVoice = !isRecordingVoice },
+                onClick = {
+                    isRecordingVoice = !isRecordingVoice
+                    if (isRecordingVoice) {
+                        viewModel.startVoiceRecording()
+                    } else {
+                        viewModel.stopVoiceRecording()
+                    }
+                },
                 shape = RoundedCornerShape(24.dp),
                 color = if (isRecordingVoice) MaterialTheme.colorScheme.error else Color(0xFF333333),
                 modifier = Modifier.size(width = 200.dp, height = 48.dp)
