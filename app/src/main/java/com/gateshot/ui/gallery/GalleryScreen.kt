@@ -193,7 +193,27 @@ fun GalleryThumbnail(
                 contentAlignment = Alignment.Center
             ) {
                 if (item.isVideo) {
-                    Text("Video: ${item.fileName}", color = Color.White, fontSize = 16.sp)
+                    // Launch system video player
+                    androidx.compose.runtime.LaunchedEffect(item.filePath) {
+                        try {
+                            val file = java.io.File(item.filePath)
+                            android.util.Log.i("Gallery", "Opening video: ${file.absolutePath} exists=${file.exists()}")
+                            val uri = androidx.core.content.FileProvider.getUriForFile(
+                                context, "${context.packageName}.fileprovider", file
+                            )
+                            android.util.Log.i("Gallery", "URI: $uri")
+                            val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
+                                setDataAndType(uri, "video/mp4")
+                                addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                            }
+                            context.startActivity(intent)
+                        } catch (e: Exception) {
+                            android.util.Log.e("Gallery", "Video open failed: ${e.message}", e)
+                        }
+                        showFullPreview = false
+                    }
+                    Text("Opening video...", color = Color.White, fontSize = 16.sp)
                 } else {
                     val fullBitmap = remember(item.filePath) {
                         try {

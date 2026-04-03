@@ -98,6 +98,20 @@ fun ViewfinderScreen(
                         onZoomChanged(newZoom)
                     }
                 }
+                .pointerInput(Unit) {
+                    detectTapGestures(
+                        onTap = { offset ->
+                            // Tap to focus: set AF region at tap point
+                            val normX = offset.x / size.width
+                            val normY = offset.y / size.height
+                            onAddTriggerZone(normX, normY)
+                        },
+                        onLongPress = { _ ->
+                            // Long press: clear all trigger zones
+                            onClearTriggerZones()
+                        }
+                    )
+                }
         )
 
         // Trigger zone and tracking overlays — no gesture handling, just visuals

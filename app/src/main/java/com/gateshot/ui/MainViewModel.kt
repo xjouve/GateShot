@@ -466,6 +466,15 @@ class MainViewModel @Inject constructor(
                 ZoneAddRequest(normalizedX, normalizedY)
             )
         }
+        // Also set the camera AF region to focus at the tap point
+        cameraXPlatform.setAfRegions(listOf(
+            com.gateshot.platform.camera.AfRegion(
+                centerX = normalizedX,
+                centerY = normalizedY,
+                size = 0.1f,
+                weight = 1000
+            )
+        ))
     }
 
     fun loadSettingFloat(section: String, key: String, default: Float): Float {
@@ -524,6 +533,91 @@ class MainViewModel @Inject constructor(
                     _uiState.update { it.copy(currentEvBias = ev) }
                 }
             }
+            section == "camera" && key == "manual_mode" -> {
+                if (value == true) {
+                    val iso = loadSettingFloat("camera", "iso", 400f).toInt()
+                    val shutter = loadSettingFloat("camera", "shutter_speed", 500f)
+                    val shutterNs = (1_000_000_000L / shutter.toLong())
+                    cameraXPlatform.setManualExposure(com.gateshot.platform.camera.ManualExposure(
+                        shutterSpeedNs = shutterNs, iso = iso, enabled = true
+                    ))
+                } else {
+                    cameraXPlatform.setManualExposure(com.gateshot.platform.camera.ManualExposure())
+                }
+            }
+            section == "camera" && key == "iso" -> {
+                val manualOn = loadSettingBool("camera", "manual_mode", false)
+                if (manualOn) {
+                    val shutter = loadSettingFloat("camera", "shutter_speed", 500f)
+                    val shutterNs = (1_000_000_000L / shutter.toLong())
+                    cameraXPlatform.setManualExposure(com.gateshot.platform.camera.ManualExposure(
+                        shutterSpeedNs = shutterNs, iso = (value as Float).toInt(), enabled = true
+                    ))
+                }
+            }
+            section == "camera" && key == "shutter_speed" -> {
+                val manualOn = loadSettingBool("camera", "manual_mode", false)
+                if (manualOn) {
+                    val iso = loadSettingFloat("camera", "iso", 400f).toInt()
+                    val shutterNs = (1_000_000_000L / (value as Float).toLong())
+                    cameraXPlatform.setManualExposure(com.gateshot.platform.camera.ManualExposure(
+                        shutterSpeedNs = shutterNs, iso = iso, enabled = true
+                    ))
+                }
+            }
+            section == "camera" && key == "auto_wb" -> {
+                if (value == true) {
+                    // Re-enable auto WB by clearing manual gains
+                    cameraXPlatform.setWhiteBalanceGains(com.gateshot.platform.camera.WhiteBalanceGains())
+                }
+                // When false, the wb_temperature handler will apply the manual CCT
+            }
+            section == "camera" && key == "wb_temperature" -> {
+                val autoWb = loadSettingBool("camera", "auto_wb", true)
+                if (!autoWb) {
+                    // Convert CCT to approximate RGB gains
+                    val cct = (value as Float).toInt()
+                    val gains = cctToGains(cct)
+                    cameraXPlatform.setWhiteBalanceGains(gains)
+                }
+            }
+            section == "camera" && key == "flash" -> {
+                cameraXPlatform.setIspPipeline(com.gateshot.platform.camera.IspPipelineConfig(
+                    flashMode = if (value == true) com.gateshot.platform.camera.FlashMode.AUTO
+                                else com.gateshot.platform.camera.FlashMode.OFF,
+                    faceDetection = loadSettingBool("camera", "bokeh_enabled", false)
+                ))
+            }
+            section == "camera" && key == "bokeh_enabled" || section == "camera" && key == "bokeh_level" -> {
+                val bokehOn = if (key == "bokeh_enabled") value == true
+                              else loadSettingBool("camera", "bokeh_enabled", false)
+                val level = if (key == "bokeh_level") value as Float
+                            else loadSettingFloat("camera", "bokeh_level", 0.5f)
+                cameraXPlatform.setIspPipeline(com.gateshot.platform.camera.IspPipelineConfig(
+                    faceDetection = bokehOn,
+                    flashMode = if (loadSettingBool("camera", "flash", false))
+                        com.gateshot.platform.camera.FlashMode.AUTO
+                        else com.gateshot.platform.camera.FlashMode.OFF
+                ))
+                // Set bokeh level via vendor tag if available
+                if (bokehOn) {
+                    configStore.set("camera", "bokeh_level_active", level)
+                }
+            }
+            section == "camera" && key == "nd_filter" -> {
+                // ND filter: reduce EV compensation to simulate light reduction
+                val ndStops = (value as Float)
+                if (ndStops > 0.5f) {
+                    cameraXPlatform.setExposureCompensation(-ndStops)
+                } else {
+                    // ND off — restore normal EV
+                    val snowOn = loadSettingBool("exposure", "snow_compensation", true)
+                    if (!snowOn) {
+                        val manualEv = loadSettingFloat("exposure", "ev_bias", 0f)
+                        cameraXPlatform.setExposureCompensation(manualEv)
+                    }
+                }
+            }
             section == "color" && key == "hasselblad_enabled" -> {
                 if (value == true) {
                     val curve = com.gateshot.capture.preset.HasselbladProfile.buildTonemapCurve()
@@ -538,6 +632,25 @@ class MainViewModel @Inject constructor(
                 }
             }
         }
+    }
+
+    /** Convert color temperature (Kelvin) to approximate WB gains */
+    private fun cctToGains(cct: Int): com.gateshot.platform.camera.WhiteBalanceGains {
+        val temp = cct.toFloat()
+        val rGain: Float
+        val bGain: Float
+        if (temp <= 6500f) {
+            val t = ((temp - 2000f) / 4500f).coerceIn(0f, 1f)
+            rGain = 1.0f + (1f - t) * 0.4f
+            bGain = 1.0f - (1f - t) * 0.3f
+        } else {
+            val t = ((temp - 6500f) / 3500f).coerceAtMost(1f)
+            rGain = 1.0f + t * 0.15f
+            bGain = 1.0f - t * 0.3f
+        }
+        return com.gateshot.platform.camera.WhiteBalanceGains(
+            redGain = rGain, greenEvenGain = 1f, greenOddGain = 1f, blueGain = bGain
+        )
     }
 
     private val presetOrder = listOf("slalom_gs", "speed", "panning", "finish", "atmosphere", "training")
@@ -562,5 +675,7 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch {
             endpointRegistry.call<Unit, Any>("af/zone/clear", Unit)
         }
+        // Reset AF to auto (clear manual AF regions)
+        cameraXPlatform.setAfRegions(emptyList())
     }
 }

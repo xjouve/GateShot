@@ -52,6 +52,161 @@ fun SettingsScreen(
             modifier = Modifier.padding(16.dp)
         )
 
+        // --- Camera Controls ---
+        SettingsSection("Camera") {
+            var manualMode by remember { mutableStateOf(viewModel.loadSettingBool("camera", "manual_mode", false)) }
+            var iso by remember { mutableFloatStateOf(viewModel.loadSettingFloat("camera", "iso", 400f)) }
+            var shutterSpeed by remember { mutableFloatStateOf(viewModel.loadSettingFloat("camera", "shutter_speed", 500f)) }
+            var wbMode by remember { mutableStateOf(viewModel.loadSettingBool("camera", "auto_wb", true)) }
+            var wbTemp by remember { mutableFloatStateOf(viewModel.loadSettingFloat("camera", "wb_temperature", 5500f)) }
+            var flashMode by remember { mutableStateOf(viewModel.loadSettingBool("camera", "flash", false)) }
+            var rawEnabled by remember { mutableStateOf(viewModel.loadSettingBool("camera", "save_raw", false)) }
+            var outputFormat by remember { mutableStateOf(viewModel.loadSettingBool("camera", "heif", false)) }
+
+            SettingsToggle(
+                title = "Manual exposure",
+                subtitle = "Set ISO and shutter speed manually (disables auto exposure)",
+                checked = manualMode,
+                onCheckedChange = { manualMode = it; viewModel.saveSetting("camera", "manual_mode", it) }
+            )
+            if (manualMode) {
+                SettingsSlider(
+                    title = "ISO",
+                    subtitle = "Sensor sensitivity (100-19200)",
+                    value = iso,
+                    range = 100f..6400f,
+                    unit = "",
+                    formatValue = { "${it.toInt()}" },
+                    onValueChange = { iso = it; viewModel.saveSetting("camera", "iso", it) }
+                )
+                SettingsSlider(
+                    title = "Shutter speed",
+                    subtitle = "Exposure time",
+                    value = shutterSpeed,
+                    range = 4f..8000f,
+                    unit = "",
+                    formatValue = { "1/${it.toInt()}s" },
+                    onValueChange = { shutterSpeed = it; viewModel.saveSetting("camera", "shutter_speed", it) }
+                )
+            }
+            SettingsToggle(
+                title = "Auto white balance",
+                subtitle = "Let the camera choose white balance automatically",
+                checked = wbMode,
+                onCheckedChange = { wbMode = it; viewModel.saveSetting("camera", "auto_wb", it) }
+            )
+            if (!wbMode) {
+                SettingsSlider(
+                    title = "Color temperature",
+                    subtitle = "Manual white balance (2000K warm — 10000K cool)",
+                    value = wbTemp,
+                    range = 2000f..10000f,
+                    unit = "K",
+                    formatValue = { "${it.toInt()}K" },
+                    onValueChange = { wbTemp = it; viewModel.saveSetting("camera", "wb_temperature", it) }
+                )
+            }
+            SettingsToggle(
+                title = "Flash",
+                subtitle = "Enable flash for photo capture",
+                checked = flashMode,
+                onCheckedChange = { flashMode = it; viewModel.saveSetting("camera", "flash", it) }
+            )
+        }
+
+        // --- Depth & Bokeh ---
+        SettingsSection("Depth & Bokeh") {
+            var bokehEnabled by remember { mutableStateOf(viewModel.loadSettingBool("camera", "bokeh_enabled", false)) }
+            var bokehLevel by remember { mutableFloatStateOf(viewModel.loadSettingFloat("camera", "bokeh_level", 0.5f)) }
+
+            SettingsToggle(
+                title = "Software bokeh",
+                subtitle = "Simulate shallow depth of field (background blur)",
+                checked = bokehEnabled,
+                onCheckedChange = { bokehEnabled = it; viewModel.saveSetting("camera", "bokeh_enabled", it) }
+            )
+            if (bokehEnabled) {
+                SettingsSlider(
+                    title = "Blur strength",
+                    subtitle = "f/1.4 (max blur) to f/16 (sharp background)",
+                    value = bokehLevel,
+                    range = 0f..1f,
+                    unit = "",
+                    formatValue = {
+                        val fStop = 1.4f + (1f - it) * 14.6f  // Map 0-1 to f/1.4-f/16
+                        "f/${"%.1f".format(fStop)}"
+                    },
+                    onValueChange = { bokehLevel = it; viewModel.saveSetting("camera", "bokeh_level", it) }
+                )
+            }
+        }
+
+        // --- Photo Output ---
+        SettingsSection("Photo Output") {
+            var resolution by remember { mutableFloatStateOf(viewModel.loadSettingFloat("camera", "resolution_mp", 12f)) }
+            var jpegQuality by remember { mutableFloatStateOf(viewModel.loadSettingFloat("camera", "jpeg_quality", 95f)) }
+            var rawEnabled by remember { mutableStateOf(viewModel.loadSettingBool("camera", "save_raw", false)) }
+            var outputFormat by remember { mutableStateOf(viewModel.loadSettingBool("camera", "heif", false)) }
+            var ndFilter by remember { mutableFloatStateOf(viewModel.loadSettingFloat("camera", "nd_filter", 0f)) }
+
+            SettingsSlider(
+                title = "Resolution",
+                subtitle = "Output megapixels",
+                value = resolution,
+                range = 12f..200f,
+                unit = " MP",
+                formatValue = {
+                    when {
+                        it < 25f -> "12 MP"
+                        it < 100f -> "50 MP"
+                        else -> "200 MP"
+                    }
+                },
+                onValueChange = {
+                    val snapped = when {
+                        it < 25f -> 12f
+                        it < 100f -> 50f
+                        else -> 200f
+                    }
+                    resolution = snapped
+                    viewModel.saveSetting("camera", "resolution_mp", snapped)
+                }
+            )
+            SettingsSlider(
+                title = "JPEG quality",
+                subtitle = "Compression level (higher = larger file, better quality)",
+                value = jpegQuality,
+                range = 70f..100f,
+                unit = "%",
+                formatValue = { "${it.toInt()}%" },
+                onValueChange = { jpegQuality = it; viewModel.saveSetting("camera", "jpeg_quality", it) }
+            )
+            SettingsSlider(
+                title = "ND filter",
+                subtitle = "Simulated neutral density filter (darken for slower shutters in bright light)",
+                value = ndFilter,
+                range = 0f..6f,
+                unit = "",
+                formatValue = {
+                    if (it < 0.5f) "Off"
+                    else "ND${Math.pow(2.0, it.toDouble()).toInt()}"
+                },
+                onValueChange = { ndFilter = it; viewModel.saveSetting("camera", "nd_filter", it) }
+            )
+            SettingsToggle(
+                title = "Save RAW (DNG)",
+                subtitle = "Save a RAW file alongside JPEG for post-processing",
+                checked = rawEnabled,
+                onCheckedChange = { rawEnabled = it; viewModel.saveSetting("camera", "save_raw", it) }
+            )
+            SettingsToggle(
+                title = "HEIF format",
+                subtitle = "Save photos as HEIF instead of JPEG (smaller files, same quality)",
+                checked = outputFormat,
+                onCheckedChange = { outputFormat = it; viewModel.saveSetting("camera", "heif", it) }
+            )
+        }
+
         // --- Racer Tracking ---
         SettingsSection("Racer Tracking") {
             var trackingEnabled by remember { mutableStateOf(viewModel.loadSettingBool("tracking", "enabled", false)) }
