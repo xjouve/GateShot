@@ -70,10 +70,11 @@ class MacroMode @Inject constructor(
             camera.setFocusDistance(minFocusDist)
         }
 
-        // Maximum OIS — at 10cm magnification, any shake is catastrophic
+        // Maximum OIS — at 10cm magnification, any shake is catastrophic.
+        // No EIS crop — we need every pixel.
         camera.setStabilization(StabilizationConfig(
-            opticalStabilization = true,
-            videoStabilization = false  // No EIS crop — we need every pixel
+            ois = com.gateshot.platform.camera.OisMode.MAXIMUM,
+            eis = com.gateshot.platform.camera.EisMode.OFF
         ))
 
         // Exposure for macro: moderate shutter speed (1/250 is fast enough since

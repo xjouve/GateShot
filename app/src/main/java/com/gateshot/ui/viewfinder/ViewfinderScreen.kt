@@ -41,10 +41,12 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.gateshot.platform.camera.CameraXPlatform
 import com.gateshot.ui.MainUiState
+import androidx.compose.runtime.collectAsState
 import com.gateshot.ui.components.PresetSelector
 import com.gateshot.ui.components.ShutterButton
 import com.gateshot.ui.components.StatusBar
 import com.gateshot.ui.components.TrackingOverlay
+import com.gateshot.ui.components.VendorKeyOverlay
 import com.gateshot.ui.components.ZoneOverlay
 
 @Composable
@@ -143,10 +145,24 @@ fun ViewfinderScreen(
                 .align(Alignment.TopCenter)
         )
 
+        // Dev overlay — vendor key state, gated by Settings toggle.
+        // Anchored top-center so it doesn't collide with the preset column on
+        // the left or the shutter column on the right.
+        if (uiState.showVendorOverlay) {
+            val vendorReport by cameraXPlatform.vendorKeyReport.collectAsState()
+            VendorKeyOverlay(
+                report = vendorReport,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 144.dp)
+            )
+        }
+
         // Preset selector — left side
         PresetSelector(
             currentPreset = uiState.currentPreset,
             displayName = uiState.presetDisplayName,
+            isCoachMode = uiState.mode == com.gateshot.core.mode.AppMode.COACH,
             onPresetSelected = onPresetSelected,
             modifier = Modifier
                 .align(Alignment.CenterStart)

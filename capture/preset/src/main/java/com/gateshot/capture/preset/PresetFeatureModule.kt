@@ -34,7 +34,7 @@ class PresetFeatureModule @Inject constructor(
     override val version = "0.1.0"
     override val requiredMode: AppMode? = null
 
-    private var activePreset: Preset = DefaultPresets.SLALOM_GS
+    private var activePreset: Preset = DefaultPresets.RACE
     private val customPresets = mutableMapOf<String, Preset>()
 
     override suspend fun initialize() {
@@ -68,22 +68,55 @@ class PresetFeatureModule @Inject constructor(
         configStore.set("burst", "frame_count", preset.burst.frameCount)
         configStore.set("burst", "pre_buffer_seconds", preset.burst.preBufferSeconds)
 
-        configStore.set("exposure", "ev_bias", preset.exposure.evBias)
-        configStore.set("exposure", "snow_compensation", preset.exposure.snowCompensation)
-        configStore.set("exposure", "flat_light_auto", preset.exposure.flatLightAuto)
         configStore.set("exposure", "hdr_mode", preset.exposure.hdrMode.name)
 
         configStore.set("af", "mode", preset.autofocus.mode.name)
         configStore.set("af", "reacquisition_speed", preset.autofocus.reacquisitionSpeed.name)
         configStore.set("af", "occlusion_hold", preset.autofocus.occlusionHold)
-        configStore.set("af", "face_priority", preset.autofocus.facePriority)
 
         configStore.set("stabilization", "ois", preset.stabilization.ois.name)
         configStore.set("stabilization", "eis", preset.stabilization.eis.name)
 
-        // Apply camera settings directly — ConfigStore alone is not enough
-        // because most modules don't poll it for changes.
-        // User camera settings from SharedPreferences override preset defaults.
+        // =============================================
+        // Write to SharedPreferences so the Settings screen reflects the
+        // active preset's values. Keys match what SettingsScreen reads.
+        // =============================================
+        userPrefs.edit().apply {
+            // Video recording
+            putFloat("video_resolution", preset.camera.resolutionHeight.toFloat())
+            putFloat("video_frame_rate", preset.camera.frameRate.toFloat())
+            putBoolean("video_hdr", preset.exposure.hdrMode != HdrMode.OFF)
+            putFloat("video_ois_mode", when (preset.stabilization.ois) {
+                OisMode.OFF -> 0f; OisMode.STANDARD -> 1f; OisMode.MAXIMUM -> 2f
+            })
+            putFloat("video_eis_mode", when (preset.stabilization.eis) {
+                EisMode.OFF -> 0f; EisMode.STANDARD -> 1f; EisMode.PANNING -> 2f
+            })
+
+            // Autofocus
+            putFloat("af_mode_index", when (preset.autofocus.mode) {
+                AfMode.SINGLE -> 0f; AfMode.CONTINUOUS -> 1f
+                AfMode.CONTINUOUS_PREDICTIVE -> 2f; AfMode.MANUAL -> 3f
+            })
+            putBoolean("af_face_priority", preset.autofocus.facePriority)
+
+            // Exposure
+            putBoolean("exposure_snow_compensation", preset.exposure.snowCompensation)
+            putFloat("exposure_ev_bias", preset.exposure.evBias)
+            putBoolean("exposure_flat_light_auto", preset.exposure.flatLightAuto)
+
+            // Burst
+            putFloat("burst_buffer_duration", preset.burst.preBufferSeconds)
+
+            // SR: enable for stills presets (preferRaw), disable for video
+            putBoolean("sr_auto_enhance", preset.camera.preferRaw)
+
+            apply()
+        }
+
+        // =============================================
+        // Apply to camera hardware
+        // =============================================
 
         // Manual exposure: if user has manual mode on, use their ISO/shutter
         // Otherwise use the preset's shutter speed hint
@@ -123,25 +156,30 @@ class PresetFeatureModule @Inject constructor(
             ))
         }
 
-        // Exposure: user override from settings takes priority over preset
-        val snowCompEnabled = userPrefs.getBoolean("exposure_snow_compensation", preset.exposure.snowCompensation)
+        // Exposure compensation
+        val snowCompEnabled = preset.exposure.snowCompensation
         val evBias = if (snowCompEnabled) {
-            // When snow comp is on, the SnowExposureModule handles EV dynamically
             preset.exposure.evBias
         } else {
-            // When snow comp is off, use the user's manual EV setting (default 0 = no bias)
             userPrefs.getFloat("exposure_ev_bias", 0f)
         }
         configStore.set("exposure", "snow_compensation", snowCompEnabled)
         configStore.set("exposure", "ev_bias", evBias)
-        configStore.set("exposure", "flat_light_auto",
-            userPrefs.getBoolean("exposure_flat_light_auto", preset.exposure.flatLightAuto))
+        configStore.set("exposure", "flat_light_auto", preset.exposure.flatLightAuto)
         cameraPlatform.setExposureCompensation(evBias)
 
         // Stabilization
         cameraPlatform.setStabilization(StabilizationConfig(
-            opticalStabilization = preset.stabilization.ois != OisMode.OFF,
-            videoStabilization = preset.stabilization.eis != EisMode.OFF
+            ois = when (preset.stabilization.ois) {
+                OisMode.OFF -> com.gateshot.platform.camera.OisMode.OFF
+                OisMode.STANDARD -> com.gateshot.platform.camera.OisMode.STANDARD
+                OisMode.MAXIMUM -> com.gateshot.platform.camera.OisMode.MAXIMUM
+            },
+            eis = when (preset.stabilization.eis) {
+                EisMode.OFF -> com.gateshot.platform.camera.EisMode.OFF
+                EisMode.STANDARD -> com.gateshot.platform.camera.EisMode.STANDARD
+                EisMode.PANNING -> com.gateshot.platform.camera.EisMode.PANNING
+            }
         ))
 
         // ISP: face detection, flash, and bokeh from user settings + preset
@@ -217,7 +255,7 @@ class PresetFeatureModule @Inject constructor(
         override val requiredMode: AppMode? = null
 
         override suspend fun handle(request: Unit): ApiResponse<Boolean> {
-            applyPreset(DefaultPresets.SLALOM_GS)
+            applyPreset(DefaultPresets.RACE)
             return ApiResponse.success(true)
         }
     }

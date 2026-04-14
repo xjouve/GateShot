@@ -10,24 +10,30 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.gateshot.ui.MainViewModel
@@ -37,6 +43,8 @@ fun SettingsScreen(
     viewModel: MainViewModel,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
+
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -55,6 +63,7 @@ fun SettingsScreen(
         // --- Camera Controls ---
         SettingsSection("Camera") {
             var manualMode by remember { mutableStateOf(viewModel.loadSettingBool("camera", "manual_mode", false)) }
+            var extendedIso by remember { mutableStateOf(viewModel.loadSettingBool("camera", "extended_iso", false)) }
             var iso by remember { mutableFloatStateOf(viewModel.loadSettingFloat("camera", "iso", 400f)) }
             var shutterSpeed by remember { mutableFloatStateOf(viewModel.loadSettingFloat("camera", "shutter_speed", 500f)) }
             var wbMode by remember { mutableStateOf(viewModel.loadSettingBool("camera", "auto_wb", true)) }
@@ -70,11 +79,21 @@ fun SettingsScreen(
                 onCheckedChange = { manualMode = it; viewModel.saveSetting("camera", "manual_mode", it) }
             )
             if (manualMode) {
+                SettingsToggle(
+                    title = "Extended ISO range",
+                    subtitle = "Unlock the Pro-mode sensitivity range (>6400) via vendor key",
+                    checked = extendedIso,
+                    onCheckedChange = {
+                        extendedIso = it
+                        viewModel.saveSetting("camera", "extended_iso", it)
+                    }
+                )
                 SettingsSlider(
                     title = "ISO",
-                    subtitle = "Sensor sensitivity (100-19200)",
-                    value = iso,
-                    range = 100f..6400f,
+                    subtitle = if (extendedIso) "Sensor sensitivity (100-25600 extended)"
+                               else "Sensor sensitivity (100-6400)",
+                    value = iso.coerceAtMost(if (extendedIso) 25600f else 6400f),
+                    range = 100f..(if (extendedIso) 25600f else 6400f),
                     unit = "",
                     formatValue = { "${it.toInt()}" },
                     onValueChange = { iso = it; viewModel.saveSetting("camera", "iso", it) }
@@ -111,6 +130,248 @@ fun SettingsScreen(
                 subtitle = "Enable flash for photo capture",
                 checked = flashMode,
                 onCheckedChange = { flashMode = it; viewModel.saveSetting("camera", "flash", it) }
+            )
+        }
+
+        // --- Video Recording ---
+        SettingsSection("Video Recording") {
+            var videoResolution by remember { mutableIntStateOf(
+                viewModel.loadSettingFloat("video", "resolution", 2160f).toInt()
+            ) }
+            var videoFps by remember { mutableIntStateOf(
+                viewModel.loadSettingFloat("video", "frame_rate", 30f).toInt()
+            ) }
+            var hdrEnabled by remember { mutableStateOf(
+                viewModel.loadSettingBool("video", "hdr", false)
+            ) }
+            var oisMode by remember { mutableIntStateOf(
+                viewModel.loadSettingFloat("video", "ois_mode", 1f).toInt()
+            ) }
+            var eisMode by remember { mutableIntStateOf(
+                viewModel.loadSettingFloat("video", "eis_mode", 0f).toInt()
+            ) }
+
+            // Resolution selector
+            Text("Resolution", color = Color.White, fontSize = 15.sp,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                listOf(720 to "720p", 1080 to "1080p", 2160 to "4K").forEach { (res, label) ->
+                    Surface(
+                        onClick = {
+                            videoResolution = res
+                            viewModel.saveSetting("video", "resolution", res.toFloat())
+                        },
+                        shape = RoundedCornerShape(8.dp),
+                        color = if (videoResolution == res) MaterialTheme.colorScheme.primary else Color(0xFF333333),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text(
+                            label,
+                            color = if (videoResolution == res) Color.Black else Color.White,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(vertical = 8.dp)
+                        )
+                    }
+                }
+            }
+
+            // Frame rate selector
+            Text("Frame rate", color = Color.White, fontSize = 15.sp,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                val availableFps = when (videoResolution) {
+                    720 -> listOf(30, 60, 120, 240, 480)
+                    1080 -> listOf(30, 60, 120, 240)
+                    else -> listOf(30, 60, 120) // 4K
+                }
+                availableFps.forEach { fps ->
+                    Surface(
+                        onClick = {
+                            videoFps = fps
+                            viewModel.saveSetting("video", "frame_rate", fps.toFloat())
+                        },
+                        shape = RoundedCornerShape(8.dp),
+                        color = if (videoFps == fps) MaterialTheme.colorScheme.primary else Color(0xFF333333),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text(
+                            "${fps}fps",
+                            color = if (videoFps == fps) Color.Black else Color.White,
+                            fontSize = if (availableFps.size > 4) 11.sp else 13.sp,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(vertical = 8.dp)
+                        )
+                    }
+                }
+            }
+            if (videoFps >= 120) {
+                Text(
+                    if (videoFps >= 240) "Slow-motion: ${videoFps / 30}x slower playback"
+                    else "High frame rate: ${videoFps / 30}x slower in slow-mo",
+                    color = Color(0xFF4FC3F7),
+                    fontSize = 11.sp,
+                    modifier = Modifier.padding(horizontal = 16.dp)
+                )
+            }
+
+            SettingsToggle(
+                title = "Dolby Vision HDR",
+                subtitle = "10-bit HDR video (Android 13+, higher file sizes)",
+                checked = hdrEnabled,
+                onCheckedChange = { hdrEnabled = it; viewModel.saveSetting("video", "hdr", it) }
+            )
+
+            var logProfile by remember { mutableStateOf(viewModel.loadSettingBool("video", "log_profile", false)) }
+            SettingsToggle(
+                title = "LOG color profile",
+                subtitle = "Flat tone curve for grading — needs colour correction in post",
+                checked = logProfile,
+                onCheckedChange = {
+                    logProfile = it
+                    viewModel.saveSetting("video", "log_profile", it)
+                }
+            )
+
+            // OIS mode
+            Text("Optical stabilization", color = Color.White, fontSize = 15.sp,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                listOf(0 to "Off", 1 to "Standard", 2 to "Maximum").forEach { (mode, label) ->
+                    Surface(
+                        onClick = {
+                            oisMode = mode
+                            viewModel.saveSetting("video", "ois_mode", mode.toFloat())
+                        },
+                        shape = RoundedCornerShape(8.dp),
+                        color = if (oisMode == mode) MaterialTheme.colorScheme.primary else Color(0xFF333333),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text(
+                            label,
+                            color = if (oisMode == mode) Color.Black else Color.White,
+                            fontSize = 13.sp,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(vertical = 8.dp)
+                        )
+                    }
+                }
+            }
+
+            // EIS mode
+            Text("Electronic stabilization", color = Color.White, fontSize = 15.sp,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                listOf(0 to "Off", 1 to "Standard", 2 to "Panning").forEach { (mode, label) ->
+                    Surface(
+                        onClick = {
+                            eisMode = mode
+                            viewModel.saveSetting("video", "eis_mode", mode.toFloat())
+                        },
+                        shape = RoundedCornerShape(8.dp),
+                        color = if (eisMode == mode) MaterialTheme.colorScheme.primary else Color(0xFF333333),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text(
+                            label,
+                            color = if (eisMode == mode) Color.Black else Color.White,
+                            fontSize = 13.sp,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(vertical = 8.dp)
+                        )
+                    }
+                }
+            }
+            Text(
+                "Panning: horizontal axis unlocked for smooth pans",
+                color = Color.Gray,
+                fontSize = 11.sp,
+                modifier = Modifier.padding(horizontal = 16.dp)
+            )
+        }
+
+        // --- Autofocus ---
+        SettingsSection("Autofocus") {
+            var afMode by remember { mutableIntStateOf(
+                viewModel.loadSettingFloat("af", "mode_index", 2f).toInt()
+            ) }
+            var facePriority by remember { mutableStateOf(
+                viewModel.loadSettingBool("af", "face_priority", false)
+            ) }
+
+            // AF mode selector
+            Text("AF mode", color = Color.White, fontSize = 15.sp,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                listOf(
+                    0 to "Single",
+                    1 to "Cont.",
+                    2 to "Predictive",
+                    3 to "Manual"
+                ).forEach { (mode, label) ->
+                    Surface(
+                        onClick = {
+                            afMode = mode
+                            viewModel.saveSetting("af", "mode_index", mode.toFloat())
+                        },
+                        shape = RoundedCornerShape(8.dp),
+                        color = if (afMode == mode) MaterialTheme.colorScheme.primary else Color(0xFF333333),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text(
+                            label,
+                            color = if (afMode == mode) Color.Black else Color.White,
+                            fontSize = 11.sp,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(vertical = 8.dp)
+                        )
+                    }
+                }
+            }
+            Text(
+                when (afMode) {
+                    0 -> "Single: focuses once on half-press, locks"
+                    1 -> "Continuous: re-focuses continuously on the center"
+                    2 -> "Predictive: anticipates racer motion for sharp tracking shots"
+                    3 -> "Manual: focus distance set manually (tap focus ring)"
+                    else -> ""
+                },
+                color = Color.Gray,
+                fontSize = 11.sp,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp)
+            )
+
+            SettingsToggle(
+                title = "Face priority",
+                subtitle = "Prefer faces over fastest-moving subject for AF",
+                checked = facePriority,
+                onCheckedChange = { facePriority = it; viewModel.saveSetting("af", "face_priority", it) }
             )
         }
 
@@ -199,6 +460,17 @@ fun SettingsScreen(
                 checked = rawEnabled,
                 onCheckedChange = { rawEnabled = it; viewModel.saveSetting("camera", "save_raw", it) }
             )
+
+            var hrMode by remember { mutableStateOf(viewModel.loadSettingBool("camera", "hr_mode", false)) }
+            SettingsToggle(
+                title = "Hasselblad Haute Résolution",
+                subtitle = "Requests full-sensor remosaic (50 MP main / 200 MP periscope) via vendor keys. On this firmware the HAL gates the larger surface behind a private extension so actual output stays at 12 MP until Oppo exposes it publicly. Toggle rebinds the camera and shows request state in the dev overlay.",
+                checked = hrMode,
+                onCheckedChange = {
+                    hrMode = it
+                    viewModel.saveSetting("camera", "hr_mode", it)
+                }
+            )
             SettingsToggle(
                 title = "HEIF format",
                 subtitle = "Save photos as HEIF instead of JPEG (smaller files, same quality)",
@@ -222,6 +494,18 @@ fun SettingsScreen(
                     trackingEnabled = it
                     viewModel.saveSetting("tracking", "enabled", it)
                     viewModel.onTrackingToggle()
+                }
+            )
+            var hardwareTracking by remember {
+                mutableStateOf(viewModel.loadSettingBool("tracking", "hardware", false))
+            }
+            SettingsToggle(
+                title = "Use hardware tracking AF",
+                subtitle = "MediaTek native tracker via vendor key — faster but less tunable than the software tracker",
+                checked = hardwareTracking,
+                onCheckedChange = {
+                    hardwareTracking = it
+                    viewModel.saveSetting("tracking", "hardware", it)
                 }
             )
             SettingsSlider(
@@ -271,6 +555,41 @@ fun SettingsScreen(
                 unit = "",
                 formatValue = { "${(it * 100).toInt()}%" },
                 onValueChange = { audioSensitivity = it; viewModel.saveSetting("trigger", "audio_sensitivity", it) }
+            )
+        }
+
+        // --- Motion Trigger ---
+        SettingsSection("Motion Trigger") {
+            var motionSensitivity by remember { mutableFloatStateOf(
+                viewModel.loadSettingFloat("trigger", "motion_sensitivity", 0.5f)
+            ) }
+            var motionCooldown by remember { mutableFloatStateOf(
+                viewModel.loadSettingFloat("trigger", "motion_cooldown", 500f)
+            ) }
+
+            SettingsSlider(
+                title = "Motion sensitivity",
+                subtitle = "How much movement in a trigger zone fires the shutter",
+                value = motionSensitivity,
+                range = 0.1f..1f,
+                unit = "",
+                formatValue = {
+                    when {
+                        it < 0.3f -> "Low"
+                        it < 0.7f -> "Medium"
+                        else -> "High"
+                    } + " (${(it * 100).toInt()}%)"
+                },
+                onValueChange = { motionSensitivity = it; viewModel.saveSetting("trigger", "motion_sensitivity", it) }
+            )
+            SettingsSlider(
+                title = "Trigger cooldown",
+                subtitle = "Minimum time between triggers for the same zone",
+                value = motionCooldown,
+                range = 200f..3000f,
+                unit = "ms",
+                formatValue = { "${it.toInt()}ms" },
+                onValueChange = { motionCooldown = it; viewModel.saveSetting("trigger", "motion_cooldown", it) }
             )
         }
 
@@ -330,12 +649,12 @@ fun SettingsScreen(
 
             SettingsToggle(
                 title = "Auto enhance zoom",
-                subtitle = "Multi-frame denoise + AI upscale beyond 13.2x",
+                subtitle = "Multi-frame denoise + sharpening for telephoto shots (5x+)",
                 checked = srEnabled,
                 onCheckedChange = { srEnabled = it; viewModel.saveSetting("sr", "auto_enhance", it) }
             )
             Text(
-                text = "Pipeline: denoise at 5x+, deconvolution with teleconverter, AI upscale at 13.2x+",
+                text = "Pipeline: denoise at 5x+, deconvolution with teleconverter, enhanced upscale at 13.2x+",
                 color = Color.Gray,
                 fontSize = 12.sp,
                 modifier = Modifier.padding(horizontal = 16.dp)
@@ -359,34 +678,241 @@ fun SettingsScreen(
             )
         }
 
-        // --- Export ---
-        SettingsSection("Export & Sharing") {
-            var watermarkEnabled by remember { mutableStateOf(false) }
-            var watermarkText by remember { mutableStateOf("GateShot") }
+        // --- Voice Commands ---
+        SettingsSection("Voice Commands") {
+            var voiceEnabled by remember { mutableStateOf(
+                viewModel.loadSettingBool("voice", "enabled", false)
+            ) }
 
             SettingsToggle(
-                title = "Watermark on Social shares",
-                subtitle = "Adds text watermark to Social preset exports",
-                checked = watermarkEnabled,
-                onCheckedChange = { watermarkEnabled = it; viewModel.saveSetting("export", "watermark_enabled", it) }
+                title = "Enable voice commands",
+                subtitle = "\"Start recording\", \"Stop\", \"Photo\", \"Slow-mo\", \"Next mode\"",
+                checked = voiceEnabled,
+                onCheckedChange = {
+                    voiceEnabled = it
+                    viewModel.saveSetting("voice", "enabled", it)
+                    if (it) viewModel.startVoiceCommands() else viewModel.stopVoiceCommands()
+                }
             )
-            if (watermarkEnabled) {
+            if (voiceEnabled) {
                 Text(
-                    text = "Watermark: \"$watermarkText\"",
-                    color = Color.White,
-                    fontSize = 14.sp,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                    "Commands: \"start recording\", \"stop\", \"mark\", \"slow-mo\", \"photo\", \"next mode\"",
+                    color = Color.Gray,
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(horizontal = 16.dp)
                 )
             }
         }
 
-        // --- Session ---
-        SettingsSection("Session") {
+        // --- Export ---
+        SettingsSection("Export & Sharing") {
+            var watermarkEnabled by remember { mutableStateOf(
+                viewModel.loadSettingBool("export", "watermark_enabled", false)
+            ) }
+            var fedExportStatus by remember { mutableStateOf("") }
+
+            SettingsToggle(
+                title = "Watermark on Social shares",
+                subtitle = "Adds \"GateShot\" watermark to exported photos/videos",
+                checked = watermarkEnabled,
+                onCheckedChange = { watermarkEnabled = it; viewModel.saveSetting("export", "watermark_enabled", it) }
+            )
+
+            // Federation export
+            Surface(
+                onClick = {
+                    fedExportStatus = "Exporting..."
+                    viewModel.exportFederationFormat(context) { status ->
+                        fedExportStatus = status
+                    }
+                },
+                shape = RoundedCornerShape(8.dp),
+                color = Color(0xFF333333),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp)
+            ) {
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Text("Federation Export", color = Color.White, fontSize = 15.sp)
+                    Text("FIS-compatible naming + metadata CSV", color = Color.Gray, fontSize = 12.sp)
+                }
+            }
+            if (fedExportStatus.isNotBlank()) {
+                Text(fedExportStatus, color = Color(0xFF4FC3F7), fontSize = 12.sp,
+                    modifier = Modifier.padding(horizontal = 16.dp))
+            }
+        }
+
+        // --- Storage ---
+        SettingsSection("Storage") {
+            val uiState by viewModel.uiState.collectAsState()
+            val context = LocalContext.current
+            val videoDir = remember {
+                java.io.File(context.getExternalFilesDir(null), "GateShot/videos")
+            }
+            val photoDir = remember {
+                java.io.File(context.getExternalFilesDir(null), "GateShot/photos")
+            }
+            val videoCount = remember { videoDir.listFiles()?.count { it.extension == "mp4" } ?: 0 }
+            val photoCount = remember { photoDir.listFiles()?.size ?: 0 }
+            val videoSizeMb = remember {
+                (videoDir.listFiles()?.sumOf { it.length() } ?: 0L) / (1024 * 1024)
+            }
+            val photoSizeMb = remember {
+                (photoDir.listFiles()?.sumOf { it.length() } ?: 0L) / (1024 * 1024)
+            }
+
             Text(
-                text = "Current session settings are configured when creating a new session (event name, discipline, date).",
+                text = "Free space: ${"%.1f".format(uiState.storageRemainingGb)} GB",
+                color = Color.White,
+                fontSize = 15.sp,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+            )
+            Text(
+                text = "Photos: $photoCount files (${photoSizeMb} MB)",
                 color = Color.Gray,
                 fontSize = 13.sp,
-                modifier = Modifier.padding(horizontal = 16.dp)
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp)
+            )
+            Text(
+                text = "Videos: $videoCount files (${videoSizeMb} MB)",
+                color = Color.Gray,
+                fontSize = 13.sp,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp)
+            )
+            Text(
+                text = "Total: ${photoSizeMb + videoSizeMb} MB used by GateShot",
+                color = Color.Gray,
+                fontSize = 13.sp,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp)
+            )
+        }
+
+        // --- Vendor experiments ---
+        SettingsSection("Vendor experiments") {
+            var aiShutter by remember { mutableStateOf(viewModel.loadSettingBool("vendor", "ai_shutter", false)) }
+            SettingsToggle(
+                title = "AI shutter (best-shot picker)",
+                subtitle = "Hardware best-frame selection from a short burst around the shutter press. Vendor key: com.oplus.aishutter.enable",
+                checked = aiShutter,
+                onCheckedChange = { aiShutter = it; viewModel.saveSetting("vendor", "ai_shutter", it) }
+            )
+
+            var bracketMode by remember { mutableFloatStateOf(viewModel.loadSettingFloat("vendor", "bracket_mode", 0f)) }
+            SettingsSlider(
+                title = "Exposure bracketing",
+                subtitle = "0 = off, 1 = AEB ±1 EV, 2 = wider AEB. Vendor key: com.oplus.BracketMode",
+                value = bracketMode,
+                range = 0f..3f,
+                unit = "",
+                formatValue = { "${it.toInt()}" },
+                onValueChange = { bracketMode = it; viewModel.saveSetting("vendor", "bracket_mode", it) }
+            )
+
+            var mdptzMode by remember { mutableFloatStateOf(viewModel.loadSettingFloat("vendor", "mdptz_mode", 0f)) }
+            SettingsSlider(
+                title = "Hardware mdptz subject framing",
+                subtitle = "Motion-Directed Pan/Tilt/Zoom on the periscope. 0 = off, 1+ = follow. Vendor key: com.mediatek.mdptzfeature.mdptzMode",
+                value = mdptzMode,
+                range = 0f..3f,
+                unit = "",
+                formatValue = { "${it.toInt()}" },
+                onValueChange = { mdptzMode = it; viewModel.saveSetting("vendor", "mdptz_mode", it) }
+            )
+
+            var aiScene by remember { mutableStateOf(viewModel.loadSettingBool("vendor", "ai_scene", false)) }
+            SettingsToggle(
+                title = "AI scene detection (ASD)",
+                subtitle = "Let the HAL classify the scene (snow / portrait / fast-motion / etc.). Vendor keys: com.mediatek.facefeature.asdmode + com.oplus.ai.scene.app.enable",
+                checked = aiScene,
+                onCheckedChange = { aiScene = it; viewModel.saveSetting("vendor", "ai_scene", it) }
+            )
+
+            var aeMetering by remember { mutableFloatStateOf(viewModel.loadSettingFloat("vendor", "ae_metering", 0f)) }
+            SettingsSlider(
+                title = "AE metering mode",
+                subtitle = "0 = average, 1 = spot, 2 = matrix. Spot prevents snow blow-out on the racer. Vendor key: com.mediatek.3afeature.aeMeteringMode",
+                value = aeMetering,
+                range = 0f..2f,
+                unit = "",
+                formatValue = { listOf("Average", "Spot", "Matrix").getOrElse(it.toInt()) { "?" } },
+                onValueChange = { aeMetering = it; viewModel.saveSetting("vendor", "ae_metering", it) }
+            )
+
+            var smvrMode by remember { mutableFloatStateOf(viewModel.loadSettingFloat("vendor", "smvr_mode", 0f)) }
+            SettingsSlider(
+                title = "Slow-motion (SMVR)",
+                subtitle = "MediaTek slow-mo path. 0=off, 1=120, 2=240, 3=480, 4=960 fps. Vendor key: com.mediatek.smvrfeature.smvrMode",
+                value = smvrMode,
+                range = 0f..4f,
+                unit = "",
+                formatValue = { listOf("off", "120 fps", "240 fps", "480 fps", "960 fps").getOrElse(it.toInt()) { "?" } },
+                onValueChange = { smvrMode = it; viewModel.saveSetting("vendor", "smvr_mode", it) }
+            )
+
+            var fastMotion by remember { mutableStateOf(viewModel.loadSettingBool("vendor", "fast_motion", false)) }
+            SettingsToggle(
+                title = "Hyperlapse (fast motion)",
+                subtitle = "Time-lapse video recording. Vendor key: com.oplus.fastmotion.mode.enable",
+                checked = fastMotion,
+                onCheckedChange = { fastMotion = it; viewModel.saveSetting("vendor", "fast_motion", it) }
+            )
+
+            var proTorch by remember { mutableFloatStateOf(viewModel.loadSettingFloat("vendor", "pro_torch", 0f)) }
+            SettingsSlider(
+                title = "Pro torch",
+                subtitle = "Manual torch intensity ramp (0 = off). Vendor key: com.oplus.ProTorchMode",
+                value = proTorch,
+                range = 0f..3f,
+                unit = "",
+                formatValue = { "${it.toInt()}" },
+                onValueChange = { proTorch = it; viewModel.saveSetting("vendor", "pro_torch", it) }
+            )
+
+            var filterPreset by remember { mutableFloatStateOf(viewModel.loadSettingFloat("vendor", "filter_preset", 0f)) }
+            SettingsSlider(
+                title = "Hasselblad XCD filter",
+                subtitle = "0 = Original, 1+ = vendor LUT presets matching the native filter strip. Vendor key: com.oplus.app.filter.type",
+                value = filterPreset,
+                range = 0f..7f,
+                unit = "",
+                formatValue = { "${it.toInt()}" },
+                onValueChange = { filterPreset = it; viewModel.saveSetting("vendor", "filter_preset", it) }
+            )
+
+            var wbKelvin by remember { mutableFloatStateOf(viewModel.loadSettingFloat("vendor", "manual_wb_kelvin", 0f)) }
+            SettingsSlider(
+                title = "Manual WB temperature (Kelvin)",
+                subtitle = "0 = use auto. Otherwise overrides via vendor com.oplus.manualWB.color_temperature",
+                value = wbKelvin,
+                range = 0f..10000f,
+                unit = "K",
+                formatValue = { if (it < 100f) "auto" else "${it.toInt()}K" },
+                onValueChange = { wbKelvin = it; viewModel.saveSetting("vendor", "manual_wb_kelvin", it) }
+            )
+
+            var ultraHr by remember { mutableStateOf(viewModel.loadSettingBool("vendor", "ultra_hr", false)) }
+            SettingsToggle(
+                title = "Alternate ultra-HR enable",
+                subtitle = "Sibling key to remosaicenable: com.oplus.ultra.high.resolution.enable. Same caveat — capped by the public stream config map.",
+                checked = ultraHr,
+                onCheckedChange = { ultraHr = it; viewModel.saveSetting("vendor", "ultra_hr", it) }
+            )
+        }
+
+        // --- Developer ---
+        SettingsSection("Developer") {
+            var vendorOverlay by remember {
+                mutableStateOf(viewModel.loadSettingBool("dev", "vendor_overlay", false))
+            }
+            SettingsToggle(
+                title = "Vendor key overlay",
+                subtitle = "Show live flipmode / eismode / stab / tracking / LOG values + any HAL rejections in the viewfinder",
+                checked = vendorOverlay,
+                onCheckedChange = {
+                    vendorOverlay = it
+                    viewModel.saveSetting("dev", "vendor_overlay", it)
+                }
             )
         }
 

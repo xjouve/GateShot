@@ -12,7 +12,12 @@ data class CameraConfig(
     val enableRaw: Boolean = false,
     val hdrProfile: HdrProfile = HdrProfile.OFF,
     val outputFormat: ImageOutputFormat = ImageOutputFormat.JPEG,
-    val jpegQuality: Int = 95
+    val jpegQuality: Int = 95,
+    // Hasselblad Haute Résolution: requests full-sensor remosaic capture
+    // (50 MP main / 200 MP periscope instead of the binned 12 MP default).
+    // Triggered via com.mediatek.control.capture.remosaicenable + output
+    // size pinned to the largest advertised JPEG size on the active lens.
+    val highResolution: Boolean = false
 )
 
 enum class ImageOutputFormat { JPEG, HEIF }
@@ -41,7 +46,13 @@ data class CameraCapabilities(
     val supportsDolbyVision: Boolean = false,
     val minFocusDistance: Float = 0f,
     val supportsHeif: Boolean = false,
-    val supportsFaceDetection: Boolean = false
+    val supportsFaceDetection: Boolean = false,
+    // True when the active lens advertises a JPEG output larger than the
+    // binned default (eg 50 MP main / 200 MP periscope). Only meaningful
+    // after the camera has been opened and readCamera2Characteristics has
+    // populated it from the SCALER_STREAM_CONFIGURATION_MAP.
+    val supportsHighResolution: Boolean = false,
+    val maxJpegSize: Size? = null
 )
 
 data class IspPipelineConfig(
@@ -88,9 +99,19 @@ data class ManualExposure(
 )
 
 data class StabilizationConfig(
-    val opticalStabilization: Boolean = true,
-    val videoStabilization: Boolean = false
+    val ois: OisMode = OisMode.STANDARD,
+    val eis: EisMode = EisMode.OFF
 )
+
+enum class OisMode { OFF, STANDARD, MAXIMUM }
+enum class EisMode { OFF, STANDARD, PANNING }
+
+enum class CameraAfMode {
+    SINGLE,       // CONTROL_AF_MODE_AUTO — focuses once, locks
+    CONTINUOUS,   // CONTROL_AF_MODE_CONTINUOUS_VIDEO
+    PREDICTIVE,   // CONTROL_AF_MODE_CONTINUOUS_PICTURE — predictive AF for moving subjects
+    MANUAL        // CONTROL_AF_MODE_OFF — user sets focus distance
+}
 
 data class AfRegion(
     val centerX: Float,    // Normalized 0-1
@@ -111,6 +132,7 @@ interface CameraPlatform {
     val isRecording: StateFlow<Boolean>
     val capabilities: CameraCapabilities?
     val lastCaptureMetadata: CaptureMetadata?
+    val vendorKeyReport: StateFlow<VendorKeyReport>
 
     suspend fun open(config: CameraConfig)
     suspend fun close()
@@ -118,7 +140,25 @@ interface CameraPlatform {
     fun setExposureCompensation(ev: Float)
     fun setManualExposure(exposure: ManualExposure)
     fun setStabilization(config: StabilizationConfig)
+    fun setAfMode(mode: CameraAfMode)
+    fun setHardwareTracking(enabled: Boolean, region: AfRegion? = null)
+    fun setLogColorProfile(enabled: Boolean)
+    fun setExtendedIsoEnabled(enabled: Boolean)
     fun setAfRegions(regions: List<AfRegion>)
+
+    // ── Tier 1 / 2 / 3 vendor features ──────────────────────────────────────
+    fun setAiShutter(enabled: Boolean)
+    fun setBracketMode(mode: Int)               // 0 = off, 1..N = AEB
+    fun setMdptzMode(mode: Int, pickup: AfRegion? = null)
+    fun setAiScene(enabled: Boolean)
+    fun setAeMetering(mode: Int)                // 0 = average, 1 = spot, 2 = matrix
+    fun setExposureRoi(ae: AfRegion? = null, af: AfRegion? = null, awb: AfRegion? = null)
+    fun setSmvrMode(mode: Int)                  // 0 = off, 1 = 120, 2 = 240, 3 = 480, 4 = 960
+    fun setFastMotion(enabled: Boolean)
+    fun setProTorch(level: Int)                 // 0 = off, 1..N = intensity
+    fun setFilterPreset(presetId: Int)          // 0 = original
+    fun setManualWb(kelvin: Int?, tint: Int? = null)
+    fun setUltraHighResolution(enabled: Boolean)
     fun setFocusDistance(dioptres: Float)
     fun setIspPipeline(config: IspPipelineConfig)
     fun setWhiteBalanceGains(gains: WhiteBalanceGains)

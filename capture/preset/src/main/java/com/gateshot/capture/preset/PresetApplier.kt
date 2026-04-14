@@ -33,31 +33,24 @@ class PresetApplier @Inject constructor(
     /**
      * Configure ISP noise reduction, sharpening, and flash per preset.
      *
-     * For presets that use our custom SR pipeline (SLALOM_GS, SPEED), we
-     * DISABLE the ISP's noise reduction and sharpening to prevent double-
-     * processing. Our multi-frame denoise + custom sharpening produces
-     * better results than the ISP's single-frame algorithms.
+     * For presets that use our custom SR pipeline (RACE), we DISABLE the
+     * ISP's noise reduction and sharpening to prevent double-processing.
+     * Our multi-frame denoise + custom sharpening produces better results
+     * than the ISP's single-frame algorithms.
      *
-     * For video-focused presets (TRAINING), we keep ISP processing ON
+     * For video-focused presets (VIDEO), we keep ISP processing ON
      * because the video stream doesn't go through our SR pipeline.
      */
     private fun applyIspPipeline(preset: Preset) {
         val useCustomSr = preset.camera.preferRaw ||
-            preset.category == PresetCategory.TECHNICAL ||
-            preset.category == PresetCategory.SPEED
+            preset.category == PresetCategory.TECHNICAL
 
         val config = IspPipelineConfig(
             noiseReduction = if (useCustomSr) IspNoiseReduction.OFF else IspNoiseReduction.FAST,
             edgeEnhancement = if (useCustomSr) IspEdgeMode.OFF else IspEdgeMode.FAST,
             hotPixelCorrection = IspHotPixel.FAST,
             faceDetection = preset.autofocus.facePriority,
-            flashMode = when (preset.category) {
-                // Outdoor action presets: always disable flash
-                PresetCategory.TECHNICAL, PresetCategory.SPEED -> FlashMode.OFF
-                // Creative/coaching: allow flash for macro/inspection
-                PresetCategory.CREATIVE -> FlashMode.OFF
-                PresetCategory.COACHING -> FlashMode.OFF
-            }
+            flashMode = FlashMode.OFF  // All presets: outdoor action, flash off
         )
 
         camera.setIspPipeline(config)
@@ -72,7 +65,7 @@ class PresetApplier @Inject constructor(
      * faster, so we lock exposure to manual mode with the fast shutter
      * and let snow exposure compensation handle brightness via EV bias.
      *
-     * For presets like Atmosphere that use slower shutters (1/250), we
+     * For presets like Panning that use slower shutters (1/125), we
      * use the MIN (slowest allowed) to get the motion blur effect.
      */
     private fun applyExposure(camera: CameraPreset, exposure: ExposurePreset) {
@@ -86,7 +79,7 @@ class PresetApplier @Inject constructor(
             return
         }
 
-        // For action presets (TECHNICAL, SPEED), use the fastest shutter.
+        // For action presets (RACE), use the fastest shutter.
         // For creative presets (PANNING), use the slowest to get motion blur.
         val targetShutterNs = fastShutterNs ?: slowShutterNs!!
 
@@ -116,21 +109,17 @@ class PresetApplier @Inject constructor(
      * but keep OIS on (vertical shake still needs correction).
      */
     private fun applyStabilization(stabilization: StabilizationPreset) {
-        val ois = when (stabilization.ois) {
-            OisMode.OFF -> false
-            OisMode.STANDARD -> true
-            OisMode.MAXIMUM -> true   // Camera2 doesn't distinguish standard/max — OIS is on or off
-        }
-
-        val eis = when (stabilization.eis) {
-            EisMode.OFF -> false
-            EisMode.STANDARD -> true
-            EisMode.PANNING -> false  // Panning mode: disable EIS so horizontal movement is preserved
-        }
-
         this.camera.setStabilization(StabilizationConfig(
-            opticalStabilization = ois,
-            videoStabilization = eis
+            ois = when (stabilization.ois) {
+                OisMode.OFF -> com.gateshot.platform.camera.OisMode.OFF
+                OisMode.STANDARD -> com.gateshot.platform.camera.OisMode.STANDARD
+                OisMode.MAXIMUM -> com.gateshot.platform.camera.OisMode.MAXIMUM
+            },
+            eis = when (stabilization.eis) {
+                EisMode.OFF -> com.gateshot.platform.camera.EisMode.OFF
+                EisMode.STANDARD -> com.gateshot.platform.camera.EisMode.STANDARD
+                EisMode.PANNING -> com.gateshot.platform.camera.EisMode.PANNING
+            }
         ))
     }
 

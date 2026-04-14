@@ -16,6 +16,7 @@ import android.os.Build
 import android.os.Environment
 import android.util.Range
 import android.util.Size
+import android.view.Surface
 import androidx.camera.camera2.interop.Camera2CameraInfo
 import androidx.camera.camera2.interop.Camera2Interop
 import androidx.camera.core.Camera
@@ -59,6 +60,9 @@ class CameraXPlatform @Inject constructor(
     private val _state = MutableStateFlow(CameraState.CLOSED)
     override val state: StateFlow<CameraState> = _state.asStateFlow()
 
+    private val _vendorKeyReport = MutableStateFlow(VendorKeyReport())
+    override val vendorKeyReport: StateFlow<VendorKeyReport> = _vendorKeyReport.asStateFlow()
+
     private val _isRecording = MutableStateFlow(false)
     override val isRecording: StateFlow<Boolean> = _isRecording.asStateFlow()
 
@@ -85,7 +89,40 @@ class CameraXPlatform @Inject constructor(
     // Camera2 state
     private var activeManualExposure = ManualExposure()
     private var activeStabilization = StabilizationConfig()
+    private var activeAfMode: CameraAfMode = CameraAfMode.PREDICTIVE
     private var activeAfRegions: List<AfRegion> = emptyList()
+    private var activeHardwareTracking: Boolean = false
+    private var activeHardwareTrackingRegion: AfRegion? = null
+    private var activeLogProfile: Boolean = false
+    private var activeExtendedIso: Boolean = false
+
+    // Tier 1/2/3 vendor feature state
+    private var activeAiShutter: Boolean = false
+    private var activeBracketMode: Int = 0
+    private var activeMdptzMode: Int = 0
+    private var activeMdptzPickup: AfRegion? = null
+    private var activeAiScene: Boolean = false
+    private var activeAeMetering: Int = 0
+    private var activeAeRoi: AfRegion? = null
+    private var activeAfRoiVendor: AfRegion? = null
+    private var activeAwbRoi: AfRegion? = null
+    private var activeSmvrMode: Int = 0
+    private var activeFastMotion: Boolean = false
+    private var activeProTorch: Int = 0
+    private var activeFilterPreset: Int = 0
+    private var activeManualWbKelvin: Int? = null
+    private var activeManualWbTint: Int? = null
+    private var activeUltraHighRes: Boolean = false
+
+    // Latest result-key readouts from the capture callback
+    private var lastResultLuxIndex: Int? = null
+    private var lastResultAvgBrightness: Int? = null
+    private var lastResultAwbCct: Int? = null
+    private var lastResultAsdRaw: Int? = null
+    private var lastResultAsdOplus: Int? = null
+    private var lastResultMotionFrames: Int? = null
+    private var lastResultAiShutterMotion: Int? = null
+    private var lastResultTeleEisActive: Boolean? = null
     private var activeFocusDistance: Float? = null
     private var activeIspConfig = IspPipelineConfig()
     private var activeWbGains: WhiteBalanceGains? = null
@@ -99,6 +136,10 @@ class CameraXPlatform @Inject constructor(
     // RAW capture support
     private var rawImageReader: ImageReader? = null
     private var rawCamera2Id: String? = null
+
+    // Tracks the requested zoom ratio so the periscope upside-down fix can be
+    // re-applied whenever the camera is rebound or the zoom changes.
+    private var currentZoomRatio: Float = 1f
 
     // Video recording state
     private var recordingStartTime: Long = 0
@@ -122,6 +163,27 @@ class CameraXPlatform @Inject constructor(
         frameListeners.remove(listener)
     }
 
+    /**
+     * Get the current preview bitmap (RGB) from the PreviewView.
+     * Returns null if preview is not available. Must be called from the main thread
+     * or via a handler post. Thread-safe: internally posts to main looper.
+     */
+    fun getPreviewBitmap(): android.graphics.Bitmap? {
+        val view = previewView ?: return null
+        // PreviewView.getBitmap() must be called on main thread
+        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+            return view.bitmap
+        }
+        var result: android.graphics.Bitmap? = null
+        val latch = java.util.concurrent.CountDownLatch(1)
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            result = view.bitmap
+            latch.countDown()
+        }
+        latch.await(500, java.util.concurrent.TimeUnit.MILLISECONDS)
+        return result
+    }
+
     override suspend fun open(config: CameraConfig) {
         // Invalidate any previous analysis fallback so it stops
         analysisGeneration++
@@ -134,8 +196,17 @@ class CameraXPlatform @Inject constructor(
 
             val cameraSelector = buildCameraSelector(config)
 
-            // Build preview
-            preview = Preview.Builder().build()
+            // Build preview, attaching a vendor-key result reader so the dev
+            // overlay can show real-time readouts from the HAL (lux index,
+            // detected scene, motion frames, AWB CCT, AI-shutter motion).
+            val previewBuilder = Preview.Builder()
+            try {
+                Camera2Interop.Extender(previewBuilder).setSessionCaptureCallback(vendorResultCallback)
+            } catch (e: Throwable) {
+                android.util.Log.w("CameraXPlatform",
+                    "Could not attach vendor result callback: ${e.message}")
+            }
+            preview = previewBuilder.build()
 
             // Build image capture with Camera2 manual controls
             imageCapture = buildImageCapture(config)
@@ -175,6 +246,12 @@ class CameraXPlatform @Inject constructor(
                 }
 
                 previewView?.let { preview?.surfaceProvider = it.surfaceProvider }
+
+                // Oppo Find X9 Pro: the Hasselblad periscope telephoto module is
+                // physically mounted rotated 180°, so once the logical camera
+                // crosses ~3x zoom and engages the periscope, frames arrive
+                // flipped. Apply the rotation fix based on current zoom.
+                applyTelephotoUpsideDownFix(currentZoomRatio)
 
                 // Start periodic frame analysis after preview surface is connected.
                 // Uses PreviewView.getBitmap() since ImageAnalysis can't bind on this device.
@@ -216,7 +293,36 @@ class CameraXPlatform @Inject constructor(
         videoCapture = null
         activeManualExposure = ManualExposure()
         activeStabilization = StabilizationConfig()
+        activeAfMode = CameraAfMode.PREDICTIVE
         activeAfRegions = emptyList()
+        activeHardwareTracking = false
+        activeHardwareTrackingRegion = null
+        activeLogProfile = false
+        activeExtendedIso = false
+        activeAiShutter = false
+        activeBracketMode = 0
+        activeMdptzMode = 0
+        activeMdptzPickup = null
+        activeAiScene = false
+        activeAeMetering = 0
+        activeAeRoi = null
+        activeAfRoiVendor = null
+        activeAwbRoi = null
+        activeSmvrMode = 0
+        activeFastMotion = false
+        activeProTorch = 0
+        activeFilterPreset = 0
+        activeManualWbKelvin = null
+        activeManualWbTint = null
+        activeUltraHighRes = false
+        lastResultLuxIndex = null
+        lastResultAvgBrightness = null
+        lastResultAwbCct = null
+        lastResultAsdRaw = null
+        lastResultAsdOplus = null
+        lastResultMotionFrames = null
+        lastResultAiShutterMotion = null
+        lastResultTeleEisActive = null
         activeFocusDistance = null
         sensorArraySize = null
         _state.value = CameraState.CLOSED
@@ -228,6 +334,7 @@ class CameraXPlatform @Inject constructor(
 
     override fun setZoom(ratio: Float) {
         camera?.cameraControl?.setZoomRatio(ratio)
+        applyTelephotoUpsideDownFix(ratio)
     }
 
     override fun setExposureCompensation(ev: Float) {
@@ -247,6 +354,99 @@ class CameraXPlatform @Inject constructor(
 
     override fun setStabilization(config: StabilizationConfig) {
         activeStabilization = config
+        applyCaptureRequestSettings()
+    }
+
+    override fun setAfMode(mode: CameraAfMode) {
+        activeAfMode = mode
+        // Manual focus mode clears any prior focus-distance override only if
+        // we are switching *out* of MANUAL — otherwise leave the user's
+        // focusDistance setpoint alone.
+        if (mode != CameraAfMode.MANUAL) {
+            activeFocusDistance = null
+        }
+        applyCaptureRequestSettings()
+    }
+
+    override fun setHardwareTracking(enabled: Boolean, region: AfRegion?) {
+        activeHardwareTracking = enabled
+        activeHardwareTrackingRegion = region
+        applyCaptureRequestSettings()
+    }
+
+    override fun setLogColorProfile(enabled: Boolean) {
+        activeLogProfile = enabled
+        applyCaptureRequestSettings()
+    }
+
+    override fun setExtendedIsoEnabled(enabled: Boolean) {
+        activeExtendedIso = enabled
+        applyCaptureRequestSettings()
+    }
+
+    // ── Tier 1/2/3 vendor feature setters ──────────────────────────────────
+
+    override fun setAiShutter(enabled: Boolean) {
+        activeAiShutter = enabled
+        applyCaptureRequestSettings()
+    }
+
+    override fun setBracketMode(mode: Int) {
+        activeBracketMode = mode.coerceAtLeast(0)
+        applyCaptureRequestSettings()
+    }
+
+    override fun setMdptzMode(mode: Int, pickup: AfRegion?) {
+        activeMdptzMode = mode.coerceAtLeast(0)
+        activeMdptzPickup = pickup
+        applyCaptureRequestSettings()
+    }
+
+    override fun setAiScene(enabled: Boolean) {
+        activeAiScene = enabled
+        applyCaptureRequestSettings()
+    }
+
+    override fun setAeMetering(mode: Int) {
+        activeAeMetering = mode.coerceAtLeast(0)
+        applyCaptureRequestSettings()
+    }
+
+    override fun setExposureRoi(ae: AfRegion?, af: AfRegion?, awb: AfRegion?) {
+        activeAeRoi = ae
+        activeAfRoiVendor = af
+        activeAwbRoi = awb
+        applyCaptureRequestSettings()
+    }
+
+    override fun setSmvrMode(mode: Int) {
+        activeSmvrMode = mode.coerceAtLeast(0)
+        applyCaptureRequestSettings()
+    }
+
+    override fun setFastMotion(enabled: Boolean) {
+        activeFastMotion = enabled
+        applyCaptureRequestSettings()
+    }
+
+    override fun setProTorch(level: Int) {
+        activeProTorch = level.coerceAtLeast(0)
+        applyCaptureRequestSettings()
+    }
+
+    override fun setFilterPreset(presetId: Int) {
+        activeFilterPreset = presetId.coerceAtLeast(0)
+        applyCaptureRequestSettings()
+    }
+
+    override fun setManualWb(kelvin: Int?, tint: Int?) {
+        activeManualWbKelvin = kelvin
+        activeManualWbTint = tint
+        applyCaptureRequestSettings()
+    }
+
+    override fun setUltraHighResolution(enabled: Boolean) {
+        activeUltraHighRes = enabled
         applyCaptureRequestSettings()
     }
 
@@ -323,21 +523,28 @@ class CameraXPlatform @Inject constructor(
             }
 
             // ── OIS ─────────────────────────────────────────────────────────
+            // Camera2 only exposes OFF/ON for LENS_OPTICAL_STABILIZATION_MODE,
+            // so MAXIMUM maps to ON like STANDARD; the visible difference comes
+            // from the EIS coupling below.
             opts.setCaptureRequestOption(
                 CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE,
-                if (activeStabilization.opticalStabilization)
-                    CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_ON
-                else
-                    CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_OFF
+                when (activeStabilization.ois) {
+                    OisMode.OFF -> CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_OFF
+                    OisMode.STANDARD,
+                    OisMode.MAXIMUM -> CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_ON
+                }
             )
 
             // ── Video stabilization (EIS) ───────────────────────────────────
+            // PANNING leaves video stabilization OFF on purpose so horizontal
+            // pans aren't damped — important for follow shots in slalom.
             opts.setCaptureRequestOption(
                 CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE,
-                if (activeStabilization.videoStabilization)
-                    CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_ON
-                else
-                    CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF
+                when (activeStabilization.eis) {
+                    EisMode.OFF,
+                    EisMode.PANNING -> CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF
+                    EisMode.STANDARD -> CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_ON
+                }
             )
 
             // ── ISP noise reduction ─────────────────────────────────────────
@@ -415,6 +622,22 @@ class CameraXPlatform @Inject constructor(
             // mode replaces the ISP's default tone mapping and produces
             // images that are too dark.
 
+            // ── AF mode ─────────────────────────────────────────────────────
+            // Manual focus distance overrides AF mode (forces OFF), and AF
+            // regions force CONTINUOUS_VIDEO so tap-to-focus tracks. Otherwise
+            // the user-selected AF mode applies.
+            val manualFocusActive = activeFocusDistance?.let { it > 0f } == true
+            val afMode = when {
+                manualFocusActive -> CameraMetadata.CONTROL_AF_MODE_OFF
+                activeAfRegions.isNotEmpty() -> CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO
+                activeAfMode == CameraAfMode.MANUAL -> CameraMetadata.CONTROL_AF_MODE_OFF
+                activeAfMode == CameraAfMode.SINGLE -> CameraMetadata.CONTROL_AF_MODE_AUTO
+                activeAfMode == CameraAfMode.CONTINUOUS -> CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO
+                activeAfMode == CameraAfMode.PREDICTIVE -> CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE
+                else -> CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE
+            }
+            opts.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, afMode)
+
             // ── AF regions ──────────────────────────────────────────────────
             if (activeAfRegions.isNotEmpty()) {
                 val sensorRect = sensorArraySize
@@ -425,28 +648,279 @@ class CameraXPlatform @Inject constructor(
 
                     opts.setCaptureRequestOption(CaptureRequest.CONTROL_AF_REGIONS, meteringRects)
                     opts.setCaptureRequestOption(CaptureRequest.CONTROL_AE_REGIONS, meteringRects)
-                    opts.setCaptureRequestOption(
-                        CaptureRequest.CONTROL_AF_MODE,
-                        CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO
-                    )
                 }
             }
 
             // ── Manual focus distance (for macro) ───────────────────────────
             activeFocusDistance?.let { distance ->
                 if (distance > 0f) {
-                    opts.setCaptureRequestOption(
-                        CaptureRequest.CONTROL_AF_MODE,
-                        CameraMetadata.CONTROL_AF_MODE_OFF
-                    )
                     opts.setCaptureRequestOption(CaptureRequest.LENS_FOCUS_DISTANCE, distance)
                 }
             }
+
+            // ── Vendor keys (MediaTek + Oppo) ───────────────────────────────
+            applyVendorCaptureRequestOptions(opts)
 
             camera2Control.setCaptureRequestOptions(opts.build())
         } catch (_: Exception) {
             // Camera2 interop not available or setting not supported
         }
+    }
+
+    /**
+     * Add MediaTek/Oppo vendor capture request keys to the active options.
+     *
+     * Each key goes through `VendorCameraKeys.applySafe` so a missing or
+     * renamed tag on a future ColorOS build degrades gracefully — the public
+     * AOSP keys still apply, the vendor extras are dropped.
+     */
+    private fun applyVendorCaptureRequestOptions(
+        opts: androidx.camera.camera2.interop.CaptureRequestOptions.Builder
+    ) {
+        // Periscope flip — the MediaTek `flipmode` vendor key is silently
+        // dropped on the Find X9 Pro periscope (verified: setting {0,1} at
+        // ≥3x had no visible effect, frames were still upside down). We keep
+        // sending {0,0} so the dev overlay can still surface any HAL rejection
+        // diagnostics, but the visible flip happens via the View-level
+        // rotation in applyTelephotoUpsideDownFix.
+        VendorCameraKeys.applySafe(
+            opts,
+            VendorCameraKeys.FLIP_MODE,
+            intArrayOf(0, 0)
+        )
+        val flipVertical = false
+
+        // Granular EIS via the MediaTek tag. Mapping is best-effort:
+        //   OFF → 0, STANDARD → 1, PANNING → 3 (vendor "panFollow").
+        val eisVendor = when (activeStabilization.eis) {
+            EisMode.OFF -> 0
+            EisMode.STANDARD -> 1
+            EisMode.PANNING -> 3
+        }
+        VendorCameraKeys.applySafe(opts, VendorCameraKeys.EIS_MODE, eisVendor)
+        VendorCameraKeys.applySafe(opts, VendorCameraKeys.PREVIEW_EIS, eisVendor)
+
+        // NOTE: the four "super EIS" vendor keys
+        //   com.oplus.eis.workon
+        //   com.oplus.camera.video.eis.mode
+        //   com.oplus.video.super.eis.scenes
+        //   com.oplus.eis.bypass.stream
+        // were tried here but caused the HAL to drop the preview stream
+        // and never recover within the same session — even after toggling
+        // EIS back to OFF. They almost certainly need to be set as session
+        // parameters at bind time, not on a live repeating request.
+        // Reverted until we have a session-parameter path that lets us
+        // rebind the camera cleanly when EIS state changes.
+
+        // Oppo's umbrella stabilization mode. OIS Maximum and EIS Panning
+        // both set this to a non-1 value so the HAL knows to engage the
+        // higher-bracket stabilization path:
+        //   OFF=0, STANDARD=1, MAX/SUPER=2, PANNING=3.
+        val oplusStabMode = when {
+            activeStabilization.eis == EisMode.PANNING -> 3
+            activeStabilization.ois == OisMode.MAXIMUM -> 2
+            activeStabilization.ois == OisMode.OFF &&
+                activeStabilization.eis == EisMode.OFF -> 0
+            else -> 1
+        }
+        VendorCameraKeys.applySafe(opts, VendorCameraKeys.OPLUS_VIDEO_STAB_MODE, oplusStabMode)
+
+        // Pro extended ISO unlock — flips the gate that opens up the wider
+        // sensitivity range advertised by com.oplus.pro.extension.iso.range.
+        VendorCameraKeys.applySafe(
+            opts,
+            VendorCameraKeys.PRO_EXT_ISO_SUPPORT,
+            if (activeExtendedIso) 1.toByte() else 0.toByte()
+        )
+
+        // Hasselblad HR — per-request toggle so the HAL skips 4:1 binning
+        // for the next frame. Session-level extender already requested this
+        // at open time; sending it again on the repeating request keeps the
+        // still-capture path in full-sensor mode.
+        val hrActive = currentConfig?.highResolution == true
+        VendorCameraKeys.applySafe(
+            opts,
+            VendorCameraKeys.REMOSAIC_ENABLE,
+            if (hrActive) 1 else 0
+        )
+        VendorCameraKeys.applySafe(
+            opts,
+            VendorCameraKeys.SEAMLESS_REMOSAIC_ENABLE,
+            if (hrActive) 1 else 0
+        )
+
+        // Alternate ultra-HR enable — Oppo's sibling key for the same idea.
+        VendorCameraKeys.applySafe(
+            opts,
+            VendorCameraKeys.ULTRA_HIGH_RES_ENABLE,
+            if (hrActive || activeUltraHighRes) 1 else 0
+        )
+
+        // ── Tier 1 controls ────────────────────────────────────────────────
+
+        // AI Shutter — best-shot picker.
+        VendorCameraKeys.applySafe(
+            opts, VendorCameraKeys.AI_SHUTTER_ENABLE,
+            if (activeAiShutter) 1 else 0
+        )
+        VendorCameraKeys.applySafe(
+            opts, VendorCameraKeys.AI_SHUTTER_MODE,
+            if (activeAiShutter) 1.toByte() else 0.toByte()
+        )
+
+        // Exposure bracketing
+        VendorCameraKeys.applySafe(opts, VendorCameraKeys.BRACKET_MODE, activeBracketMode)
+        VendorCameraKeys.applySafe(opts, VendorCameraKeys.BRACKET_MODE_HAL, activeBracketMode)
+
+        // Hardware mdptz subject framing
+        VendorCameraKeys.applySafe(opts, VendorCameraKeys.MDPTZ_MODE, activeMdptzMode)
+        if (activeMdptzMode > 0) {
+            val pickup = activeMdptzPickup
+            val sensorRect = sensorArraySize
+            if (pickup != null && sensorRect != null) {
+                val rect = toMeteringRectangle(pickup, sensorRect)
+                VendorCameraKeys.applySafe(
+                    opts, VendorCameraKeys.MDPTZ_PICKUP_ROI,
+                    intArrayOf(rect.x, rect.y, rect.width, rect.height, rect.meteringWeight)
+                )
+            }
+        }
+
+        // AI scene detection
+        VendorCameraKeys.applySafe(opts, VendorCameraKeys.ASD_MODE, if (activeAiScene) 1 else 0)
+        VendorCameraKeys.applySafe(
+            opts, VendorCameraKeys.AI_SCENE_APP_ENABLE,
+            if (activeAiScene) 1 else 0
+        )
+
+        // AE metering mode (0/1/2)
+        VendorCameraKeys.applySafe(
+            opts, VendorCameraKeys.AE_METERING_MODE,
+            activeAeMetering.toByte()
+        )
+
+        // 3A regions of interest (vendor)
+        val sensorRect = sensorArraySize
+        if (sensorRect != null) {
+            activeAeRoi?.let { roi ->
+                val r = toMeteringRectangle(roi, sensorRect)
+                VendorCameraKeys.applySafe(
+                    opts, VendorCameraKeys.AE_ROI,
+                    intArrayOf(r.x, r.y, r.width, r.height, r.meteringWeight)
+                )
+            }
+            activeAfRoiVendor?.let { roi ->
+                val r = toMeteringRectangle(roi, sensorRect)
+                VendorCameraKeys.applySafe(
+                    opts, VendorCameraKeys.AF_ROI,
+                    intArrayOf(r.x, r.y, r.width, r.height, r.meteringWeight)
+                )
+            }
+            activeAwbRoi?.let { roi ->
+                val r = toMeteringRectangle(roi, sensorRect)
+                VendorCameraKeys.applySafe(
+                    opts, VendorCameraKeys.AWB_ROI,
+                    intArrayOf(r.x, r.y, r.width, r.height, r.meteringWeight)
+                )
+            }
+        }
+
+        // ── Tier 2 video / capture features ────────────────────────────────
+
+        // Slow-motion (SMVR) — sent on every request even though it really
+        // only matters at session bind. Sending it here is harmless.
+        VendorCameraKeys.applySafe(opts, VendorCameraKeys.SMVR_MODE, activeSmvrMode)
+        VendorCameraKeys.applySafe(opts, VendorCameraKeys.SMVR_V2_MODE, activeSmvrMode)
+
+        // Hyperlapse / fast-motion
+        VendorCameraKeys.applySafe(
+            opts, VendorCameraKeys.FAST_MOTION_ENABLE,
+            if (activeFastMotion) 1.toByte() else 0.toByte()
+        )
+
+        // Pro torch ramp
+        VendorCameraKeys.applySafe(opts, VendorCameraKeys.PRO_TORCH_MODE, activeProTorch)
+
+        // ── Tier 3 colour / WB ─────────────────────────────────────────────
+
+        // Hasselblad XCD filter LUT
+        VendorCameraKeys.applySafe(opts, VendorCameraKeys.APP_FILTER_TYPE, activeFilterPreset)
+
+        // Manual WB Kelvin / tint (refined alternative to setWhiteBalanceGains)
+        activeManualWbKelvin?.let { k ->
+            VendorCameraKeys.applySafe(opts, VendorCameraKeys.MANUAL_WB_TEMPERATURE, k)
+        }
+        activeManualWbTint?.let { t ->
+            VendorCameraKeys.applySafe(opts, VendorCameraKeys.MANUAL_WB_TONE, t)
+        }
+
+        // LOG color profile (flat tone curve) for movie mode.
+        VendorCameraKeys.applySafe(
+            opts,
+            VendorCameraKeys.MOVIE_LOG_ENABLE,
+            if (activeLogProfile) 1.toByte() else 0.toByte()
+        )
+
+        // Hardware tracking AF — when enabled, hand the periscope a tracking
+        // target instead of running the software SubjectTracker.
+        VendorCameraKeys.applySafe(
+            opts,
+            VendorCameraKeys.TRACKING_AF_MODE,
+            if (activeHardwareTracking) 1 else 0
+        )
+        if (activeHardwareTracking) {
+            val region = activeHardwareTrackingRegion
+            val sensorRect = sensorArraySize
+            if (region != null && sensorRect != null) {
+                val rect = toMeteringRectangle(region, sensorRect)
+                VendorCameraKeys.applySafe(
+                    opts,
+                    VendorCameraKeys.TRACKING_AF_REGION,
+                    intArrayOf(rect.x, rect.y, rect.width, rect.height, rect.meteringWeight)
+                )
+            }
+        } else {
+            VendorCameraKeys.applySafe(opts, VendorCameraKeys.TRACKING_AF_CANCEL, 1)
+        }
+
+        // Publish the snapshot for the dev overlay. flipModeApplied reflects
+        // whether the *visible* flip is in effect (currently the View-level
+        // rotation fallback, since the vendor flipmode key is unreliable),
+        // so the user can see the periscope state at a glance.
+        _vendorKeyReport.value = VendorKeyReport(
+            flipModeApplied = currentZoomRatio >= TELEPHOTO_ENGAGE_ZOOM,
+            zoomRatio = currentZoomRatio,
+            eisModeNumeric = eisVendor,
+            oplusStabModeNumeric = oplusStabMode,
+            hardwareTracking = activeHardwareTracking,
+            logProfile = activeLogProfile,
+            extendedIso = activeExtendedIso,
+            highResolution = hrActive,
+            failures = VendorCameraKeys.lastFailures(),
+
+            aiShutter = activeAiShutter,
+            bracketMode = activeBracketMode,
+            mdptzMode = activeMdptzMode,
+            asdMode = activeAiScene,
+            aiSceneApp = activeAiScene,
+            aeMetering = activeAeMetering,
+            smvrMode = activeSmvrMode,
+            fastMotion = activeFastMotion,
+            proTorch = activeProTorch,
+            filterPreset = activeFilterPreset,
+            manualWbKelvin = activeManualWbKelvin,
+            manualWbTint = activeManualWbTint,
+            ultraHighRes = activeUltraHighRes,
+
+            luxIndex = lastResultLuxIndex,
+            avgBrightness = lastResultAvgBrightness,
+            awbCct = lastResultAwbCct,
+            asdSceneRaw = lastResultAsdRaw,
+            asdSceneOplus = lastResultAsdOplus,
+            motionFrames = lastResultMotionFrames,
+            aiShutterMotion = lastResultAiShutterMotion,
+            teleEisActive = lastResultTeleEisActive
+        )
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -699,6 +1173,68 @@ class CameraXPlatform @Inject constructor(
     // Private helpers
     // ─────────────────────────────────────────────────────────────────────────
 
+    /**
+     * Camera2 capture callback that reads vendor result keys after every
+     * completed frame and forwards the new values to the dev overlay
+     * report. Installed via Camera2Interop on the Preview builder so it
+     * runs for the repeating preview request, not just stills.
+     */
+    private val vendorResultCallback = object :
+        android.hardware.camera2.CameraCaptureSession.CaptureCallback() {
+        private var lastPublishMs = 0L
+        override fun onCaptureCompleted(
+            session: android.hardware.camera2.CameraCaptureSession,
+            request: android.hardware.camera2.CaptureRequest,
+            result: android.hardware.camera2.TotalCaptureResult
+        ) {
+            // Throttle publishes to ~5 Hz so we don't flood the StateFlow.
+            val now = System.currentTimeMillis()
+            if (now - lastPublishMs < 200) return
+            lastPublishMs = now
+
+            lastResultLuxIndex = VendorCameraKeys.readSafe(result, VendorCameraKeys.RESULT_AE_LUX_INDEX)
+            lastResultAvgBrightness = VendorCameraKeys.readSafe(result, VendorCameraKeys.RESULT_AE_AVG_BRIGHTNESS)
+            lastResultAwbCct = VendorCameraKeys.readSafe(result, VendorCameraKeys.RESULT_AWB_CCT)
+            lastResultAsdRaw = VendorCameraKeys.readSafe(result, VendorCameraKeys.RESULT_ASD_RESULT)
+            lastResultAsdOplus = VendorCameraKeys.readSafe(result, VendorCameraKeys.RESULT_ASD_SCENE_VALUE)
+            lastResultMotionFrames = VendorCameraKeys.readSafe(result, VendorCameraKeys.RESULT_MOTION_DETECTED_FRAMES)
+            lastResultAiShutterMotion = VendorCameraKeys.readSafe(result, VendorCameraKeys.RESULT_AI_SHUT_EXIST_MOTION)
+            lastResultTeleEisActive = VendorCameraKeys.readSafe(result, VendorCameraKeys.RESULT_TELE_EIS_ACTIVE)
+                ?.let { it.toInt() != 0 }
+
+            // Cheap re-publish: build the report from current state without
+            // re-running applyVendorCaptureRequestOptions.
+            _vendorKeyReport.value = _vendorKeyReport.value.copy(
+                luxIndex = lastResultLuxIndex,
+                avgBrightness = lastResultAvgBrightness,
+                awbCct = lastResultAwbCct,
+                asdSceneRaw = lastResultAsdRaw,
+                asdSceneOplus = lastResultAsdOplus,
+                motionFrames = lastResultMotionFrames,
+                aiShutterMotion = lastResultAiShutterMotion,
+                teleEisActive = lastResultTeleEisActive
+            )
+        }
+    }
+
+    private fun applyTelephotoUpsideDownFix(zoomRatio: Float) {
+        currentZoomRatio = zoomRatio
+        // Empirically, the MediaTek `flipmode` vendor key is silently dropped
+        // on this device for the periscope path — the only proven flip is a
+        // PreviewView View-level rotation plus a targetRotation offset for
+        // captured JPEG/MP4 metadata. The flipmode key is still passed
+        // through applyCaptureRequestSettings so the dev overlay shows it
+        // and we can re-enable it once we find a numeric mapping the HAL
+        // honours, but for now it's a no-op.
+        val upsideDown = zoomRatio >= TELEPHOTO_ENGAGE_ZOOM
+        val baseRotation = previewView?.display?.rotation ?: Surface.ROTATION_0
+        val effectiveRotation = if (upsideDown) (baseRotation + 2) and 3 else baseRotation
+        previewView?.rotation = if (upsideDown) 180f else 0f
+        imageCapture?.targetRotation = effectiveRotation
+        videoCapture?.targetRotation = effectiveRotation
+        applyCaptureRequestSettings()
+    }
+
     private fun buildCameraSelector(config: CameraConfig): CameraSelector {
         if (config.lensFacing == LensFacing.FRONT) {
             return CameraSelector.DEFAULT_FRONT_CAMERA
@@ -768,6 +1304,36 @@ class CameraXPlatform @Inject constructor(
         val builder = ImageCapture.Builder()
             .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
 
+        // Hasselblad Haute Résolution: when requested, pin the ImageCapture
+        // target resolution to the largest JPEG size the HAL will output for
+        // the active back camera so the remosaic output can actually land on
+        // a matching surface. The per-request `remosaicenable` key is added
+        // in applyVendorCaptureRequestOptions — without this size pin the
+        // stream would be clamped back to the binned 12 MP default.
+        if (config.highResolution) {
+            // Target the Oppo vendor-advertised JPEG size (50 MP / 4:3 for
+            // the main and periscope sensors). The public Camera2 map on
+            // the Find X9 Pro currently caps at 4096x3072 so CameraX will
+            // silently clamp to the nearest supported size — but we still
+            // request the larger size upfront so the moment Oppo exposes
+            // the full-sensor surface (via a firmware update or an
+            // extension we haven't found yet) this code begins delivering
+            // 50 MP without any further changes.
+            val mapMax = resolveMaxJpegSizeForLens(config.lens)
+            val requested = Size(8192, 6144)
+            builder.setTargetResolution(requested)
+            val requestedMp = requested.width * requested.height / 1_000_000f
+            val mapMaxMp = mapMax?.let { it.width * it.height / 1_000_000f }
+            android.util.Log.i(
+                "CameraXPlatform",
+                "HR mode: requesting ${requested.width}x${requested.height} " +
+                "(${"%.1f".format(requestedMp)} MP); SCALER map caps at " +
+                "${mapMax?.width ?: 0}x${mapMax?.height ?: 0} " +
+                "(${"%.1f".format(mapMaxMp ?: 0f)} MP) — actual output will " +
+                "match the cap until the vendor surface is exposed"
+            )
+        }
+
         // JPEG quality from config — injected via Camera2 interop
         val camera2Extender = Camera2Interop.Extender(builder)
         camera2Extender.setCaptureRequestOption(
@@ -775,7 +1341,67 @@ class CameraXPlatform @Inject constructor(
             config.jpegQuality.toByte()
         )
 
+        // Tell the HAL upfront that this session wants full-sensor captures.
+        // The per-request flip (via applyCaptureRequestSettings) also sends
+        // it on each actual capture, but having it on the session-level
+        // extender lets the HAL size its buffers correctly from the start.
+        if (config.highResolution) {
+            try {
+                camera2Extender.setCaptureRequestOption(
+                    VendorCameraKeys.REMOSAIC_ENABLE, 1
+                )
+                camera2Extender.setCaptureRequestOption(
+                    VendorCameraKeys.SEAMLESS_REMOSAIC_ENABLE, 1
+                )
+            } catch (e: Throwable) {
+                android.util.Log.w("CameraXPlatform",
+                    "HR session-level extender rejected remosaic: ${e.message}")
+            }
+        }
+
         return builder.build()
+    }
+
+    /**
+     * Pick the largest JPEG output size advertised by the HAL for the camera
+     * ID that matches `lens`. Used to request HR capture sizes.
+     */
+    private fun resolveMaxJpegSizeForLens(lens: CameraLens): Size? {
+        return try {
+            val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            val targetFocalEq = when (lens) {
+                CameraLens.TELEPHOTO -> 70f
+                CameraLens.MAIN -> 23f
+                CameraLens.ULTRA_WIDE -> 15f
+            }
+
+            var bestId: String? = null
+            var bestFocalDelta = Float.MAX_VALUE
+            for (id in cameraManager.cameraIdList) {
+                val chars = cameraManager.getCameraCharacteristics(id)
+                val facing = chars.get(CameraCharacteristics.LENS_FACING)
+                if (facing != CameraCharacteristics.LENS_FACING_BACK) continue
+                val focals = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+                    ?: continue
+                for (fl in focals) {
+                    val delta = kotlin.math.abs(fl - focalLengthToPhysical(targetFocalEq))
+                    if (delta < bestFocalDelta) {
+                        bestFocalDelta = delta
+                        bestId = id
+                    }
+                }
+            }
+
+            val chars = cameraManager.getCameraCharacteristics(bestId ?: return null)
+            val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+                ?: return null
+            map.getOutputSizes(android.graphics.ImageFormat.JPEG)
+                ?.maxByOrNull { it.width.toLong() * it.height.toLong() }
+        } catch (e: Exception) {
+            android.util.Log.w("CameraXPlatform",
+                "Failed to resolve max JPEG size for $lens: ${e.message}")
+            null
+        }
     }
 
     private fun buildVideoCapture(config: CameraConfig): VideoCapture<Recorder> {
@@ -914,6 +1540,15 @@ class CameraXPlatform @Inject constructor(
                 ?.getOutputSizes(ImageFormat.RAW_SENSOR)
             val supportsRaw = rawSizes != null && rawSizes.isNotEmpty()
 
+            // HR capability: compare largest JPEG output size against the
+            // sensor's active array. If a JPEG size meaningfully larger than
+            // 12 MP is advertised, the HAL can remosaic this physical camera.
+            val jpegSizes = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+                ?.getOutputSizes(ImageFormat.JPEG)
+            val maxJpegSize = jpegSizes?.maxByOrNull { it.width.toLong() * it.height.toLong() }
+            val supportsHighResolution = maxJpegSize != null &&
+                maxJpegSize.width.toLong() * maxJpegSize.height.toLong() > 20_000_000L
+
             val minFocusDist = chars.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f
 
             // Check Dolby Vision support
@@ -941,7 +1576,9 @@ class CameraXPlatform @Inject constructor(
                 supportsDolbyVision = supportsDolbyVision,
                 minFocusDistance = minFocusDist,
                 supportsHeif = supportsHeif,
-                supportsFaceDetection = supportsFaceDetection
+                supportsFaceDetection = supportsFaceDetection,
+                supportsHighResolution = supportsHighResolution,
+                maxJpegSize = maxJpegSize
             )
 
             rawCamera2Id = camera2Info.cameraId
@@ -958,22 +1595,33 @@ class CameraXPlatform @Inject constructor(
     }
 
     private fun setupRawCapture() {
-        val cameraId = rawCamera2Id ?: return
-        val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
-        val chars = cameraManager.getCameraCharacteristics(cameraId)
-        val rawSizes = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-            ?.getOutputSizes(ImageFormat.RAW_SENSOR) ?: return
+        // Querying characteristics by ID immediately after a force-open
+        // races with the Camera2 service: it can briefly return
+        // ServiceSpecificException("unknown device") even for a valid id.
+        // Treat any failure as "RAW not available right now" and move on
+        // — the user can reopen the camera and try again.
+        try {
+            val cameraId = rawCamera2Id ?: return
+            val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            val chars = cameraManager.getCameraCharacteristics(cameraId)
+            val rawSizes = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+                ?.getOutputSizes(ImageFormat.RAW_SENSOR) ?: return
 
-        if (rawSizes.isEmpty()) return
+            if (rawSizes.isEmpty()) return
 
-        // Use the largest RAW size (full 200MP on telephoto)
-        val largestRaw = rawSizes.maxByOrNull { it.width.toLong() * it.height }
-            ?: return
+            // Use the largest RAW size (full 200MP on telephoto)
+            val largestRaw = rawSizes.maxByOrNull { it.width.toLong() * it.height }
+                ?: return
 
-        rawImageReader = ImageReader.newInstance(
-            largestRaw.width, largestRaw.height,
-            ImageFormat.RAW_SENSOR, 2
-        )
+            rawImageReader = ImageReader.newInstance(
+                largestRaw.width, largestRaw.height,
+                ImageFormat.RAW_SENSOR, 2
+            )
+        } catch (e: Exception) {
+            android.util.Log.w("CameraXPlatform",
+                "setupRawCapture skipped: ${e.message}")
+            rawImageReader = null
+        }
     }
 
     private fun toMeteringRectangle(region: AfRegion, sensorRect: Rect): MeteringRectangle {
@@ -1017,6 +1665,11 @@ class CameraXPlatform @Inject constructor(
     // ─────────────────────────────────────────────────────────────────────────
 
     companion object {
+        // Oppo Find X9 Pro: the Hasselblad periscope telephoto engages at ~3x.
+        // Its sensor is physically mounted 180° rotated, so frames arrive
+        // flipped and must be rotated back above this threshold.
+        private const val TELEPHOTO_ENGAGE_ZOOM = 3.0f
+
         /**
          * Parse a shutter speed fraction string like "1/1000" to nanoseconds.
          * Returns null if the string is not a valid fraction.

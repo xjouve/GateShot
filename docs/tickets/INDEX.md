@@ -1,4 +1,6 @@
-# GateShot Bug Tickets — 2026-04-02 Session
+# GateShot Bug Tickets
+
+## 2026-04-02 Session
 
 | # | Title | Severity | Status |
 |---|-------|----------|--------|
@@ -16,3 +18,13 @@
 | [012](012-sr-invisible-enhancement.md) | SR enhancement produces no visible difference | High | Fixed |
 | [013](013-sr-freezes-viewfinder.md) | SR enhancement freezes viewfinder | High | Fixed |
 | [014](014-zoom-resets-on-tab-nav.md) | Zoom resets to 1x on tab navigation | Medium | Fixed |
+
+## 2026-04-13 Session — Vendor key layer
+
+| # | Title | Severity | Status |
+|---|-------|----------|--------|
+| [015](015-telephoto-upside-down.md) | Telephoto viewfinder upside down at ≥3× | High | Fixed (View rotation; flipmode vendor key tried and reverted) |
+| [016](016-settings-not-reaching-camera.md) | Settings toggles silently ignored by camera | Critical | Fixed |
+| [017](017-hr-hal-12mp-ceiling.md) | Hasselblad HR — HAL caps public surface at 12 MP | Low | Plumbing in place; waiting on vendor surface |
+| [018](018-setuprawcapture-race-crash.md) | `setupRawCapture` race crashes on rebind | High | Fixed |
+| [019](019-super-eis-stuck-preview.md) | Super-EIS vendor keys leave preview permanently black | Critical | Fixed (reverted + rebind on EIS change + re-entrancy guard) |

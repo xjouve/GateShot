@@ -491,6 +491,141 @@ Configure a text watermark (photographer name, event, date) that's applied to So
 
 ---
 
+## Advanced Settings
+
+The **Settings** tab exposes per-feature controls. Most shooters never
+need to change these — the discipline presets already pick sensible
+values. The sections below document what each control actually does so
+you can tune for unusual conditions.
+
+### Camera
+
+- **Manual exposure** — turn off auto-exposure and pick ISO and shutter
+  speed yourself. Only fires when the toggle is on; the ISO/shutter
+  sliders appear underneath.
+- **Extended ISO range** *(only visible when Manual exposure is on)* —
+  unlocks the Pro-mode sensitivity range (up to ISO 25600) via a vendor
+  key. Use for pre-dawn runs or poorly-lit indoor runs.
+- **Auto white balance** / **Color temperature** — standard AWB toggle
+  with a manual Kelvin slider (2000–10000 K) when auto is off.
+- **Flash** — enable camera flash on still capture.
+
+### Video Recording
+
+- **Resolution / Frame rate** — 720p / 1080p / 4K, with allowed frame
+  rates per resolution. Changing either triggers a clean camera rebind.
+- **Dolby Vision HDR** — 10-bit HDR recording on Android 13+.
+- **LOG color profile** — flat tone curve for colour grading in post.
+  Requires grading to look right, but gives you a lot more latitude in
+  the edit. Drives the `com.oplus.movie.log.enable` vendor key.
+- **Optical stabilization** — Off / Standard / Maximum. Maximum is
+  standard OIS on this firmware (no separate HAL mode), but combined
+  with Electronic stabilization Standard it produces the smoothest
+  footage GateShot can currently deliver.
+- **Electronic stabilization** — Off / Standard / **Panning**. Panning
+  deliberately leaves EIS off so horizontal pans aren't damped — use it
+  when following a racer across the fall-line. Changing EIS triggers a
+  clean camera rebind.
+
+### Autofocus
+
+- **AF mode** — Single / Continuous / Predictive / Manual.
+- **Face priority** — prefer faces over fastest-moving subject.
+
+### Photo Output
+
+- **Resolution** — target megapixels for JPEG capture.
+- **JPEG quality** — compression level (70–100 %).
+- **ND filter** — simulated neutral density, reduces exposure via EV
+  compensation for slower shutters in bright light.
+- **Save RAW (DNG)** — dual-shot JPEG + DNG for post-processing.
+- **HEIF format** — save as HEIF instead of JPEG (smaller files, same
+  quality) on Android 10+.
+- **Hasselblad Haute Résolution** — requests full-sensor remosaic
+  (50 MP main / 200 MP periscope) via vendor keys. *On the current
+  Find X9 Pro firmware the HAL caps the public surface at 12 MP*, so
+  actual output stays at 12 MP regardless of this toggle. The toggle
+  is left in place so the moment Oppo publishes a public HR surface,
+  GateShot will start delivering 50 MP without any app update.
+
+### Racer Tracking
+
+- **Enable AF Tracking** — software racer tracker (the existing
+  `SubjectTracker`).
+- **Min racer speed** / **AF region size** / **Occlusion hold time** —
+  tuning for the software tracker.
+- **Use hardware tracking AF** — switches to MediaTek's native
+  `trackingafMode` vendor path. Faster than the software tracker on
+  paper but less tunable; turn it off if you see the focus box drifting
+  to non-racer subjects.
+
+### Audio / Motion Trigger, Pre-Capture Buffer, Snow Exposure, Zoom Enhancement, Color Profile, Voice Commands, Export, Storage
+
+Unchanged from ticket 003 — see the respective sections above for
+usage. The Settings screen documents the data for each slider and
+toggle in its own subtitle.
+
+### Vendor experiments
+
+A dedicated section containing all the MediaTek/Oppo vendor keys
+GateShot wires that aren't already surfaced elsewhere. These are
+**experimental**: numeric values are best-effort guesses based on the
+vendor tag descriptor, and some may be silently dropped by the HAL.
+
+- **AI shutter (best-shot picker)** — hardware selection of the
+  sharpest frame from a short burst around the shutter press. Drives
+  `com.oplus.aishutter.enable`.
+- **Exposure bracketing** — AEB via `com.oplus.BracketMode`. 0 = off,
+  1 = ±1 EV, 2+ = wider.
+- **Hardware mdptz subject framing** — the periscope's Motion-Directed
+  Pan/Tilt/Zoom auto-crop. Drives `com.mediatek.mdptzfeature.mdptzMode`.
+- **AI scene detection (ASD)** — HAL-level scene classification (snow /
+  portrait / fast-motion / …). Drives `com.mediatek.facefeature.asdmode`
+  + `com.oplus.ai.scene.app.enable`.
+- **AE metering mode** — Average / Spot / Matrix. Spot metering on the
+  racer prevents snow blow-out on their face — the single most common
+  exposure bug in ski racing photography. Drives
+  `com.mediatek.3afeature.aeMeteringMode`.
+- **Slow-motion (SMVR)** — MediaTek slow-mo path (120 / 240 / 480 /
+  960 fps). Separate from CameraX's built-in 240 fps because SMVR can
+  unlock higher rates. Drives `com.mediatek.smvrfeature.smvrMode`.
+- **Hyperlapse (fast motion)** — time-lapse video via
+  `com.oplus.fastmotion.mode.enable`.
+- **Pro torch** — manual torch intensity via `com.oplus.ProTorchMode`.
+- **Hasselblad XCD filter** — numeric LUT selector matching the native
+  filter strip (Original / Vintage / Néon / Flash chaud / Flash froid /
+  Transparent / Finis). Drives `com.oplus.app.filter.type`.
+- **Manual WB temperature (Kelvin)** — direct Kelvin override via
+  `com.oplus.manualWB.color_temperature` (refined alternative to the
+  existing gain-based WB slider).
+- **Alternate ultra-HR enable** — sibling of the HR toggle in Photo
+  Output. Same HAL ceiling.
+
+If you change one of these and nothing visibly happens, enable the
+vendor key overlay (below) and look at the overlay's numbers after the
+toggle — if the row is there but the preview hasn't changed, the HAL
+either silently dropped the value or needs a different mapping.
+
+### Developer
+
+- **Vendor key overlay** — on by-request. Renders a small panel at the
+  top of the viewfinder showing the live state of every vendor key
+  GateShot is currently sending the HAL, plus a green READOUTS
+  sub-section with real-time telemetry from the HAL's 3A pipeline
+  (lux index, AWB CCT, detected scene, motion frame count,
+  tele-EIS-active flag, AI-shutter motion detection).
+
+  The panel is the primary interface for bisecting numeric vendor-key
+  values: toggle a setting in Settings, watch the number change in the
+  overlay, and if the HAL silently drops the value a red **REJECTED**
+  block appears naming the offending key and the HAL error.
+
+  The overlay is only useful during development / bisecting — turn it
+  off before an actual shoot; it takes a noticeable slice of screen
+  real estate over the preview.
+
+---
+
 ## Troubleshooting
 
 ### Camera won't open
@@ -516,6 +651,30 @@ Configure a text watermark (photographer name, event, date) that's applied to So
 - Keep the phone warm between runs (jacket pocket)
 - Use Quick-Hibernate: the app reduces background processing between runs
 - Disable features you're not using (audio trigger, tracking)
+
+### Telephoto preview is upside down
+This used to happen above 3× zoom because the Hasselblad periscope
+sensor is physically mounted rotated 180° on the Find X9 Pro and the
+public Camera2 API doesn't report the correction. GateShot now applies a
+180° View rotation automatically whenever zoom crosses the periscope
+engagement threshold, so preview, captured JPEGs, and recorded video all
+come out right-side up. If you still see an upside-down preview after an
+update, turn on the **Vendor key overlay** and screenshot — the overlay
+will show `flip = [0,1] @<zoom>x` when the correction is active.
+
+### Preview goes black after changing stabilization
+If the viewfinder stays black after toggling EIS / OIS in Settings,
+force-stop the app and reopen it. The MediaTek HAL occasionally stashes
+stabilization state that can't be cleared mid-session. This shouldn't
+happen on current builds — the EIS toggle now triggers a clean camera
+rebind — but if it ever does, a force-stop is the guaranteed recovery.
+
+### Settings toggles appear to do nothing
+If a Settings toggle has no effect on the preview and there's no
+Vendor key overlay row that changes when you tap it, the control may
+be in a path that hasn't been wired yet. Report it with the overlay
+screenshot; the fix is usually a one-line branch in
+`MainViewModel.applyCameraSetting`.
 
 ---
 

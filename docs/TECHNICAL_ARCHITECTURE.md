@@ -952,6 +952,143 @@ interface BluetoothPlatform {
 }
 ```
 
+### 7.1 Vendor key layer (`VendorCameraKeys`)
+
+The public Camera2 API on the Oppo Find X9 Pro exposes ~184 standard
+`CaptureRequest` keys. The MediaTek Dimensity 9500 HAL plus Oppo's
+firmware adds **816 vendor tags** on top of that. Many GateShot-relevant
+features (Hasselblad HR, granular EIS, pro ISO, LOG profile, hardware
+subject tracking, AI shutter, exposure bracketing, AE/AF/AWB regions,
+scene detection, slow-motion SMVR) are reachable **only** via vendor
+tags, which the AOSP SDK does not expose as typed constants.
+
+`platform/.../VendorCameraKeys.kt` materialises those keys at runtime
+via reflection on the hidden `CaptureRequest.Key(String, Class)` and
+`CaptureResult.Key(String, Class)` constructors:
+
+```kotlin
+private val keyCtor = CaptureRequest.Key::class.java
+    .getDeclaredConstructor(String::class.java, Class::class.java)
+    .apply { isAccessible = true }
+
+private fun <T> key(name: String, type: Class<T>): CaptureRequest.Key<T> =
+    keyCtor.newInstance(name, type) as CaptureRequest.Key<T>
+```
+
+Typed constants wrap the reflection for every vendor key GateShot uses,
+so the rest of the platform code calls strongly-typed getters:
+
+```kotlin
+val REMOSAIC_ENABLE: CaptureRequest.Key<Int> =
+    key("com.mediatek.control.capture.remosaicenable",
+        java.lang.Integer::class.java as Class<Int>)
+```
+
+Every write to a vendor key goes through `VendorCameraKeys.applySafe`,
+which wraps the actual `setCaptureRequestOption` call in a try/catch,
+records any failures into a per-key `failureSink`, and logs them. The
+`applySafe` wrapper means a renamed or removed vendor tag on a future
+firmware update degrades gracefully: the AOSP keys still apply, the
+vendor extras are dropped, and the dev overlay's red `REJECTED` block
+shows exactly which keys failed and why.
+
+#### Where keys are applied
+
+`CameraXPlatform.applyVendorCaptureRequestOptions(opts)` is called from
+the end of `applyCaptureRequestSettings`. It reads the current feature
+state fields (`activeAiShutter`, `activeMdptzMode`, `activeStabilization`,
+`activeLogProfile`, …) and issues one `applySafe` call per vendor key.
+After each pass it publishes a `VendorKeyReport` snapshot on a
+`StateFlow<VendorKeyReport>` exposed on `CameraPlatform`:
+
+```kotlin
+interface CameraPlatform {
+    val state: StateFlow<CameraState>
+    val vendorKeyReport: StateFlow<VendorKeyReport>
+    …
+}
+```
+
+#### Reading result keys
+
+Some vendor keys are **result-only** — the HAL reports them in each
+`TotalCaptureResult` (lux index, AWB CCT, detected scene, motion frame
+count, AI-shutter motion, tele-EIS-active). `CameraXPlatform` attaches a
+`CameraCaptureSession.CaptureCallback` to the `Preview` builder via
+`Camera2Interop.Extender.setSessionCaptureCallback`; the callback reads
+the result keys through `VendorCameraKeys.readSafe`, throttles publishes
+to 5 Hz, and updates the `VendorKeyReport` so the dev overlay can show
+the live HAL telemetry in real time.
+
+#### Vendor key inventory (high level)
+
+Keys wired into GateShot as of 2026-04-13. "Settable" = per-request key
+on the repeating preview/capture request; "Result" = read from
+`TotalCaptureResult` via the capture callback.
+
+| Feature | Vendor key | Kind | Notes |
+|---|---|---|---|
+| Periscope flip (attempted, HAL-ignored) | `com.mediatek.control.capture.flipmode` | Settable int32[2] | Accepted by HAL but doesn't actually flip — View-level rotation is used instead |
+| Hasselblad HR remosaic | `com.mediatek.control.capture.remosaicenable` | Settable int32 | HAL caps public surface at 12 MP; see ticket 017 |
+| HR (seamless variant) | `com.mediatek.control.capture.seamless.remosaicenable` | Settable int32 | " |
+| HR (Oppo alternate) | `com.oplus.ultra.high.resolution.enable` | Settable int32 | " |
+| Granular EIS mode | `com.mediatek.eisfeature.eismode` | Settable int32 | 0/1/3 mapping (off/standard/panning) |
+| Preview EIS | `com.mediatek.eisfeature.previeweis` | Settable int32 | " |
+| Oppo video stabilization mode | `com.oplus.video.stabilization.mode` | Settable int32 | Umbrella selector |
+| Pro extended ISO | `com.oplus.pro.extension.iso.support` | Settable byte | Unlocks >6400 ISO range |
+| LOG color profile | `com.oplus.movie.log.enable` | Settable byte | Flat tone curve |
+| Hardware tracking AF | `com.mediatek.trackingaffeature.trackingafMode` / `trackingafRegion` / `trackingafCancel` | Settable int32 / int32[] / int32 | |
+| Motion-directed PTZ (mdptz) | `com.mediatek.mdptzfeature.mdptzMode` / `pickupROI` | Settable int32 / int32[] | Subject framing on periscope |
+| AI Shutter | `com.oplus.aishutter.enable` + `com.mediatek.3afeature.aishutterMode` | Settable int / byte | Best-shot picker |
+| Exposure bracketing | `com.oplus.BracketMode` / `BracketMode.hal` | Settable int32 | |
+| AI scene detection | `com.mediatek.facefeature.asdmode` + `com.oplus.ai.scene.app.enable` | Settable int32 | |
+| AE metering mode | `com.mediatek.3afeature.aeMeteringMode` | Settable byte | 0=average, 1=spot, 2=matrix |
+| AE / AF / AWB ROIs (vendor) | `com.mediatek.3afeature.aeroi` / `afroi` / `awbroi` | Settable int32[5] | `{x, y, w, h, weight}` in sensor coords |
+| Slow-motion (SMVR) | `com.mediatek.smvrfeature.smvrMode` / `smvrV2Mode` | Settable int32 | Targets 120/240/480/960 fps |
+| Hyperlapse | `com.oplus.fastmotion.mode.enable` | Settable byte | |
+| Pro torch | `com.oplus.ProTorchMode` | Settable int32 | Manual flashlight ramp |
+| Hasselblad XCD filter | `com.oplus.app.filter.type` | Settable int32 | Numeric LUT selector |
+| Manual WB Kelvin + tint | `com.oplus.manualWB.color_temperature` / `color_tone` | Settable int32 | Direct Kelvin, not gains |
+| Lux index readout | `com.mediatek.3afeature.aeLuxIndex` | Result int32 | Exposed in dev overlay |
+| Avg brightness readout | `com.mediatek.3afeature.aeAverageBrightness` | Result int32 | " |
+| AWB CCT readout | `com.mediatek.3afeature.awbCct` | Result int32 | " |
+| ASD result | `com.mediatek.facefeature.asdresult` | Result int32 | Detected scene type |
+| Oppo scene value | `com.oplus.asd.scene.value` | Result int32 | |
+| Motion frame count | `com.oplus.motion_detected_frames` | Result int32 | |
+| AI shutter motion | `com.mediatek.3afeature.aishutExistMotion` | Result int32 | |
+| Tele EIS active | `com.oplus.tele.eis.active` | Result byte | Whether periscope EIS is engaged |
+
+Known dead ends (harvested but not wired):
+- `com.oplus.custom.jpeg.size` advertises HR sizes (`8192×6144`) but the
+  sizes are not exposed in the public `SCALER_STREAM_CONFIGURATION_MAP`,
+  so surface allocators refuse to create buffers that large. See
+  ticket 017.
+- `com.oplus.{eis.workon, camera.video.eis.mode, video.super.eis.scenes,
+  eis.bypass.stream}` — the native camera's super-EIS path. Tried on the
+  live repeating request and it left the preview permanently black (the
+  HAL expects these as session parameters, not per-request). Constants
+  remain defined in `VendorCameraKeys` but are not currently sent. See
+  ticket 019.
+
+#### Dev overlay
+
+`app/.../ui/components/VendorKeyOverlay.kt` is a compact Compose panel
+anchored top-center of the viewfinder, gated behind
+**Settings → Developer → Vendor key overlay**. It subscribes to
+`cameraXPlatform.vendorKeyReport` and renders every settable feature
+(`flip / eis / stab / log / hwTrack / extISO / HR / ultraHR / aiShut /
+bracket / mdptz / asd / ae.met / smvr / fastMo / torch / filter / wb.K`)
+plus a green READOUTS sub-section with the result-key values
+(`lux / brt / cct / scene / motion / aiShutMo / teleEIS`). A red
+**REJECTED** block appears if `VendorCameraKeys.lastFailures()` is
+non-empty, naming each failing key and the HAL error message.
+
+This overlay is the primary bisect interface for numeric vendor keys
+whose exact values are best-effort guesses (e.g. EIS mode 0/1/2/3 or
+mdptz mode steps). Toggle a setting in Settings, watch the number
+change in the overlay, and if the HAL silently drops it the REJECTED
+block shows up.
+
 ---
 
 ## 8. Data Flow Examples
