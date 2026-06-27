@@ -56,7 +56,7 @@ dependencies {
     implementation(project(":processing:bib-detection"))
     implementation(project(":processing:autoclip"))
     implementation(project(":processing:export"))
-    implementation(project(":processing:super-resolution"))
+    implementation(project(":processing:stabilize"))
     implementation(project(":coaching:replay"))
     implementation(project(":coaching:timing"))
     implementation(project(":coaching:annotation"))

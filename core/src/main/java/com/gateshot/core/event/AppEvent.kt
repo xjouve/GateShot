@@ -10,6 +10,7 @@ sealed interface AppEvent {
     data class BurstCompleted(val frameCount: Int, val sessionId: String) : AppEvent
     data class VideoRecordingStarted(val sessionId: String) : AppEvent
     data class VideoRecordingStopped(val sessionId: String, val clipUri: String) : AppEvent
+    data class NativeCaptureCompleted(val fileUri: String, val isVideo: Boolean) : AppEvent
     data class RunDetected(val runNumber: Int, val bibNumber: Int?) : AppEvent
 
     // Processing events
@@ -25,6 +26,7 @@ sealed interface AppEvent {
     data class PanningStopped(val totalAngleDeg: Float) : AppEvent
     data class MountDetected(val isMounted: Boolean) : AppEvent
     data class GateCrossing(val gateId: Int, val gateColor: String) : AppEvent
+    data class VideoStabilizationCompleted(val clipUri: String, val durationMs: Long) : AppEvent
 
     // System events
     data class ModeChanged(val newMode: AppMode) : AppEvent

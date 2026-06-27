@@ -23,7 +23,9 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.EmojiEvents
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Star
@@ -57,8 +59,42 @@ data class GalleryItem(
     val isVideo: Boolean,
     val starRating: Int,
     val bibNumber: Int?,
-    val timestamp: Long
+    val timestamp: Long,
+    val isBestFrame: Boolean = false
 )
+
+/**
+ * Persist star ratings as a .stars sidecar file alongside the media file.
+ * Simple: file contains "1" (starred) or doesn't exist (not starred).
+ */
+private fun loadStarRating(filePath: String): Int {
+    val starsFile = java.io.File(filePath + ".starred")
+    return if (starsFile.exists()) 5 else 0
+}
+
+private fun saveStarRating(filePath: String, rating: Int) {
+    val starsFile = java.io.File(filePath + ".starred")
+    if (rating > 0) {
+        starsFile.writeText("1")
+    } else {
+        starsFile.delete()
+    }
+}
+
+/**
+ * Load bib number from a .bib sidecar file (written by BibDetectionModule).
+ */
+private fun loadBibNumber(filePath: String): Int? {
+    val bibFile = java.io.File(filePath + ".bib")
+    return if (bibFile.exists()) bibFile.readText().trim().toIntOrNull() else null
+}
+
+/**
+ * Check if this frame was marked as "best" by burst culling.
+ */
+private fun isBestFrame(filePath: String): Boolean {
+    return java.io.File(filePath + ".best").exists()
+}
 
 @Composable
 fun GalleryScreen(
@@ -67,10 +103,12 @@ fun GalleryScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val context = androidx.compose.ui.platform.LocalContext.current
+    val stabilizing by viewModel.stabilizeRunning.collectAsState()
+    val galleryRefresh by viewModel.galleryRefresh.collectAsState()
 
     // Load gallery items from actual capture files on disk
     var refreshKey by remember { mutableIntStateOf(0) }
-    val items = remember(uiState.shotCount, refreshKey) {
+    val items = remember(uiState.shotCount, refreshKey, galleryRefresh) {
         val gateShotDir = java.io.File(context.getExternalFilesDir(null), "GateShot")
         val mediaFiles = mutableListOf<GalleryItem>()
 
@@ -85,9 +123,10 @@ fun GalleryScreen(
                         fileName = file.name,
                         filePath = file.absolutePath,
                         isVideo = file.extension == "mp4",
-                        starRating = 0,
-                        bibNumber = null,
-                        timestamp = file.lastModified()
+                        starRating = loadStarRating(file.absolutePath),
+                        bibNumber = loadBibNumber(file.absolutePath),
+                        timestamp = file.lastModified(),
+                        isBestFrame = isBestFrame(file.absolutePath)
                     ))
                 }
         }
@@ -95,6 +134,11 @@ fun GalleryScreen(
     }
 
     var selectedFilter by remember { mutableStateOf("all") }
+
+    // Collect distinct bib numbers for filter
+    val bibNumbers = remember(items) {
+        items.mapNotNull { it.bibNumber }.distinct().sorted()
+    }
 
     Column(
         modifier = modifier
@@ -123,14 +167,20 @@ fun GalleryScreen(
             )
         }
 
-        // Filter chips — large touch targets
+        // Filter chips
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 8.dp, vertical = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            listOf("all" to "All", "starred" to "Starred", "video" to "Video").forEach { (id, label) ->
+            val filters = mutableListOf("all" to "All", "starred" to "Starred", "video" to "Video", "best" to "Best")
+            // Add bib filters dynamically
+            bibNumbers.forEach { bib ->
+                filters.add("bib_$bib" to "#$bib")
+            }
+
+            filters.forEach { (id, label) ->
                 Surface(
                     onClick = { selectedFilter = id },
                     shape = RoundedCornerShape(20.dp),
@@ -152,9 +202,14 @@ fun GalleryScreen(
         }
 
         // Grid
-        val filtered = when (selectedFilter) {
-            "starred" -> items.filter { it.starRating > 0 }
-            "video" -> items.filter { it.isVideo }
+        val filtered = when {
+            selectedFilter == "starred" -> items.filter { it.starRating > 0 }
+            selectedFilter == "video" -> items.filter { it.isVideo }
+            selectedFilter == "best" -> items.filter { it.isBestFrame }
+            selectedFilter.startsWith("bib_") -> {
+                val bib = selectedFilter.removePrefix("bib_").toIntOrNull()
+                items.filter { it.bibNumber == bib }
+            }
             else -> items
         }
 
@@ -166,7 +221,13 @@ fun GalleryScreen(
             modifier = Modifier.fillMaxSize()
         ) {
             items(filtered) { item ->
-                GalleryThumbnail(item = item, onDelete = { refreshKey++ })
+                GalleryThumbnail(
+                    item = item,
+                    onDelete = { refreshKey++ },
+                    onStarChanged = { refreshKey++ },
+                    onStabilize = { viewModel.stabilizeVideo(it.filePath) },
+                    stabilizing = stabilizing
+                )
             }
         }
     }
@@ -176,6 +237,9 @@ fun GalleryScreen(
 fun GalleryThumbnail(
     item: GalleryItem,
     onDelete: () -> Unit = {},
+    onStarChanged: () -> Unit = {},
+    onStabilize: (GalleryItem) -> Unit = {},
+    stabilizing: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     var starRating by remember { mutableIntStateOf(item.starRating) }
@@ -193,15 +257,12 @@ fun GalleryThumbnail(
                 contentAlignment = Alignment.Center
             ) {
                 if (item.isVideo) {
-                    // Launch system video player
                     androidx.compose.runtime.LaunchedEffect(item.filePath) {
                         try {
                             val file = java.io.File(item.filePath)
-                            android.util.Log.i("Gallery", "Opening video: ${file.absolutePath} exists=${file.exists()}")
                             val uri = androidx.core.content.FileProvider.getUriForFile(
                                 context, "${context.packageName}.fileprovider", file
                             )
-                            android.util.Log.i("Gallery", "URI: $uri")
                             val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
                                 setDataAndType(uri, "video/mp4")
                                 addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -244,14 +305,12 @@ fun GalleryThumbnail(
         if (item.filePath.isNotEmpty()) {
             val bitmap = remember(item.filePath) {
                 try {
-                    val opts = android.graphics.BitmapFactory.Options().apply {
-                        inSampleSize = 8  // Downsample for thumbnail
-                    }
+                    val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = 8 }
                     android.graphics.BitmapFactory.decodeFile(item.filePath, opts)
                 } catch (_: Exception) { null }
             }
             if (bitmap != null) {
-                androidx.compose.foundation.Image(
+                Image(
                     bitmap = bitmap.asImageBitmap(),
                     contentDescription = item.fileName,
                     contentScale = androidx.compose.ui.layout.ContentScale.Crop,
@@ -260,55 +319,24 @@ fun GalleryThumbnail(
             }
         }
 
-        // Video icon overlay
-        if (item.isVideo) {
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    Icons.Filled.Videocam,
-                    contentDescription = "Video",
-                    tint = Color.White.copy(alpha = 0.7f),
-                    modifier = Modifier.size(32.dp)
-                )
-            }
-        }
-
-        // Empty gallery message
-        if (item.filePath.isEmpty()) {
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = item.fileName.takeLast(8),
-                    color = Color.Gray,
-                    fontSize = 10.sp
-                )
-            }
-        }
-
         // Video play icon
         if (item.isVideo) {
-            Icon(
-                Icons.Filled.PlayArrow,
-                contentDescription = "Play",
-                tint = Color.White.copy(alpha = 0.8f),
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .size(40.dp)
-            )
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Icon(
+                    Icons.Filled.PlayArrow,
+                    contentDescription = "Play",
+                    tint = Color.White.copy(alpha = 0.8f),
+                    modifier = Modifier.size(40.dp)
+                )
+            }
         }
 
-        // Bib badge
+        // Bib badge (top-left)
         item.bibNumber?.let { bib ->
             Surface(
                 shape = RoundedCornerShape(4.dp),
                 color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(4.dp)
+                modifier = Modifier.align(Alignment.TopStart).padding(4.dp)
             ) {
                 Text(
                     text = "#$bib",
@@ -320,20 +348,37 @@ fun GalleryThumbnail(
             }
         }
 
-        // Star indicator
+        // Best frame badge (top-left, below bib)
+        if (item.isBestFrame) {
+            Surface(
+                shape = RoundedCornerShape(4.dp),
+                color = Color(0xFFFFD700),
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(start = 4.dp, top = if (item.bibNumber != null) 28.dp else 4.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    Icon(Icons.Filled.EmojiEvents, null, tint = Color.Black, modifier = Modifier.size(10.dp))
+                    Text("Best", color = Color.Black, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+
+        // Star indicator (top-right)
         if (starRating > 0) {
             Icon(
                 Icons.Filled.Star,
                 contentDescription = "Starred",
                 tint = Color(0xFFFFD700),
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(4.dp)
-                    .size(16.dp)
+                modifier = Modifier.align(Alignment.TopEnd).padding(4.dp).size(16.dp)
             )
         }
 
-        // Bottom action bar — keep/trash (glove-friendly 48dp targets)
+        // Bottom action bar
         Row(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -341,7 +386,11 @@ fun GalleryThumbnail(
                 .background(Color(0xAA000000)),
             horizontalArrangement = Arrangement.SpaceEvenly
         ) {
-            IconButton(onClick = { starRating = if (starRating > 0) 0 else 5 }, modifier = Modifier.size(48.dp)) {
+            IconButton(onClick = {
+                starRating = if (starRating > 0) 0 else 5
+                saveStarRating(item.filePath, starRating)
+                onStarChanged()
+            }, modifier = Modifier.size(48.dp)) {
                 Icon(
                     if (starRating > 0) Icons.Filled.Star else Icons.Filled.StarBorder,
                     contentDescription = "Rate",
@@ -370,9 +419,28 @@ fun GalleryThumbnail(
             }, modifier = Modifier.size(48.dp)) {
                 Icon(Icons.Filled.Share, contentDescription = "Share", tint = Color.White, modifier = Modifier.size(20.dp))
             }
+            // Stabilize — videos only. Disabled while a job is running.
+            if (item.isVideo && !item.fileName.endsWith("_stab.mp4")) {
+                IconButton(
+                    onClick = { if (item.filePath.isNotEmpty()) onStabilize(item) },
+                    enabled = !stabilizing,
+                    modifier = Modifier.size(48.dp)
+                ) {
+                    Icon(
+                        Icons.Filled.AutoFixHigh,
+                        contentDescription = "Stabilize",
+                        tint = if (stabilizing) Color.Gray else Color(0xFF4FC3F7),
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
             IconButton(onClick = {
                 if (item.filePath.isNotEmpty()) {
                     java.io.File(item.filePath).delete()
+                    // Clean up sidecar files
+                    java.io.File(item.filePath + ".starred").delete()
+                    java.io.File(item.filePath + ".bib").delete()
+                    java.io.File(item.filePath + ".best").delete()
                     onDelete()
                 }
             }, modifier = Modifier.size(48.dp)) {
