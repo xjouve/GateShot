@@ -1,7 +1,6 @@
 package com.gateshot.platform.camera
 
 import android.hardware.camera2.CaptureRequest
-import android.hardware.camera2.CaptureResult
 
 /**
  * Vendor-specific Camera2 keys exposed by the MediaTek Dimensity / Oppo
@@ -23,17 +22,8 @@ object VendorCameraKeys {
             .apply { isAccessible = true }
     }
 
-    private val resultKeyCtor by lazy {
-        CaptureResult.Key::class.java
-            .getDeclaredConstructor(String::class.java, Class::class.java)
-            .apply { isAccessible = true }
-    }
-
     private fun <T> key(name: String, type: Class<T>): CaptureRequest.Key<T> =
         keyCtor.newInstance(name, type) as CaptureRequest.Key<T>
-
-    private fun <T> resultKey(name: String, type: Class<T>): CaptureResult.Key<T> =
-        resultKeyCtor.newInstance(name, type) as CaptureResult.Key<T>
 
     // ── Periscope flip ──────────────────────────────────────────────────────
     // MediaTek capture-control flip. int32[2] = {hflip, vflip}. Values 0/1.
@@ -87,6 +77,47 @@ object VendorCameraKeys {
     val OPLUS_EIS_BYPASS_STREAM: CaptureRequest.Key<Int> =
         key("com.oplus.eis.bypass.stream", java.lang.Integer::class.java as Class<Int>)
 
+    // ── Gyro-assisted EIS feed ──────────────────────────────────────────────
+    // The native camera app drives video EIS — at every zoom, but most visibly
+    // on the teleconverter / periscope path — by feeding the HAL a rolling
+    // buffer of timestamped gyroscope samples on every repeating request. The
+    // HAL warps each frame from this motion data; without it the EIS engine has
+    // no input and produces no stabilization (this is why setting the eismode /
+    // video.eis.mode bytes alone did nothing). Format reverse-engineered from
+    // build/qa/dump_native_teleconv.txt (native recording on camera device 6).
+
+    // MediaTek gyro sample buffer. byte[N*24], N samples, newest first. Each
+    // 24-byte record is little-endian:
+    //   int64 timestamp_ns (SensorEvent.timestamp base) +
+    //   float gx + float gy + float gz (rad/s) + int32 0 (padding).
+    val GYRO_DATA: CaptureRequest.Key<ByteArray> =
+        key("com.mediatek.3afeature.gyrodata", ByteArray::class.java)
+
+    // Number of valid samples packed into GYRO_DATA.
+    val GYRO_DATA_VALID_NUM: CaptureRequest.Key<Int> =
+        key("com.mediatek.3afeature.gyrodatavalidnum", java.lang.Integer::class.java as Class<Int>)
+
+    // Oppo's latest angular-velocity vector. float[3] = {gx, gy, gz} rad/s.
+    val OPLUS_GYRO_DATA: CaptureRequest.Key<FloatArray> =
+        key("com.oplus.gyro.data", FloatArray::class.java)
+
+    // Oppo gyro magnitude gate — the L2 norm sqrt(gx²+gy²+gz²) of the latest
+    // sample (verified against the dump despite the "Sqr" in the tag name).
+    val OPLUS_GYRO_SQR_CUSTOM: CaptureRequest.Key<Float> =
+        key("com.oplus.gyroSqrCutom", java.lang.Float::class.java as Class<Float>)
+
+    // ── Recording-state gates ───────────────────────────────────────────────
+    // The native app sets BOTH of these to 1 while a video is recording. The
+    // HAL appears to arm its recording-tuned EIS only when told recording is
+    // active — feeding gyro data without these leaves the EIS engine accepting
+    // the data but not engaging. 0 = preview/idle, 1 = recording (confirmed in
+    // build/qa/dump_native_teleconv.txt, device 6, both keys = 1).
+    val MTK_RECORD_STATE: CaptureRequest.Key<Int> =
+        key("com.mediatek.streamingfeature.recordState", java.lang.Integer::class.java as Class<Int>)
+
+    val OPLUS_VIDEO_RECORD_STATE: CaptureRequest.Key<Int> =
+        key("com.oplus.video.record.state", java.lang.Integer::class.java as Class<Int>)
+
     // ── HDR ─────────────────────────────────────────────────────────────────
     // MediaTek granular HDR mode (numeric, beyond the AOSP HDR10/DV enum).
     val HDR_MODE: CaptureRequest.Key<Int> =
@@ -104,20 +135,6 @@ object VendorCameraKeys {
 
     val MOVIE_HDR_ENABLE: CaptureRequest.Key<Byte> =
         key("com.oplus.movie.hdr.enable", java.lang.Byte::class.java as Class<Byte>)
-
-    // ── Hasselblad Haute Résolution (Quad Bayer remosaic) ──────────────────
-    // Flip the 4:1 pixel-binning off so the sensor delivers its full native
-    // resolution (50 MP main, 200 MP periscope). Set to 1 on the capture
-    // request to enable; the HAL will return a larger JPEG matching the
-    // sensor's native pixel array.
-    val REMOSAIC_ENABLE: CaptureRequest.Key<Int> =
-        key("com.mediatek.control.capture.remosaicenable", java.lang.Integer::class.java as Class<Int>)
-
-    // Seamless variant — engages remosaic without tearing down the preview
-    // session. Use both for belt-and-braces; MediaTek's HAL picks whichever
-    // path is cheaper.
-    val SEAMLESS_REMOSAIC_ENABLE: CaptureRequest.Key<Int> =
-        key("com.mediatek.control.capture.seamless.remosaicenable", java.lang.Integer::class.java as Class<Int>)
 
     // ── Hardware tracking AF ────────────────────────────────────────────────
     // MediaTek native tracking AF — alternative to the software SubjectTracker.
@@ -145,31 +162,6 @@ object VendorCameraKeys {
     val MDPTZ_PICKUP_ROI: CaptureRequest.Key<IntArray> =
         key("com.mediatek.mdptzfeature.pickupROI", IntArray::class.java)
 
-    // ── AI Shutter — hardware best-shot picker ─────────────────────────────
-    // Combines motion detection with shutter lag minimisation; the HAL picks
-    // the sharpest frame from a short burst around the trigger.
-    val AI_SHUTTER_ENABLE: CaptureRequest.Key<Int> =
-        key("com.oplus.aishutter.enable", java.lang.Integer::class.java as Class<Int>)
-
-    val AI_SHUTTER_MODE: CaptureRequest.Key<Byte> =
-        key("com.mediatek.3afeature.aishutterMode", java.lang.Byte::class.java as Class<Byte>)
-
-    // ── Exposure bracketing ────────────────────────────────────────────────
-    // Oppo's bracket scheduler. Numeric mode is best-effort:
-    //   0 = OFF, 1 = AEB ±1 EV, 2 = AEB ±2 EV (per stop count).
-    val BRACKET_MODE: CaptureRequest.Key<Int> =
-        key("com.oplus.BracketMode", java.lang.Integer::class.java as Class<Int>)
-
-    val BRACKET_MODE_HAL: CaptureRequest.Key<Int> =
-        key("com.oplus.BracketMode.hal", java.lang.Integer::class.java as Class<Int>)
-
-    // ── AI Scene Detection (ASD) ───────────────────────────────────────────
-    val ASD_MODE: CaptureRequest.Key<Int> =
-        key("com.mediatek.facefeature.asdmode", java.lang.Integer::class.java as Class<Int>)
-
-    val AI_SCENE_APP_ENABLE: CaptureRequest.Key<Int> =
-        key("com.oplus.ai.scene.app.enable", java.lang.Integer::class.java as Class<Int>)
-
     // ── 3A regions of interest (per-component) ─────────────────────────────
     // Each is int32[5] = {x, y, w, h, weight} in sensor active-array coords.
     val AE_ROI: CaptureRequest.Key<IntArray> =
@@ -186,78 +178,12 @@ object VendorCameraKeys {
     val AE_METERING_MODE: CaptureRequest.Key<Byte> =
         key("com.mediatek.3afeature.aeMeteringMode", java.lang.Byte::class.java as Class<Byte>)
 
-    // ── Slow-motion (SMVR) ─────────────────────────────────────────────────
-    // MediaTek's high-fps recording switch. Numeric mode encodes the frame
-    // rate target (typically 0=off, 1=120, 2=240, 3=480, 4=960).
-    val SMVR_MODE: CaptureRequest.Key<Int> =
-        key("com.mediatek.smvrfeature.smvrMode", java.lang.Integer::class.java as Class<Int>)
-
-    val SMVR_V2_MODE: CaptureRequest.Key<Int> =
-        key("com.mediatek.smvrfeature.smvrV2Mode", java.lang.Integer::class.java as Class<Int>)
-
-    // ── Hyperlapse / fast-motion ───────────────────────────────────────────
-    val FAST_MOTION_ENABLE: CaptureRequest.Key<Byte> =
-        key("com.oplus.fastmotion.mode.enable", java.lang.Byte::class.java as Class<Byte>)
-
-    // ── Pro torch (manual flashlight intensity ramp) ───────────────────────
-    val PRO_TORCH_MODE: CaptureRequest.Key<Int> =
-        key("com.oplus.ProTorchMode", java.lang.Integer::class.java as Class<Int>)
-
-    // ── Hasselblad XCD filter / LUT selector ───────────────────────────────
-    // Numeric ID matches the native camera's filter strip order:
-    //   0 = Original, 1..N = XCD presets (Vintage / Néon / Flash chaud / …)
-    val APP_FILTER_TYPE: CaptureRequest.Key<Int> =
-        key("com.oplus.app.filter.type", java.lang.Integer::class.java as Class<Int>)
-
     // ── Manual WB Kelvin + tint (refined over our existing gain path) ──────
     val MANUAL_WB_TEMPERATURE: CaptureRequest.Key<Int> =
         key("com.oplus.manualWB.color_temperature", java.lang.Integer::class.java as Class<Int>)
 
     val MANUAL_WB_TONE: CaptureRequest.Key<Int> =
         key("com.oplus.manualWB.color_tone", java.lang.Integer::class.java as Class<Int>)
-
-    // ── Alternate ultra-HR enable (sibling of remosaicenable) ──────────────
-    val ULTRA_HIGH_RES_ENABLE: CaptureRequest.Key<Int> =
-        key("com.oplus.ultra.high.resolution.enable", java.lang.Integer::class.java as Class<Int>)
-
-    // ── Result-only keys (read from CaptureResult) ─────────────────────────
-    // These are not settable; we read them via the capture callback so the
-    // dev overlay can show what the HAL is reporting in real time.
-    val RESULT_AE_LUX_INDEX: CaptureResult.Key<Int> =
-        resultKey("com.mediatek.3afeature.aeLuxIndex", java.lang.Integer::class.java as Class<Int>)
-
-    val RESULT_AE_AVG_BRIGHTNESS: CaptureResult.Key<Int> =
-        resultKey("com.mediatek.3afeature.aeAverageBrightness", java.lang.Integer::class.java as Class<Int>)
-
-    val RESULT_AWB_CCT: CaptureResult.Key<Int> =
-        resultKey("com.mediatek.3afeature.awbCct", java.lang.Integer::class.java as Class<Int>)
-
-    val RESULT_ASD_RESULT: CaptureResult.Key<Int> =
-        resultKey("com.mediatek.facefeature.asdresult", java.lang.Integer::class.java as Class<Int>)
-
-    val RESULT_ASD_SCENE_VALUE: CaptureResult.Key<Int> =
-        resultKey("com.oplus.asd.scene.value", java.lang.Integer::class.java as Class<Int>)
-
-    val RESULT_MOTION_DETECTED_FRAMES: CaptureResult.Key<Int> =
-        resultKey("com.oplus.motion_detected_frames", java.lang.Integer::class.java as Class<Int>)
-
-    val RESULT_AI_SHUT_EXIST_MOTION: CaptureResult.Key<Int> =
-        resultKey("com.mediatek.3afeature.aishutExistMotion", java.lang.Integer::class.java as Class<Int>)
-
-    val RESULT_TELE_EIS_ACTIVE: CaptureResult.Key<Byte> =
-        resultKey("com.oplus.tele.eis.active", java.lang.Byte::class.java as Class<Byte>)
-
-    /**
-     * Best-effort read of a vendor result key from a CaptureResult. Returns
-     * null on any reflection or HAL miss so the overlay just hides the row.
-     */
-    fun <T : Any> readSafe(result: android.hardware.camera2.CaptureResult, k: CaptureResult.Key<T>): T? {
-        return try {
-            result.get(k)
-        } catch (_: Throwable) {
-            null
-        }
-    }
 
     // Most recent failure per vendor key — populated by applySafe so the dev
     // overlay can show silent rejections without grepping logcat. Cleared
@@ -284,46 +210,27 @@ object VendorCameraKeys {
             android.util.Log.w("VendorCameraKeys", "Failed to set ${key.name}: ${e.message}")
         }
     }
+
+    /**
+     * Session-level variant: applies a vendor key to a Camera2Interop.Extender
+     * so it ships with the initial session configuration instead of a live
+     * repeating request. Required for keys that the HAL treats as session
+     * parameters (e.g. the four super-EIS keys — setting them on an already
+     * bound session caused the HAL to drop the preview stream unrecoverably,
+     * see TICKET-019).
+     */
+    @androidx.camera.camera2.interop.ExperimentalCamera2Interop
+    fun <T : Any> applySafeExtender(
+        extender: androidx.camera.camera2.interop.Camera2Interop.Extender<*>,
+        key: CaptureRequest.Key<T>,
+        value: T
+    ) {
+        try {
+            extender.setCaptureRequestOption(key, value)
+            failureSink.remove(key.name)
+        } catch (e: Throwable) {
+            failureSink[key.name] = e.message ?: e.javaClass.simpleName
+            android.util.Log.w("VendorCameraKeys", "Failed to set ${key.name} on extender: ${e.message}")
+        }
+    }
 }
-
-/**
- * Snapshot of the vendor-key state we last asked the HAL to apply, plus any
- * silent failures from applySafe. The dev overlay reads this to show what is
- * actually live without the user having to grep logcat.
- */
-data class VendorKeyReport(
-    val flipModeApplied: Boolean = false,
-    val zoomRatio: Float = 1f,
-    val eisModeNumeric: Int = 0,
-    val oplusStabModeNumeric: Int = 1,
-    val hardwareTracking: Boolean = false,
-    val logProfile: Boolean = false,
-    val extendedIso: Boolean = false,
-    val highResolution: Boolean = false,
-    val failures: Map<String, String> = emptyMap(),
-
-    // Settable feature state (echoed for the overlay)
-    val aiShutter: Boolean = false,
-    val bracketMode: Int = 0,
-    val mdptzMode: Int = 0,
-    val asdMode: Boolean = false,
-    val aiSceneApp: Boolean = false,
-    val aeMetering: Int = 0,
-    val smvrMode: Int = 0,
-    val fastMotion: Boolean = false,
-    val proTorch: Int = 0,
-    val filterPreset: Int = 0,
-    val manualWbKelvin: Int? = null,
-    val manualWbTint: Int? = null,
-    val ultraHighRes: Boolean = false,
-
-    // Result-only readouts (populated by the capture callback)
-    val luxIndex: Int? = null,
-    val avgBrightness: Int? = null,
-    val awbCct: Int? = null,
-    val asdSceneRaw: Int? = null,
-    val asdSceneOplus: Int? = null,
-    val motionFrames: Int? = null,
-    val aiShutterMotion: Int? = null,
-    val teleEisActive: Boolean? = null
-)

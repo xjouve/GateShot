@@ -12,12 +12,7 @@ data class CameraConfig(
     val enableRaw: Boolean = false,
     val hdrProfile: HdrProfile = HdrProfile.OFF,
     val outputFormat: ImageOutputFormat = ImageOutputFormat.JPEG,
-    val jpegQuality: Int = 95,
-    // Hasselblad Haute Résolution: requests full-sensor remosaic capture
-    // (50 MP main / 200 MP periscope instead of the binned 12 MP default).
-    // Triggered via com.mediatek.control.capture.remosaicenable + output
-    // size pinned to the largest advertised JPEG size on the active lens.
-    val highResolution: Boolean = false
+    val jpegQuality: Int = 95
 )
 
 enum class ImageOutputFormat { JPEG, HEIF }
@@ -132,7 +127,6 @@ interface CameraPlatform {
     val isRecording: StateFlow<Boolean>
     val capabilities: CameraCapabilities?
     val lastCaptureMetadata: CaptureMetadata?
-    val vendorKeyReport: StateFlow<VendorKeyReport>
 
     suspend fun open(config: CameraConfig)
     suspend fun close()
@@ -146,19 +140,15 @@ interface CameraPlatform {
     fun setExtendedIsoEnabled(enabled: Boolean)
     fun setAfRegions(regions: List<AfRegion>)
 
-    // ── Tier 1 / 2 / 3 vendor features ──────────────────────────────────────
-    fun setAiShutter(enabled: Boolean)
-    fun setBracketMode(mode: Int)               // 0 = off, 1..N = AEB
+    // ── Retained vendor controls ────────────────────────────────────────────
+    // MDPTZ kept as a hardware subject-framing hook for tracking; AE metering /
+    // exposure ROI / manual WB are real exposure controls used by snow exposure
+    // and tap-to-focus. (The gimmick experiment setters were removed — see
+    // docs/REMOVED_FEATURES.md.)
     fun setMdptzMode(mode: Int, pickup: AfRegion? = null)
-    fun setAiScene(enabled: Boolean)
     fun setAeMetering(mode: Int)                // 0 = average, 1 = spot, 2 = matrix
     fun setExposureRoi(ae: AfRegion? = null, af: AfRegion? = null, awb: AfRegion? = null)
-    fun setSmvrMode(mode: Int)                  // 0 = off, 1 = 120, 2 = 240, 3 = 480, 4 = 960
-    fun setFastMotion(enabled: Boolean)
-    fun setProTorch(level: Int)                 // 0 = off, 1..N = intensity
-    fun setFilterPreset(presetId: Int)          // 0 = original
     fun setManualWb(kelvin: Int?, tint: Int? = null)
-    fun setUltraHighResolution(enabled: Boolean)
     fun setFocusDistance(dioptres: Float)
     fun setIspPipeline(config: IspPipelineConfig)
     fun setWhiteBalanceGains(gains: WhiteBalanceGains)

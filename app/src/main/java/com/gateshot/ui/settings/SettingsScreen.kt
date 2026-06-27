@@ -461,16 +461,6 @@ fun SettingsScreen(
                 onCheckedChange = { rawEnabled = it; viewModel.saveSetting("camera", "save_raw", it) }
             )
 
-            var hrMode by remember { mutableStateOf(viewModel.loadSettingBool("camera", "hr_mode", false)) }
-            SettingsToggle(
-                title = "Hasselblad Haute Résolution",
-                subtitle = "Requests full-sensor remosaic (50 MP main / 200 MP periscope) via vendor keys. On this firmware the HAL gates the larger surface behind a private extension so actual output stays at 12 MP until Oppo exposes it publicly. Toggle rebinds the camera and shows request state in the dev overlay.",
-                checked = hrMode,
-                onCheckedChange = {
-                    hrMode = it
-                    viewModel.saveSetting("camera", "hr_mode", it)
-                }
-            )
             SettingsToggle(
                 title = "HEIF format",
                 subtitle = "Save photos as HEIF instead of JPEG (smaller files, same quality)",
@@ -643,24 +633,6 @@ fun SettingsScreen(
             )
         }
 
-        // --- Super Resolution ---
-        SettingsSection("Zoom Enhancement") {
-            var srEnabled by remember { mutableStateOf(viewModel.loadSettingBool("sr", "auto_enhance", true)) }
-
-            SettingsToggle(
-                title = "Auto enhance zoom",
-                subtitle = "Multi-frame denoise + sharpening for telephoto shots (5x+)",
-                checked = srEnabled,
-                onCheckedChange = { srEnabled = it; viewModel.saveSetting("sr", "auto_enhance", it) }
-            )
-            Text(
-                text = "Pipeline: denoise at 5x+, deconvolution with teleconverter, enhanced upscale at 13.2x+",
-                color = Color.Gray,
-                fontSize = 12.sp,
-                modifier = Modifier.padding(horizontal = 16.dp)
-            )
-        }
-
         // --- Color Profile ---
         SettingsSection("Color Profile") {
             var hasselbladEnabled by remember {
@@ -678,38 +650,11 @@ fun SettingsScreen(
             )
         }
 
-        // --- Voice Commands ---
-        SettingsSection("Voice Commands") {
-            var voiceEnabled by remember { mutableStateOf(
-                viewModel.loadSettingBool("voice", "enabled", false)
-            ) }
-
-            SettingsToggle(
-                title = "Enable voice commands",
-                subtitle = "\"Start recording\", \"Stop\", \"Photo\", \"Slow-mo\", \"Next mode\"",
-                checked = voiceEnabled,
-                onCheckedChange = {
-                    voiceEnabled = it
-                    viewModel.saveSetting("voice", "enabled", it)
-                    if (it) viewModel.startVoiceCommands() else viewModel.stopVoiceCommands()
-                }
-            )
-            if (voiceEnabled) {
-                Text(
-                    "Commands: \"start recording\", \"stop\", \"mark\", \"slow-mo\", \"photo\", \"next mode\"",
-                    color = Color.Gray,
-                    fontSize = 12.sp,
-                    modifier = Modifier.padding(horizontal = 16.dp)
-                )
-            }
-        }
-
         // --- Export ---
         SettingsSection("Export & Sharing") {
             var watermarkEnabled by remember { mutableStateOf(
                 viewModel.loadSettingBool("export", "watermark_enabled", false)
             ) }
-            var fedExportStatus by remember { mutableStateOf("") }
 
             SettingsToggle(
                 title = "Watermark on Social shares",
@@ -717,30 +662,6 @@ fun SettingsScreen(
                 checked = watermarkEnabled,
                 onCheckedChange = { watermarkEnabled = it; viewModel.saveSetting("export", "watermark_enabled", it) }
             )
-
-            // Federation export
-            Surface(
-                onClick = {
-                    fedExportStatus = "Exporting..."
-                    viewModel.exportFederationFormat(context) { status ->
-                        fedExportStatus = status
-                    }
-                },
-                shape = RoundedCornerShape(8.dp),
-                color = Color(0xFF333333),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 4.dp)
-            ) {
-                Column(modifier = Modifier.padding(12.dp)) {
-                    Text("Federation Export", color = Color.White, fontSize = 15.sp)
-                    Text("FIS-compatible naming + metadata CSV", color = Color.Gray, fontSize = 12.sp)
-                }
-            }
-            if (fedExportStatus.isNotBlank()) {
-                Text(fedExportStatus, color = Color(0xFF4FC3F7), fontSize = 12.sp,
-                    modifier = Modifier.padding(horizontal = 16.dp))
-            }
         }
 
         // --- Storage ---
@@ -788,46 +709,8 @@ fun SettingsScreen(
             )
         }
 
-        // --- Vendor experiments ---
-        SettingsSection("Vendor experiments") {
-            var aiShutter by remember { mutableStateOf(viewModel.loadSettingBool("vendor", "ai_shutter", false)) }
-            SettingsToggle(
-                title = "AI shutter (best-shot picker)",
-                subtitle = "Hardware best-frame selection from a short burst around the shutter press. Vendor key: com.oplus.aishutter.enable",
-                checked = aiShutter,
-                onCheckedChange = { aiShutter = it; viewModel.saveSetting("vendor", "ai_shutter", it) }
-            )
-
-            var bracketMode by remember { mutableFloatStateOf(viewModel.loadSettingFloat("vendor", "bracket_mode", 0f)) }
-            SettingsSlider(
-                title = "Exposure bracketing",
-                subtitle = "0 = off, 1 = AEB ±1 EV, 2 = wider AEB. Vendor key: com.oplus.BracketMode",
-                value = bracketMode,
-                range = 0f..3f,
-                unit = "",
-                formatValue = { "${it.toInt()}" },
-                onValueChange = { bracketMode = it; viewModel.saveSetting("vendor", "bracket_mode", it) }
-            )
-
-            var mdptzMode by remember { mutableFloatStateOf(viewModel.loadSettingFloat("vendor", "mdptz_mode", 0f)) }
-            SettingsSlider(
-                title = "Hardware mdptz subject framing",
-                subtitle = "Motion-Directed Pan/Tilt/Zoom on the periscope. 0 = off, 1+ = follow. Vendor key: com.mediatek.mdptzfeature.mdptzMode",
-                value = mdptzMode,
-                range = 0f..3f,
-                unit = "",
-                formatValue = { "${it.toInt()}" },
-                onValueChange = { mdptzMode = it; viewModel.saveSetting("vendor", "mdptz_mode", it) }
-            )
-
-            var aiScene by remember { mutableStateOf(viewModel.loadSettingBool("vendor", "ai_scene", false)) }
-            SettingsToggle(
-                title = "AI scene detection (ASD)",
-                subtitle = "Let the HAL classify the scene (snow / portrait / fast-motion / etc.). Vendor keys: com.mediatek.facefeature.asdmode + com.oplus.ai.scene.app.enable",
-                checked = aiScene,
-                onCheckedChange = { aiScene = it; viewModel.saveSetting("vendor", "ai_scene", it) }
-            )
-
+        // --- Exposure & white balance ---
+        SettingsSection("Exposure & white balance") {
             var aeMetering by remember { mutableFloatStateOf(viewModel.loadSettingFloat("vendor", "ae_metering", 0f)) }
             SettingsSlider(
                 title = "AE metering mode",
@@ -839,47 +722,6 @@ fun SettingsScreen(
                 onValueChange = { aeMetering = it; viewModel.saveSetting("vendor", "ae_metering", it) }
             )
 
-            var smvrMode by remember { mutableFloatStateOf(viewModel.loadSettingFloat("vendor", "smvr_mode", 0f)) }
-            SettingsSlider(
-                title = "Slow-motion (SMVR)",
-                subtitle = "MediaTek slow-mo path. 0=off, 1=120, 2=240, 3=480, 4=960 fps. Vendor key: com.mediatek.smvrfeature.smvrMode",
-                value = smvrMode,
-                range = 0f..4f,
-                unit = "",
-                formatValue = { listOf("off", "120 fps", "240 fps", "480 fps", "960 fps").getOrElse(it.toInt()) { "?" } },
-                onValueChange = { smvrMode = it; viewModel.saveSetting("vendor", "smvr_mode", it) }
-            )
-
-            var fastMotion by remember { mutableStateOf(viewModel.loadSettingBool("vendor", "fast_motion", false)) }
-            SettingsToggle(
-                title = "Hyperlapse (fast motion)",
-                subtitle = "Time-lapse video recording. Vendor key: com.oplus.fastmotion.mode.enable",
-                checked = fastMotion,
-                onCheckedChange = { fastMotion = it; viewModel.saveSetting("vendor", "fast_motion", it) }
-            )
-
-            var proTorch by remember { mutableFloatStateOf(viewModel.loadSettingFloat("vendor", "pro_torch", 0f)) }
-            SettingsSlider(
-                title = "Pro torch",
-                subtitle = "Manual torch intensity ramp (0 = off). Vendor key: com.oplus.ProTorchMode",
-                value = proTorch,
-                range = 0f..3f,
-                unit = "",
-                formatValue = { "${it.toInt()}" },
-                onValueChange = { proTorch = it; viewModel.saveSetting("vendor", "pro_torch", it) }
-            )
-
-            var filterPreset by remember { mutableFloatStateOf(viewModel.loadSettingFloat("vendor", "filter_preset", 0f)) }
-            SettingsSlider(
-                title = "Hasselblad XCD filter",
-                subtitle = "0 = Original, 1+ = vendor LUT presets matching the native filter strip. Vendor key: com.oplus.app.filter.type",
-                value = filterPreset,
-                range = 0f..7f,
-                unit = "",
-                formatValue = { "${it.toInt()}" },
-                onValueChange = { filterPreset = it; viewModel.saveSetting("vendor", "filter_preset", it) }
-            )
-
             var wbKelvin by remember { mutableFloatStateOf(viewModel.loadSettingFloat("vendor", "manual_wb_kelvin", 0f)) }
             SettingsSlider(
                 title = "Manual WB temperature (Kelvin)",
@@ -889,30 +731,6 @@ fun SettingsScreen(
                 unit = "K",
                 formatValue = { if (it < 100f) "auto" else "${it.toInt()}K" },
                 onValueChange = { wbKelvin = it; viewModel.saveSetting("vendor", "manual_wb_kelvin", it) }
-            )
-
-            var ultraHr by remember { mutableStateOf(viewModel.loadSettingBool("vendor", "ultra_hr", false)) }
-            SettingsToggle(
-                title = "Alternate ultra-HR enable",
-                subtitle = "Sibling key to remosaicenable: com.oplus.ultra.high.resolution.enable. Same caveat — capped by the public stream config map.",
-                checked = ultraHr,
-                onCheckedChange = { ultraHr = it; viewModel.saveSetting("vendor", "ultra_hr", it) }
-            )
-        }
-
-        // --- Developer ---
-        SettingsSection("Developer") {
-            var vendorOverlay by remember {
-                mutableStateOf(viewModel.loadSettingBool("dev", "vendor_overlay", false))
-            }
-            SettingsToggle(
-                title = "Vendor key overlay",
-                subtitle = "Show live flipmode / eismode / stab / tracking / LOG values + any HAL rejections in the viewfinder",
-                checked = vendorOverlay,
-                onCheckedChange = {
-                    vendorOverlay = it
-                    viewModel.saveSetting("dev", "vendor_overlay", it)
-                }
             )
         }
 

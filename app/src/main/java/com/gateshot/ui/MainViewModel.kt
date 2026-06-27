@@ -11,7 +11,6 @@ import com.gateshot.core.event.EventBus
 import com.gateshot.core.event.collect
 import com.gateshot.core.mode.AppMode
 import com.gateshot.core.mode.ModeManager
-import com.gateshot.CloudBackupWorker
 import com.gateshot.capture.tracking.TrackingFeatureModule
 import com.gateshot.capture.trigger.TriggerFeatureModule
 import com.gateshot.capture.trigger.TriggerZone
@@ -64,8 +63,7 @@ data class MainUiState(
     val trackingTargetY: Float = 0f,
     val trackingRegionSize: Float = 0.15f,
     val trackingOccluded: Boolean = false,
-    val moduleStatuses: Map<String, String> = emptyMap(),
-    val showVendorOverlay: Boolean = false
+    val moduleStatuses: Map<String, String> = emptyMap()
 )
 
 @HiltViewModel
@@ -79,11 +77,39 @@ class MainViewModel @Inject constructor(
     private val trackingModule: TrackingFeatureModule,
     private val sensorPlatform: SensorPlatform,
     private val configStore: ConfigStore,
-    private val replayModule: ReplayFeatureModule
+    private val replayModule: ReplayFeatureModule,
+    private val stabilizeModule: com.gateshot.processing.stabilize.StabilizeModule
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(MainUiState())
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
+
+    // Offline video stabilization status (observed by the gallery).
+    val stabilizeRunning: StateFlow<Boolean> = stabilizeModule.running
+    val stabilizeProgress: StateFlow<Float> = stabilizeModule.progress
+    private val _galleryRefresh = MutableStateFlow(0)
+    val galleryRefresh: StateFlow<Int> = _galleryRefresh.asStateFlow()
+
+    /** Stabilize a recorded clip offline (gyro + optical-residual hybrid). */
+    fun stabilizeVideo(filePath: String) {
+        if (filePath.isEmpty()) return
+        viewModelScope.launch {
+            val resp = endpointRegistry.call<
+                com.gateshot.processing.stabilize.StabilizeRequest,
+                com.gateshot.processing.stabilize.StabilizeResult>(
+                "process/stabilize/run",
+                com.gateshot.processing.stabilize.StabilizeRequest(clipPath = filePath)
+            )
+            val data = resp.dataOrNull()
+            if (data != null) {
+                android.util.Log.i("Stabilize",
+                    "Done: ${data.outputPath} frames=${data.frames} sync=${data.syncOffsetMs}ms " +
+                    "R2=(${data.r2x},${data.r2y}) optical=${data.fellBackToOptical} in ${data.elapsedMs}ms")
+            } else {
+                android.util.Log.e("Stabilize", "Failed: $resp")
+            }
+        }
+    }
 
     init {
         android.util.Log.e("GateShot", "MainViewModel INIT — camera state: ${cameraXPlatform.state.value}")
@@ -106,9 +132,9 @@ class MainViewModel @Inject constructor(
             }
         }
 
-        // Pull persisted dev-overlay state at startup so it survives app restart
-        _uiState.update {
-            it.copy(showVendorOverlay = loadSettingBool("dev", "vendor_overlay", false))
+        // Refresh the gallery when a stabilized clip is produced.
+        eventBus.collect<AppEvent.VideoStabilizationCompleted>(viewModelScope) {
+            _galleryRefresh.update { it + 1 }
         }
 
         // Observe camera events
@@ -221,15 +247,21 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    val vendorKeyReport: StateFlow<com.gateshot.platform.camera.VendorKeyReport>
-        get() = cameraXPlatform.vendorKeyReport
-
     fun bindCameraPreview(previewView: PreviewView, lifecycleOwner: LifecycleOwner) {
         cameraXPlatform.bindPreview(previewView, lifecycleOwner)
         // Auto-open camera after binding, then restore zoom level and push
         // every persisted setting into the live camera so the user's last
         // session is reproduced (otherwise prefs were ignored at startup).
         viewModelScope.launch {
+            // Pre-seed bind-time state from prefs *before* open(). Settings
+            // like EIS/OIS mode must be applied to the platform's internal
+            // `activeStabilization` before the first bind, otherwise the
+            // initial CameraX session uses the default (EIS=OFF) and the
+            // post-open replay is blocked from rebinding by the
+            // pushingPersistedSettings guard — leaving the session stuck at
+            // the defaults until the user manually toggles a setting.
+            preloadStabilizationFromPrefs()
+
             cameraXPlatform.open(buildCameraConfigFromPrefs())
             pushAllPersistedSettingsToCamera()
             val savedZoom = _uiState.value.zoomLevel
@@ -237,6 +269,29 @@ class MainViewModel @Inject constructor(
                 cameraXPlatform.setZoom(savedZoom)
             }
         }
+    }
+
+    /**
+     * Read OIS/EIS mode from persisted prefs and push them into the camera
+     * platform's `activeStabilization` before the first bind. The platform
+     * no-ops if the camera isn't open yet (good) but stashes the config for
+     * the upcoming open() to read at session-config time.
+     */
+    private fun preloadStabilizationFromPrefs() {
+        val oisIdx = loadSettingFloat("video", "ois_mode", 1f).toInt()
+        val eisIdx = loadSettingFloat("video", "eis_mode", 0f).toInt()
+        cameraXPlatform.setStabilization(StabilizationConfig(
+            ois = when (oisIdx) {
+                0 -> OisMode.OFF
+                2 -> OisMode.MAXIMUM
+                else -> OisMode.STANDARD
+            },
+            eis = when (eisIdx) {
+                0 -> EisMode.OFF
+                2 -> EisMode.PANNING
+                else -> EisMode.STANDARD
+            }
+        ))
     }
 
     /**
@@ -254,7 +309,6 @@ class MainViewModel @Inject constructor(
         val raw = loadSettingBool("camera", "save_raw", false)
         val heif = loadSettingBool("camera", "heif", false)
         val quality = loadSettingFloat("camera", "jpeg_quality", 95f).toInt().coerceIn(70, 100)
-        val hr = loadSettingBool("camera", "hr_mode", false)
         return CameraConfig(
             lens = CameraLens.MAIN,
             resolution = android.util.Size(width, height),
@@ -262,8 +316,7 @@ class MainViewModel @Inject constructor(
             enableRaw = raw,
             hdrProfile = hdr,
             outputFormat = if (heif) ImageOutputFormat.HEIF else ImageOutputFormat.JPEG,
-            jpegQuality = quality,
-            highResolution = hr
+            jpegQuality = quality
         )
     }
 
@@ -337,6 +390,10 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 cameraXPlatform.close()
+                // close() resets activeStabilization to default — re-seed
+                // from prefs before open() so the new session is bound with
+                // the correct EIS/OIS state (same reason as bindCameraPreview).
+                preloadStabilizationFromPrefs()
                 cameraXPlatform.open(buildCameraConfigFromPrefs())
                 pushAllPersistedSettingsToCamera()
                 val savedZoom = _uiState.value.zoomLevel
@@ -359,13 +416,6 @@ class MainViewModel @Inject constructor(
 
                 // Run post-processing in background
                 viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-                    // SR enhancement for zoom >= 5x
-                    val srEnabled = loadSettingBool("sr", "auto_enhance", true)
-                    val zoom = _uiState.value.zoomLevel
-                    if (srEnabled && zoom >= 5f) {
-                        enhanceCapturedPhoto(result.uri, zoom)
-                    }
-
                     // Hasselblad color grading
                     val hassEnabled = loadSettingBool("color", "hasselblad_enabled", false)
                     if (hassEnabled) {
@@ -374,58 +424,6 @@ class MainViewModel @Inject constructor(
                 }
             } catch (_: Exception) { }
             finally { isCapturing = false }
-        }
-    }
-
-    private suspend fun enhanceCapturedPhoto(filePath: String, zoomLevel: Float) {
-        try {
-            val file = java.io.File(filePath)
-            if (!file.exists()) return
-
-            // Downscale for processing to avoid OOM on full-res images
-            val opts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            android.graphics.BitmapFactory.decodeFile(filePath, opts)
-            val fullW = opts.outWidth
-            val fullH = opts.outHeight
-            android.util.Log.i("SR", "Enhancing $filePath (${fullW}x${fullH}) at zoom=${zoomLevel}x")
-
-            val bitmap = android.graphics.BitmapFactory.decodeFile(filePath) ?: return
-            val width = bitmap.width
-            val height = bitmap.height
-            val pixels = IntArray(width * height)
-            bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
-            bitmap.recycle()
-
-            // Save a "before" copy for A/B comparison
-            val beforeFile = java.io.File(file.parent, file.nameWithoutExtension + "_before.jpg")
-            file.copyTo(beforeFile, overwrite = true)
-
-            val startMs = System.currentTimeMillis()
-            val response = endpointRegistry.call<com.gateshot.processing.sr.EnhancePhotoRequest,
-                com.gateshot.processing.sr.EnhanceResult>(
-                "enhance/photo",
-                com.gateshot.processing.sr.EnhancePhotoRequest(pixels, width, height, zoomLevel)
-            )
-
-            val enhanced = response.dataOrNull()
-            if (enhanced != null) {
-                val elapsed = System.currentTimeMillis() - startMs
-                android.util.Log.i("SR", "Enhanced in ${elapsed}ms: ${enhanced.pipeline} (${enhanced.qualityZone})")
-
-                val enhancedBitmap = android.graphics.Bitmap.createBitmap(
-                    enhanced.width, enhanced.height, android.graphics.Bitmap.Config.ARGB_8888
-                )
-                enhancedBitmap.setPixels(enhanced.pixels, 0, enhanced.width, 0, 0, enhanced.width, enhanced.height)
-                java.io.FileOutputStream(file).use { out ->
-                    enhancedBitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 100, out)
-                }
-                enhancedBitmap.recycle()
-                android.util.Log.i("SR", "Saved enhanced photo to $filePath")
-            } else {
-                android.util.Log.e("SR", "Enhancement returned null: ${response}")
-            }
-        } catch (e: Exception) {
-            android.util.Log.e("SR", "Enhancement failed: ${e.message}", e)
         }
     }
 
@@ -818,7 +816,7 @@ class MainViewModel @Inject constructor(
                 if (!pushingPersistedSettings) rebindCameraFromPrefs()
             }
             section == "camera" && (key == "save_raw" || key == "heif" ||
-                key == "jpeg_quality" || key == "resolution_mp" || key == "hr_mode") -> {
+                key == "jpeg_quality" || key == "resolution_mp") -> {
                 if (!pushingPersistedSettings) rebindCameraFromPrefs()
             }
             // Vendor-key driven features
@@ -838,41 +836,17 @@ class MainViewModel @Inject constructor(
                     ))
                 }
             }
-            section == "dev" && key == "vendor_overlay" -> {
-                _uiState.update { it.copy(showVendorOverlay = value == true) }
-            }
             section == "tracking" && key == "hardware" -> {
                 // Hardware tracking starts in "armed" mode with no region —
                 // SubjectTracker hands it a region when it locks on a racer.
                 cameraXPlatform.setHardwareTracking(enabled = (value == true), region = null)
             }
-            // ── Tier 1/2/3 vendor features ─────────────────────────────────
-            section == "vendor" && key == "ai_shutter" -> {
-                cameraXPlatform.setAiShutter(value == true)
-            }
-            section == "vendor" && key == "bracket_mode" -> {
-                cameraXPlatform.setBracketMode((value as? Float)?.toInt() ?: 0)
-            }
+            // ── Retained vendor controls (tracking + exposure/WB) ──────────
             section == "vendor" && key == "mdptz_mode" -> {
                 cameraXPlatform.setMdptzMode((value as? Float)?.toInt() ?: 0)
             }
-            section == "vendor" && key == "ai_scene" -> {
-                cameraXPlatform.setAiScene(value == true)
-            }
             section == "vendor" && key == "ae_metering" -> {
                 cameraXPlatform.setAeMetering((value as? Float)?.toInt() ?: 0)
-            }
-            section == "vendor" && key == "smvr_mode" -> {
-                cameraXPlatform.setSmvrMode((value as? Float)?.toInt() ?: 0)
-            }
-            section == "vendor" && key == "fast_motion" -> {
-                cameraXPlatform.setFastMotion(value == true)
-            }
-            section == "vendor" && key == "pro_torch" -> {
-                cameraXPlatform.setProTorch((value as? Float)?.toInt() ?: 0)
-            }
-            section == "vendor" && key == "filter_preset" -> {
-                cameraXPlatform.setFilterPreset((value as? Float)?.toInt() ?: 0)
             }
             section == "vendor" && (key == "manual_wb_kelvin" || key == "manual_wb_tint") -> {
                 val k = loadSettingFloat("vendor", "manual_wb_kelvin", -1f).toInt()
@@ -880,9 +854,6 @@ class MainViewModel @Inject constructor(
                 val t = loadSettingFloat("vendor", "manual_wb_tint", Float.NaN).toInt()
                     .takeIf { !it.toFloat().isNaN() }
                 cameraXPlatform.setManualWb(k, t)
-            }
-            section == "vendor" && key == "ultra_hr" -> {
-                cameraXPlatform.setUltraHighResolution(value == true)
             }
         }
     }
@@ -923,6 +894,18 @@ class MainViewModel @Inject constructor(
             } else {
                 endpointRegistry.call<Unit, Any>("af/track/enable", Unit)
             }
+        }
+    }
+
+    fun onNativeCaptureComplete(absolutePath: String, isVideo: Boolean) {
+        viewModelScope.launch {
+            eventBus.publish(
+                AppEvent.NativeCaptureCompleted(
+                    fileUri = "file://$absolutePath",
+                    isVideo = isVideo
+                )
+            )
+            _uiState.update { it.copy(shotCount = it.shotCount + 1) }
         }
     }
 
@@ -1317,272 +1300,4 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    fun mergeMultiCamera(video1: String, video2: String, onResult: (Long) -> Unit) {
-        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-            try {
-                // Cross-correlate audio from both videos to find time offset
-                val retriever1 = android.media.MediaMetadataRetriever()
-                retriever1.setDataSource(video1)
-                val duration1 = retriever1.extractMetadata(
-                    android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
-                retriever1.release()
-
-                val retriever2 = android.media.MediaMetadataRetriever()
-                retriever2.setDataSource(video2)
-                val duration2 = retriever2.extractMetadata(
-                    android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
-                retriever2.release()
-
-                // Save sync offset for the overlay engine to use
-                val syncFile = java.io.File(appContext.getExternalFilesDir(null), "GateShot/reference/multi_camera_sync.txt")
-                syncFile.parentFile?.mkdirs()
-                // Use autoclip audio analysis to find beep in each video and compute offset
-                val response1 = endpointRegistry.call<com.gateshot.processing.autoclip.AutoClipRequest,
-                    com.gateshot.processing.autoclip.AutoClipResult>(
-                    "process/autoclip/run", com.gateshot.processing.autoclip.AutoClipRequest(video1)
-                )
-                val response2 = endpointRegistry.call<com.gateshot.processing.autoclip.AutoClipRequest,
-                    com.gateshot.processing.autoclip.AutoClipResult>(
-                    "process/autoclip/run", com.gateshot.processing.autoclip.AutoClipRequest(video2)
-                )
-                val beep1 = response1.dataOrNull()?.segments?.firstOrNull()?.startMs ?: 0L
-                val beep2 = response2.dataOrNull()?.segments?.firstOrNull()?.startMs ?: 0L
-                val offsetMs = beep2 - beep1
-
-                syncFile.writeText("$video1\n$video2\n$offsetMs")
-                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) { onResult(offsetMs) }
-            } catch (e: Exception) {
-                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) { onResult(0L) }
-            }
-        }
-    }
-
-    fun exportCoachingPackage(context: android.content.Context, onResult: (android.net.Uri) -> Unit) {
-        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-            try {
-                val exportDir = java.io.File(context.getExternalFilesDir(null), "GateShot/export")
-                if (!exportDir.exists()) exportDir.mkdirs()
-                val packageFile = java.io.File(exportDir, "coaching_package_${System.currentTimeMillis()}.zip")
-
-                java.util.zip.ZipOutputStream(java.io.FileOutputStream(packageFile)).use { zip ->
-                    // Include latest video
-                    val videoDir = java.io.File(context.getExternalFilesDir(null), "GateShot/videos")
-                    val latestVideo = videoDir.listFiles()?.filter { it.extension == "mp4" }
-                        ?.maxByOrNull { it.lastModified() }
-                    latestVideo?.let { video ->
-                        zip.putNextEntry(java.util.zip.ZipEntry(video.name))
-                        video.inputStream().use { it.copyTo(zip) }
-                        zip.closeEntry()
-                        // Include gate timestamps
-                        val gatesFile = java.io.File(video.parent, video.nameWithoutExtension + ".gates")
-                        if (gatesFile.exists()) {
-                            zip.putNextEntry(java.util.zip.ZipEntry(gatesFile.name))
-                            gatesFile.inputStream().use { it.copyTo(zip) }
-                            zip.closeEntry()
-                        }
-                    }
-                    // Include timing splits
-                    val timingDir = java.io.File(context.getExternalFilesDir(null), "GateShot/timing")
-                    timingDir.listFiles()?.forEach { file ->
-                        zip.putNextEntry(java.util.zip.ZipEntry("timing/${file.name}"))
-                        file.inputStream().use { it.copyTo(zip) }
-                        zip.closeEntry()
-                    }
-                    // Include ideal line
-                    val lineFile = java.io.File(context.getExternalFilesDir(null), "GateShot/reference/ideal_line.csv")
-                    if (lineFile.exists()) {
-                        zip.putNextEntry(java.util.zip.ZipEntry("ideal_line.csv"))
-                        lineFile.inputStream().use { it.copyTo(zip) }
-                        zip.closeEntry()
-                    }
-                }
-                val uri = androidx.core.content.FileProvider.getUriForFile(
-                    context, "${context.packageName}.fileprovider", packageFile
-                )
-                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) { onResult(uri) }
-            } catch (e: Exception) {
-                android.util.Log.e("GateShot", "Export failed: ${e.message}")
-            }
-        }
-    }
-
-    fun getTeamFeedItems(): List<Map<String, String>> {
-        val feedFile = java.io.File(appContext.getExternalFilesDir(null), "GateShot/team_feed.tsv")
-        if (!feedFile.exists()) return emptyList()
-        return try {
-            feedFile.readLines().filter { it.isNotBlank() }.map { line ->
-                val parts = line.split("\t")
-                mapOf(
-                    "title" to (parts.getOrNull(0) ?: ""),
-                    "description" to (parts.getOrNull(1) ?: ""),
-                    "timestamp" to (parts.getOrNull(2) ?: "")
-                )
-            }
-        } catch (_: Exception) { emptyList() }
-    }
-
-    fun postToTeamFeed(context: android.content.Context) {
-        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-            val feedFile = java.io.File(context.getExternalFilesDir(null), "GateShot/team_feed.tsv")
-            feedFile.parentFile?.mkdirs()
-            val title = "Session: ${_uiState.value.sessionName ?: "Training"}"
-            val desc = "Run ${_uiState.value.activeRunNumber} — ${_uiState.value.sessionDiscipline ?: ""}"
-            val ts = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).format(java.util.Date())
-            feedFile.appendText("$title\t$desc\t$ts\n")
-        }
-    }
-
-    fun scheduleCloudBackup(context: android.content.Context) {
-        // Schedule periodic backup using WorkManager
-        try {
-            val constraints = androidx.work.Constraints.Builder()
-                .setRequiredNetworkType(androidx.work.NetworkType.UNMETERED)
-                .build()
-            val backupWork = androidx.work.PeriodicWorkRequestBuilder<CloudBackupWorker>(
-                1, java.util.concurrent.TimeUnit.HOURS
-            ).setConstraints(constraints).build()
-            androidx.work.WorkManager.getInstance(context)
-                .enqueueUniquePeriodicWork("gateshot_backup",
-                    androidx.work.ExistingPeriodicWorkPolicy.KEEP, backupWork)
-        } catch (e: Exception) {
-            android.util.Log.e("GateShot", "WorkManager scheduling failed: ${e.message}")
-        }
-    }
-
-    fun runManualBackup(context: android.content.Context, onResult: (String) -> Unit) {
-        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-            val gateShotDir = java.io.File(context.getExternalFilesDir(null), "GateShot")
-            val files = gateShotDir.walkTopDown()
-                .filter { it.isFile && it.extension in listOf("jpg", "jpeg", "mp4", "dng") }
-                .toList()
-            val totalMb = files.sumOf { it.length() } / (1024 * 1024)
-            val starredCount = files.count { java.io.File("${it.absolutePath}.starred").exists() }
-            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                onResult("${files.size} files (${totalMb}MB), $starredCount starred. Ready for WiFi upload.")
-            }
-        }
-    }
-
-    // =============================================
-    // Voice commands
-    // =============================================
-
-    private var speechRecognizer: android.speech.SpeechRecognizer? = null
-
-    fun startVoiceCommands() {
-        if (speechRecognizer != null) return
-        val recognizer = android.speech.SpeechRecognizer.createSpeechRecognizer(appContext)
-        speechRecognizer = recognizer
-
-        recognizer.setRecognitionListener(object : android.speech.RecognitionListener {
-            override fun onResults(results: android.os.Bundle?) {
-                val matches = results?.getStringArrayList(android.speech.SpeechRecognizer.RESULTS_RECOGNITION)
-                val command = matches?.firstOrNull()?.lowercase() ?: return
-                handleVoiceCommand(command)
-                // Restart listening for next command
-                startListening(recognizer)
-            }
-            override fun onError(error: Int) {
-                // Restart on error (timeout, etc.)
-                if (speechRecognizer != null) startListening(recognizer)
-            }
-            override fun onReadyForSpeech(params: android.os.Bundle?) {}
-            override fun onBeginningOfSpeech() {}
-            override fun onRmsChanged(rmsdB: Float) {}
-            override fun onBufferReceived(buffer: ByteArray?) {}
-            override fun onEndOfSpeech() {}
-            override fun onPartialResults(partialResults: android.os.Bundle?) {}
-            override fun onEvent(eventType: Int, params: android.os.Bundle?) {}
-        })
-        startListening(recognizer)
-    }
-
-    private fun startListening(recognizer: android.speech.SpeechRecognizer) {
-        val intent = android.content.Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL,
-                android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(android.speech.RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
-        }
-        try { recognizer.startListening(intent) } catch (_: Exception) { }
-    }
-
-    private fun handleVoiceCommand(command: String) {
-        when {
-            command.contains("start recording") || command.contains("record") -> onVideoToggle()
-            command.contains("stop recording") || command.contains("stop") -> {
-                if (_uiState.value.isRecording) onVideoToggle()
-            }
-            command.contains("mark") || command.contains("flag") -> {
-                // Mark current moment
-                _uiState.update { it.copy(shotCount = it.shotCount) } // Trigger UI refresh
-            }
-            command.contains("slow") || command.contains("slow-mo") || command.contains("slow motion") -> {
-                onPresetSelected("video")
-            }
-            command.contains("photo") || command.contains("race") -> {
-                onPresetSelected("race")
-            }
-            command.contains("next") || command.contains("next mode") -> cyclePreset()
-        }
-    }
-
-    fun stopVoiceCommands() {
-        speechRecognizer?.destroy()
-        speechRecognizer = null
-    }
-
-    // =============================================
-    // Federation export
-    // =============================================
-
-    fun exportFederationFormat(context: android.content.Context, onResult: (String) -> Unit) {
-        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-            try {
-                val exportDir = java.io.File(context.getExternalFilesDir(null), "GateShot/export/federation")
-                if (!exportDir.exists()) exportDir.mkdirs()
-
-                val state = _uiState.value
-                val dateStr = java.text.SimpleDateFormat("yyyyMMdd", java.util.Locale.US).format(java.util.Date())
-                val discipline = state.sessionDiscipline ?: "XX"
-                val event = (state.sessionName ?: "training").replace(" ", "_").take(20)
-
-                // Copy media with FIS-compatible naming: EVENT_DISCIPLINE_DATE_RUN_BIB.ext
-                val videoDir = java.io.File(context.getExternalFilesDir(null), "GateShot/videos")
-                val photoDir = java.io.File(context.getExternalFilesDir(null), "GateShot/photos")
-
-                var exported = 0
-                videoDir.listFiles()?.filter { it.extension == "mp4" }?.forEachIndexed { i, file ->
-                    val bib = java.io.File("${file.absolutePath}.bib").let {
-                        if (it.exists()) it.readText().trim() else "000"
-                    }
-                    val outName = "${event}_${discipline}_${dateStr}_R${i + 1}_B${bib}.mp4"
-                    file.copyTo(java.io.File(exportDir, outName), overwrite = true)
-                    exported++
-                }
-                photoDir.listFiles()?.filter { it.extension in listOf("jpg", "jpeg") }?.forEachIndexed { i, file ->
-                    val bib = java.io.File("${file.absolutePath}.bib").let {
-                        if (it.exists()) it.readText().trim() else "000"
-                    }
-                    val outName = "${event}_${discipline}_${dateStr}_P${i + 1}_B${bib}.jpg"
-                    file.copyTo(java.io.File(exportDir, outName), overwrite = true)
-                    exported++
-                }
-
-                // Write metadata CSV
-                val csvFile = java.io.File(exportDir, "${event}_${discipline}_${dateStr}_metadata.csv")
-                csvFile.writeText("filename,event,discipline,date,bib,type\n")
-                exportDir.listFiles()?.filter { it.extension in listOf("mp4", "jpg") }?.forEach { file ->
-                    csvFile.appendText("${file.name},$event,$discipline,$dateStr,,${file.extension}\n")
-                }
-
-                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                    onResult("$exported files exported to federation format in ${exportDir.name}/")
-                }
-            } catch (e: Exception) {
-                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                    onResult("Error: ${e.message}")
-                }
-            }
-        }
-    }
 }

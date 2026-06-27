@@ -31,6 +31,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
@@ -46,8 +47,8 @@ import com.gateshot.ui.components.PresetSelector
 import com.gateshot.ui.components.ShutterButton
 import com.gateshot.ui.components.StatusBar
 import com.gateshot.ui.components.TrackingOverlay
-import com.gateshot.ui.components.VendorKeyOverlay
 import com.gateshot.ui.components.ZoneOverlay
+import com.gateshot.ui.nativecapture.rememberNativeCaptureLauncher
 
 @Composable
 fun ViewfinderScreen(
@@ -62,11 +63,16 @@ fun ViewfinderScreen(
     onAddTriggerZone: (Float, Float) -> Unit,
     onClearTriggerZones: () -> Unit,
     onTrackingToggle: () -> Unit,
+    onNativeCaptured: (absolutePath: String, isVideo: Boolean) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     var currentZoom by remember { mutableFloatStateOf(uiState.zoomLevel) }
+    val nativeCapture = rememberNativeCaptureLauncher(
+        context = context,
+        onCaptured = onNativeCaptured
+    )
 
     // Oppo Find X9 Pro lens presets: ultra-wide, main, telephoto portrait, telephoto
     val zoomPresets = remember { listOf(0.6f, 1f, 2f, 5f) }
@@ -144,19 +150,6 @@ fun ViewfinderScreen(
                 .fillMaxWidth()
                 .align(Alignment.TopCenter)
         )
-
-        // Dev overlay — vendor key state, gated by Settings toggle.
-        // Anchored top-center so it doesn't collide with the preset column on
-        // the left or the shutter column on the right.
-        if (uiState.showVendorOverlay) {
-            val vendorReport by cameraXPlatform.vendorKeyReport.collectAsState()
-            VendorKeyOverlay(
-                report = vendorReport,
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(top = 144.dp)
-            )
-        }
 
         // Preset selector — left side
         PresetSelector(
@@ -248,6 +241,29 @@ fun ViewfinderScreen(
                         fontWeight = FontWeight.Bold
                     )
                 }
+            }
+
+            // Delegate to the native Oppo camera — a working fallback to the
+            // OEM capture pipeline. Tap = photo, long-press = video.
+            Box(
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Color(0xAA2E3A8C))
+                    .pointerInput(Unit) {
+                        detectTapGestures(
+                            onTap = { nativeCapture.capturePhoto() },
+                            onLongPress = { nativeCapture.captureVideo() }
+                        )
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "OEM",
+                    color = Color.White,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold
+                )
             }
         }
 
