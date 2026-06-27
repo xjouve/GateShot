@@ -133,6 +133,7 @@ class CameraXPlatform @Inject constructor(
     private var liveStabilizationEnabled = false
     private var liveStabStrength: Float = 1.0f
     private val liveStabilizer = com.gateshot.processing.stabilize.LiveStabilizer()
+    private val residualTracker = com.gateshot.processing.stabilize.OpticalResidualTracker(liveStabilizer)
     private var stabProcessor: StabilizingSurfaceProcessor? = null
     private var stabGyroListener: android.hardware.SensorEventListener? = null
     // Main-thread scope used to rebind the camera when stabilization is toggled.
@@ -599,7 +600,10 @@ class CameraXPlatform @Inject constructor(
         owner: LifecycleOwner,
         selector: CameraSelector
     ): Camera {
-        val processor = StabilizingSurfaceProcessor(liveStabilizer).apply {
+        val processor = StabilizingSurfaceProcessor(
+            liveStabilizer,
+            if (STAB_OPTICAL_RESIDUAL) residualTracker else null,
+        ).apply {
             cropFrac = STAB_CROP
             rotate180 = currentZoomRatio >= TELEPHOTO_ENGAGE_ZOOM
             // The effect's camera input is SDR 8-bit (we don't request a 10-bit
@@ -1945,6 +1949,11 @@ class CameraXPlatform @Inject constructor(
         // up to this fraction to cancel shake; bigger = more headroom but more
         // zoom-in. ~12% matches native EIS behavior.
         private const val STAB_CROP = 0.12f
+
+        // Stage-2 optical-residual refinement (decoupled, self-healing). Gyro is
+        // the robust foundation; this nudges out what the gyro misses (OIS/bias/
+        // parallax). Flip to false to fall back to gyro-only if it ever hurts.
+        private const val STAB_OPTICAL_RESIDUAL = true
 
         /**
          * Parse a shutter speed fraction string like "1/1000" to nanoseconds.

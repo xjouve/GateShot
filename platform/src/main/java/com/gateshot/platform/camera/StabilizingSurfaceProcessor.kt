@@ -43,6 +43,7 @@ import java.util.concurrent.Executor
  */
 class StabilizingSurfaceProcessor(
     private val stabilizer: LiveStabilizer,
+    private val residualTracker: com.gateshot.processing.stabilize.OpticalResidualTracker? = null,
 ) : SurfaceProcessor {
 
     /** Crop margin per side; must match the [LiveStabilizer.Config.cropFrac]. */
@@ -103,6 +104,16 @@ class StabilizingSurfaceProcessor(
     private var released = false
     private var frameCount = 0
 
+    // Stage-2 optical residual: render the warped frame to a small FBO every
+    // RESIDUAL_SAMPLE_EVERY frames, read it back, and hand the luma to the tracker
+    // on a background thread. Drop-if-busy so it never stalls the GL thread.
+    private var fbo = 0
+    private var fboTex = 0
+    private val readBuf = ByteBuffer.allocateDirect(RES_N * RES_N * 4).order(ByteOrder.nativeOrder())
+    private val residualBusy = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val residualExecutor =
+        if (residualTracker != null) java.util.concurrent.Executors.newSingleThreadExecutor() else null
+
     // ------------------------------------------------------------------
     // SurfaceProcessor
     // ------------------------------------------------------------------
@@ -123,6 +134,7 @@ class StabilizingSurfaceProcessor(
             inputSurfaceTexture = st
             inputSurface = surface
             stabilizer.reset()
+            residualTracker?.reset()
 
             request.provideSurface(surface, glExecutor) { result ->
                 // Camera released the surface — drop it.
@@ -200,27 +212,77 @@ class StabilizingSurfaceProcessor(
             o.output.updateTransformMatrix(outMatrix, stMatrix)
 
             GLES20.glViewport(0, 0, o.width, o.height)
-            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
-            GLES20.glUseProgram(program)
-
-            GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
-            GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, texId)
-
-            quad.position(0)
-            GLES20.glVertexAttribPointer(aPositionLoc, 2, GLES20.GL_FLOAT, false, 16, quad)
-            GLES20.glEnableVertexAttribArray(aPositionLoc)
-            quad.position(2)
-            GLES20.glVertexAttribPointer(aTexCoordLoc, 2, GLES20.GL_FLOAT, false, 16, quad)
-            GLES20.glEnableVertexAttribArray(aTexCoordLoc)
-
-            GLES20.glUniformMatrix4fv(uStMatrixLoc, 1, false, outMatrix, 0)
-            GLES20.glUniformMatrix4fv(uWarpMatrixLoc, 1, false, warpMatrix, 0)
-            if (uTonemapLoc >= 0) GLES20.glUniform1i(uTonemapLoc, if (tonemapHdr) 1 else 0)
-
-            GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+            drawQuad(outMatrix)
 
             EGLExt.eglPresentationTimeANDROID(eglDisplay, o.eglSurface, ts)
             EGL14.eglSwapBuffers(eglDisplay, o.eglSurface)
+        }
+
+        // Stage-2: sample the warped output for residual measurement.
+        if (residualTracker != null && frameCount % RESIDUAL_SAMPLE_EVERY == 0) {
+            sampleResidual(ts)
+        }
+    }
+
+    /** Draw the camera texture warped by [warpMatrix], sampled via [stTransform]. */
+    private fun drawQuad(stTransform: FloatArray) {
+        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+        GLES20.glUseProgram(program)
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, texId)
+
+        quad.position(0)
+        GLES20.glVertexAttribPointer(aPositionLoc, 2, GLES20.GL_FLOAT, false, 16, quad)
+        GLES20.glEnableVertexAttribArray(aPositionLoc)
+        quad.position(2)
+        GLES20.glVertexAttribPointer(aTexCoordLoc, 2, GLES20.GL_FLOAT, false, 16, quad)
+        GLES20.glEnableVertexAttribArray(aTexCoordLoc)
+
+        GLES20.glUniformMatrix4fv(uStMatrixLoc, 1, false, stTransform, 0)
+        GLES20.glUniformMatrix4fv(uWarpMatrixLoc, 1, false, warpMatrix, 0)
+        if (uTonemapLoc >= 0) GLES20.glUniform1i(uTonemapLoc, if (tonemapHdr) 1 else 0)
+
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+    }
+
+    /**
+     * Render the warped frame to the small FBO, read it back, and hand the luma to
+     * the residual tracker on a background thread. Skips entirely if the tracker
+     * is still busy with the previous frame (graceful degradation → gyro-only).
+     */
+    private fun sampleResidual(ts: Long) {
+        val exec = residualExecutor ?: return
+        if (fbo == 0) return
+        if (residualBusy.get()) return  // tracker behind — skip, stay real-time
+
+        makeCurrentPbuffer()
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, fbo)
+        GLES20.glViewport(0, 0, RES_N, RES_N)
+        // stMatrix (camera transform) keeps the readback in a stable orientation.
+        drawQuad(stMatrix)
+        readBuf.rewind()
+        GLES20.glReadPixels(0, 0, RES_N, RES_N, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, readBuf)
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+
+        readBuf.rewind()
+        val bytes = ByteArray(RES_N * RES_N * 4)
+        readBuf.get(bytes)
+        residualBusy.set(true)
+        exec.execute {
+            try {
+                val luma = FloatArray(RES_N * RES_N)
+                var j = 0
+                for (i in luma.indices) {
+                    val r = bytes[j].toInt() and 0xFF
+                    val g = bytes[j + 1].toInt() and 0xFF
+                    val b = bytes[j + 2].toInt() and 0xFF
+                    luma[i] = 0.299f * r + 0.587f * g + 0.114f * b
+                    j += 4
+                }
+                residualTracker?.submitFrame(luma, ts)
+            } finally {
+                residualBusy.set(false)
+            }
         }
     }
 
@@ -287,6 +349,29 @@ class StabilizingSurfaceProcessor(
         GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
         GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_MIRRORED_REPEAT)
         GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_MIRRORED_REPEAT)
+
+        // Stage-2 readback FBO (RES_N²) for the optical-residual tracker.
+        if (residualTracker != null) {
+            val t = IntArray(1)
+            GLES20.glGenTextures(1, t, 0)
+            fboTex = t[0]
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, fboTex)
+            GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, RES_N, RES_N, 0,
+                GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, null)
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+            val f = IntArray(1)
+            GLES20.glGenFramebuffers(1, f, 0)
+            fbo = f[0]
+            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, fbo)
+            GLES20.glFramebufferTexture2D(GLES20.GL_FRAMEBUFFER, GLES20.GL_COLOR_ATTACHMENT0,
+                GLES20.GL_TEXTURE_2D, fboTex, 0)
+            val status = GLES20.glCheckFramebufferStatus(GLES20.GL_FRAMEBUFFER)
+            if (status != GLES20.GL_FRAMEBUFFER_COMPLETE) {
+                Log.e(TAG, "residual FBO incomplete: $status"); fbo = 0
+            }
+            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+        }
     }
 
     private fun makeCurrentPbuffer() {
@@ -308,8 +393,12 @@ class StabilizingSurfaceProcessor(
 
     /** Release everything. Safe to call once; further callbacks are ignored. */
     fun release() {
+        residualExecutor?.shutdownNow()
         glHandler.post {
             released = true
+            if (fbo != 0) GLES20.glDeleteFramebuffers(1, intArrayOf(fbo), 0)
+            if (fboTex != 0) GLES20.glDeleteTextures(1, intArrayOf(fboTex), 0)
+            fbo = 0; fboTex = 0
             for (o in outputs) {
                 if (o.eglSurface != EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(eglDisplay, o.eglSurface)
                 o.output.close()
@@ -357,6 +446,10 @@ class StabilizingSurfaceProcessor(
     companion object {
         private const val TAG = "StabProcessor"
         private const val EGL_RECORDABLE_ANDROID = 0x3142
+        // Residual-tracker readback resolution (power of two for the FFT) and how
+        // often we sample (every Nth frame → ~10 Hz at 30 fps).
+        private const val RES_N = 256
+        private const val RESIDUAL_SAMPLE_EVERY = 3
 
         private val QUAD = floatArrayOf(
             -1f, -1f, 0f, 0f,
