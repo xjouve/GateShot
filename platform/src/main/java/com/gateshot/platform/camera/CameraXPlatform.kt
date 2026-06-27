@@ -133,7 +133,9 @@ class CameraXPlatform @Inject constructor(
     private var liveStabilizationEnabled = false
     private var liveStabStrength: Float = 1.0f
     private val liveStabilizer = com.gateshot.processing.stabilize.LiveStabilizer()
-    private val residualTracker = com.gateshot.processing.stabilize.OpticalResidualTracker(liveStabilizer)
+    private val onlineCalibrator = com.gateshot.processing.stabilize.OnlineCalibrator(
+        liveStabilizer, cropFrac = STAB_CROP, cutoffHz = 0.8f, enableResidual = STAB_OPTICAL_RESIDUAL
+    )
     private var stabProcessor: StabilizingSurfaceProcessor? = null
     private var stabGyroListener: android.hardware.SensorEventListener? = null
     // Main-thread scope used to rebind the camera when stabilization is toggled.
@@ -602,7 +604,7 @@ class CameraXPlatform @Inject constructor(
     ): Camera {
         val processor = StabilizingSurfaceProcessor(
             liveStabilizer,
-            if (STAB_OPTICAL_RESIDUAL) residualTracker else null,
+            onlineCalibrator,
         ).apply {
             cropFrac = STAB_CROP
             rotate180 = currentZoomRatio >= TELEPHOTO_ENGAGE_ZOOM
@@ -614,6 +616,8 @@ class CameraXPlatform @Inject constructor(
         }
         stabProcessor?.release()
         stabProcessor = processor
+        // Let the calibrator hold the warp at identity while it measures raw motion.
+        onlineCalibrator.setController(processor)
 
         fun group(includeVideo: Boolean): UseCaseGroup {
             val targets = if (includeVideo)
@@ -654,6 +658,7 @@ class CameraXPlatform @Inject constructor(
         val listener = object : android.hardware.SensorEventListener {
             override fun onSensorChanged(e: android.hardware.SensorEvent) {
                 liveStabilizer.onGyro(e.timestamp, e.values[0], e.values[1], e.values[2])
+                onlineCalibrator.onGyro(e.timestamp, e.values[0], e.values[1], e.values[2])
             }
             override fun onAccuracyChanged(s: android.hardware.Sensor?, a: Int) {}
         }

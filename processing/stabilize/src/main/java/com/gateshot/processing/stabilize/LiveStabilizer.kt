@@ -75,7 +75,15 @@ class LiveStabilizer(cfg: Config = Config()) {
     private var resX = 0f
     private var resY = 0f
 
-    /** Feed one gyro sample. [tsNs] is the BOOTTIME/elapsedRealtimeNanos clock. */
+    /**
+     * Feed one gyro sample. [tsNs] is the BOOTTIME/elapsedRealtimeNanos clock.
+     * `@Synchronized` (with [correction]) is load-bearing, not just for atomicity:
+     * the gyro arrives on the sensor thread while [correction] is read on the GL
+     * render thread, and the integrator state ([rawAng]/[smAng]) is plain arrays.
+     * Without the happens-before edge the GL thread can keep reading the initial
+     * zeros forever → the warp is a no-op → the app looks fully unstabilized.
+     */
+    @Synchronized
     fun onGyro(tsNs: Long, gx: Float, gy: Float, gz: Float) {
         val c = cfg
         val g0 = gx.toDouble(); val g1 = gy.toDouble(); val g2 = gz.toDouble()
@@ -113,6 +121,7 @@ class LiveStabilizer(cfg: Config = Config()) {
      * Current correction (the rotation/translation to apply to the live frame).
      * Pure read of filter state — call it once per video frame.
      */
+    @Synchronized
     fun correction(): Correction {
         val c = cfg
         val dx = smAng[c.axX] - rawAng[c.axX]
@@ -141,6 +150,7 @@ class LiveStabilizer(cfg: Config = Config()) {
     fun config(): Config = cfg
 
     /** Reset all integrator/filter state (e.g. on rebind or a long pause). */
+    @Synchronized
     fun reset() {
         rawAng.fill(0.0); smAng.fill(0.0); smVel.fill(0.0)
         lastTsNs = Long.MIN_VALUE

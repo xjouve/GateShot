@@ -43,8 +43,12 @@ import java.util.concurrent.Executor
  */
 class StabilizingSurfaceProcessor(
     private val stabilizer: LiveStabilizer,
-    private val residualTracker: com.gateshot.processing.stabilize.OpticalResidualTracker? = null,
-) : SurfaceProcessor {
+    private val calibrator: com.gateshot.processing.stabilize.OnlineCalibrator? = null,
+) : SurfaceProcessor, com.gateshot.processing.stabilize.OnlineCalibrator.WarpController {
+
+    /** Held false by the calibrator while it measures raw motion (warp = identity). */
+    @Volatile private var warpActive: Boolean = true
+    override fun setWarpActive(active: Boolean) { warpActive = active }
 
     /** Crop margin per side; must match the [LiveStabilizer.Config.cropFrac]. */
     @Volatile var cropFrac: Float = 0.12f
@@ -112,7 +116,7 @@ class StabilizingSurfaceProcessor(
     private val readBuf = ByteBuffer.allocateDirect(RES_N * RES_N * 4).order(ByteOrder.nativeOrder())
     private val residualBusy = java.util.concurrent.atomic.AtomicBoolean(false)
     private val residualExecutor =
-        if (residualTracker != null) java.util.concurrent.Executors.newSingleThreadExecutor() else null
+        if (calibrator != null) java.util.concurrent.Executors.newSingleThreadExecutor() else null
 
     // ------------------------------------------------------------------
     // SurfaceProcessor
@@ -134,7 +138,7 @@ class StabilizingSurfaceProcessor(
             inputSurfaceTexture = st
             inputSurface = surface
             stabilizer.reset()
-            residualTracker?.reset()
+            calibrator?.reset()
 
             request.provideSurface(surface, glExecutor) { result ->
                 // Camera released the surface — drop it.
@@ -200,7 +204,14 @@ class StabilizingSurfaceProcessor(
         if (outputs.isEmpty()) return
 
         val ts = st.timestamp
-        val corr = stabilizer.correction()
+        // While the calibrator is measuring raw motion it holds the warp at
+        // identity (just the static crop), so the readback is uncontaminated.
+        val corr = if (warpActive) stabilizer.correction()
+            else LiveStabilizer.Correction(0f, 0f, 0f)
+        if (frameCount % 60 == 0) {
+            Log.i(TAG, "corr tx=${"%.4f".format(corr.txNorm)} ty=${"%.4f".format(corr.tyNorm)} " +
+                "active=$warpActive cal=${calibrator?.state()}")
+        }
         buildWarpMatrix(corr.rollRad, corr.txNorm, corr.tyNorm)
 
         for (o in outputs) {
@@ -218,8 +229,8 @@ class StabilizingSurfaceProcessor(
             EGL14.eglSwapBuffers(eglDisplay, o.eglSurface)
         }
 
-        // Stage-2: sample the warped output for residual measurement.
-        if (residualTracker != null && frameCount % RESIDUAL_SAMPLE_EVERY == 0) {
+        // Feed the readback to the auto-calibrator / residual tracker.
+        if (calibrator != null && frameCount % RESIDUAL_SAMPLE_EVERY == 0) {
             sampleResidual(ts)
         }
     }
@@ -279,7 +290,7 @@ class StabilizingSurfaceProcessor(
                     luma[i] = 0.299f * r + 0.587f * g + 0.114f * b
                     j += 4
                 }
-                residualTracker?.submitFrame(luma, ts)
+                calibrator?.submitFrame(luma, ts)
             } finally {
                 residualBusy.set(false)
             }
@@ -350,8 +361,8 @@ class StabilizingSurfaceProcessor(
         GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_MIRRORED_REPEAT)
         GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_MIRRORED_REPEAT)
 
-        // Stage-2 readback FBO (RES_N²) for the optical-residual tracker.
-        if (residualTracker != null) {
+        // Readback FBO (RES_N²) for the calibrator / residual tracker.
+        if (calibrator != null) {
             val t = IntArray(1)
             GLES20.glGenTextures(1, t, 0)
             fboTex = t[0]
