@@ -18,6 +18,11 @@ local.properties
 *.hprof
 captures/
 
+# Local debugging artifacts
+screenshot_*.png
+test_shot_*.jpg
+.vid_tests/
+
 # OS
 .DS_Store
 Thumbs.db
