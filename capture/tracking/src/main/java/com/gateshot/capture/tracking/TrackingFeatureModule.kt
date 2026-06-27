@@ -14,6 +14,7 @@ import com.gateshot.platform.camera.CameraXPlatform
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -49,9 +50,22 @@ class TrackingFeatureModule @Inject constructor(
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val tracker = SubjectTracker()
+    private val gateDetector = GateDetector()
 
     private val _trackingState = MutableStateFlow(TrackingState())
     val trackingState: StateFlow<TrackingState> = _trackingState.asStateFlow()
+
+    // Gate crossing tracking: stores the racer's previous X for crossing detection
+    private var previousRacerX = -1f
+
+    // Gate crossing timestamps recorded during the current recording session.
+    // Reset on VideoRecordingStarted, frozen on VideoRecordingStopped.
+    private val _gateCrossingTimestamps = mutableListOf<Long>()
+    private var recordingStartTime = 0L
+    private var isRecording = false
+
+    /** Gate passage timestamps (ms relative to recording start) for the last completed recording. */
+    val lastGateTimestamps: List<Long> get() = _gateCrossingTimestamps.toList()
 
     private var frameCounter = 0
     // Process every 2nd frame for tracking (~15 updates/sec at 30fps)
@@ -78,8 +92,31 @@ class TrackingFeatureModule @Inject constructor(
                     isOccluded = subject?.isOccluded ?: false,
                     framesTracked = subject?.framesTracked ?: 0
                 )
+
+                // Gate crossing detection: check if the racer crossed a gate
+                if (subject != null && isRecording &&
+                    subject.classification == SubjectTracker.SubjectClass.RACER &&
+                    previousRacerX >= 0f) {
+                    val crossedGate = gateDetector.checkGateCrossing(
+                        subjectX = subject.centerX,
+                        subjectPrevX = previousRacerX
+                    )
+                    if (crossedGate != null) {
+                        val timestampMs = System.currentTimeMillis() - recordingStartTime
+                        _gateCrossingTimestamps.add(timestampMs)
+                        scope.launch {
+                            eventBus.publish(AppEvent.GateCrossing(
+                                gateId = crossedGate.id,
+                                gateColor = crossedGate.color.name
+                            ))
+                        }
+                        Log.i(TAG, "Gate crossing: gate=${crossedGate.id} color=${crossedGate.color} at ${timestampMs}ms")
+                    }
+                }
+                previousRacerX = subject?.centerX ?: -1f
             } else {
                 _trackingState.value = TrackingState(enabled = true, hasLock = false)
+                previousRacerX = -1f
             }
         }
     }
@@ -90,6 +127,21 @@ class TrackingFeatureModule @Inject constructor(
         // Reset tracker when camera re-opens
         eventBus.collect<AppEvent.CameraOpened>(scope) {
             tracker.unlock()
+        }
+
+        // Reset gate timestamps when recording starts
+        eventBus.collect<AppEvent.VideoRecordingStarted>(scope) {
+            _gateCrossingTimestamps.clear()
+            recordingStartTime = System.currentTimeMillis()
+            isRecording = true
+            previousRacerX = -1f
+            Log.i(TAG, "Recording started — gate crossing detection active")
+        }
+
+        // Freeze gate timestamps when recording stops
+        eventBus.collect<AppEvent.VideoRecordingStopped>(scope) {
+            isRecording = false
+            Log.i(TAG, "Recording stopped — ${_gateCrossingTimestamps.size} gate crossings captured")
         }
     }
 

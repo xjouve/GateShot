@@ -15,7 +15,7 @@ data class Preset(
 )
 
 @Serializable
-enum class PresetCategory { TECHNICAL, SPEED, CREATIVE, COACHING }
+enum class PresetCategory { TECHNICAL, CREATIVE, COACHING }
 
 @Serializable
 data class CameraPreset(

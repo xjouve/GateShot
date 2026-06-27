@@ -33,11 +33,14 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -133,12 +136,29 @@ fun AnnotationScreen(
                     )
                 }
         ) {
-            // Video frame canvas — shows the paused frame from the replay player
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center
-            ) {
-                Text("Tap pause on replay to capture frame", color = Color(0xFF444444), fontSize = 14.sp)
+            // Video frame — loaded from the captured frame file
+            val framePath by viewModel.annotationFramePath.collectAsState()
+            val frameBitmap = remember(framePath) {
+                framePath?.let { path ->
+                    try {
+                        android.graphics.BitmapFactory.decodeFile(path)
+                    } catch (_: Exception) { null }
+                }
+            }
+            if (frameBitmap != null) {
+                androidx.compose.foundation.Image(
+                    bitmap = frameBitmap.asImageBitmap(),
+                    contentDescription = "Video frame",
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.fillMaxSize()
+                )
+            } else {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text("Pause replay and tap Annotate to capture a frame", color = Color(0xFF444444), fontSize = 14.sp)
+                }
             }
 
             // Drawing overlay

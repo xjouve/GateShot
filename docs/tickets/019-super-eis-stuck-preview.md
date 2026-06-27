@@ -47,8 +47,13 @@ This matches the general MediaTek pattern: most `*feature` vendor keys accept li
 ## Verified
 Post-fix launch: single "Camera opened successfully" log, ~24 fps buffer queue, no `applySafe` rejections. Toggling EIS Standard / Off produces one clean rebind per toggle and the preview stays live.
 
-## Follow-up
-The four super-EIS keys may still be the right path for matching the native app's stabilization quality — but they need a CameraX session-parameter hook we don't currently have. Candidates for a future investigation:
-- `Camera2Interop.Extender.setSessionCaptureRequestOption` (if it ships in CameraX 1.4+).
-- Passing the keys through a custom `SessionConfiguration` via raw Camera2 underneath CameraX.
-- Using `com.mediatek.seamlessfeature.sensorScenario` to request the EIS-capable sensor mode at bind time.
+## Follow-up (2026-04-14)
+Re-landed the four super-EIS keys, this time via `Camera2Interop.Extender.setCaptureRequestOption` on the `Preview.Builder` and `VideoCapture.Builder` in `open()` / `buildVideoCapture()`. Unlike the per-request `CaptureRequestOptions` path that caused the black screen, the extender injects keys into the initial session configuration, so the super-EIS pipeline is engaged at session creation rather than flipped on a live session. The rebind-on-EIS-change guard from the original fix is what makes this safe to toggle at runtime.
+
+New helper: `VendorCameraKeys.applySafeExtender(extender, key, value)` — session-level analogue of `applySafe`, routes failures into the same `failureSink` so the dev overlay still surfaces silent rejections.
+
+Wired keys (all in `applySuperEisSessionKeys` on `CameraXPlatform`):
+- `com.oplus.eis.workon` (byte) = 1 when EIS non-OFF
+- `com.oplus.camera.video.eis.mode` (byte) = OFF:0 / STANDARD:1 / PANNING:3
+- `com.oplus.video.super.eis.scenes` (int) = 1 when EIS non-OFF
+- `com.oplus.eis.bypass.stream` (int) = 0 (apply EIS to all streams)

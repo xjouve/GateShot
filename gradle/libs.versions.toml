@@ -19,6 +19,7 @@ tflite = "2.17.0"
 mlkit-text = "16.0.1"
 exifinterface = "1.3.7"
 coroutines-play = "1.9.0"
+work = "2.10.0"
 junit = "5.11.4"
 mockk = "1.13.13"
 turbine = "1.2.0"
@@ -78,6 +79,9 @@ mlkit-text = { group = "com.google.mlkit", name = "text-recognition", version.re
 
 # Coroutines Play Services (for ML Kit .await())
 coroutines-play = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-play-services", version.ref = "coroutines-play" }
+
+# WorkManager
+work-runtime = { group = "androidx.work", name = "work-runtime-ktx", version.ref = "work" }
 
 # ExifInterface
 exifinterface = { group = "androidx.exifinterface", name = "exifinterface", version.ref = "exifinterface" }

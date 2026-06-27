@@ -19,31 +19,34 @@ import androidx.compose.ui.unit.sp
 data class PresetInfo(
     val id: String,
     val shortName: String,
-    val displayName: String
+    val displayName: String,
+    val isCoachMode: Boolean = false
 )
 
 val PRESETS = listOf(
-    PresetInfo("slalom_gs", "SL/GS", "Slalom / GS"),
-    PresetInfo("speed", "DH/SG", "Speed Events"),
-    PresetInfo("panning", "PAN", "Panning"),
-    PresetInfo("finish", "FIN", "Finish Area"),
-    PresetInfo("atmosphere", "WIDE", "Atmosphere"),
-    PresetInfo("training", "TRAIN", "Training Analysis")
+    // SHOOT mode — beautiful captures
+    PresetInfo("race", "RACE", "Race", isCoachMode = false),
+    PresetInfo("panning", "PAN", "Panning", isCoachMode = false),
+    // COACH mode — performance analysis
+    PresetInfo("video", "VID", "Video", isCoachMode = true)
 )
 
 @Composable
 fun PresetSelector(
     currentPreset: String,
     displayName: String,
+    isCoachMode: Boolean,
     onPresetSelected: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val visiblePresets = PRESETS.filter { it.isCoachMode == isCoachMode }
+
     Column(
         modifier = modifier,
         verticalArrangement = Arrangement.spacedBy(8.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        PRESETS.forEach { preset ->
+        visiblePresets.forEach { preset ->
             val isActive = preset.id == currentPreset
             // Each button is 56x56dp — large enough for gloves
             Surface(

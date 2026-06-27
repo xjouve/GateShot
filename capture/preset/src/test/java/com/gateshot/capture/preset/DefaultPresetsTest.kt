@@ -15,8 +15,8 @@ class DefaultPresetsTest {
     }
 
     @Test
-    fun `six presets defined`() {
-        assertEquals(6, DefaultPresets.ALL.size)
+    fun `three presets defined`() {
+        assertEquals(3, DefaultPresets.ALL.size)
     }
 
     @Test
@@ -27,17 +27,18 @@ class DefaultPresetsTest {
     }
 
     @Test
-    fun `slalom preset has fast AF reacquisition`() {
-        val preset = DefaultPresets.SLALOM_GS
+    fun `race preset has fast AF reacquisition and occlusion hold`() {
+        val preset = DefaultPresets.RACE
         assertEquals(AfSpeed.FAST, preset.autofocus.reacquisitionSpeed)
         assertTrue(preset.autofocus.occlusionHold)
+        assertEquals(AfMode.CONTINUOUS_PREDICTIVE, preset.autofocus.mode)
     }
 
     @Test
-    fun `speed preset has maximum stabilization`() {
-        val preset = DefaultPresets.SPEED
+    fun `race preset has maximum OIS and no EIS`() {
+        val preset = DefaultPresets.RACE
         assertEquals(OisMode.MAXIMUM, preset.stabilization.ois)
-        assertEquals(EisMode.STANDARD, preset.stabilization.eis)
+        assertEquals(EisMode.OFF, preset.stabilization.eis)
     }
 
     @Test
@@ -47,27 +48,28 @@ class DefaultPresetsTest {
     }
 
     @Test
-    fun `finish preset has face priority`() {
-        assertTrue(DefaultPresets.FINISH.autofocus.facePriority)
-        assertFalse(DefaultPresets.SLALOM_GS.autofocus.facePriority)
+    fun `video preset prefers JPEG over RAW`() {
+        assertFalse(DefaultPresets.VIDEO.camera.preferRaw)
+        assertTrue(DefaultPresets.RACE.camera.preferRaw)
     }
 
     @Test
-    fun `training preset prefers JPEG over RAW`() {
-        assertFalse(DefaultPresets.TRAINING.camera.preferRaw)
-        assertTrue(DefaultPresets.SLALOM_GS.camera.preferRaw)
+    fun `video preset runs at 120fps for slow-motion coaching`() {
+        assertEquals(120, DefaultPresets.VIDEO.camera.frameRate)
     }
 
     @Test
-    fun `snow compensation enabled for all outdoor presets`() {
-        listOf(DefaultPresets.SLALOM_GS, DefaultPresets.SPEED, DefaultPresets.TRAINING).forEach {
+    fun `snow compensation enabled for race and video`() {
+        listOf(DefaultPresets.RACE, DefaultPresets.VIDEO).forEach {
             assertTrue(it.exposure.snowCompensation, "Snow compensation should be on for ${it.id}")
         }
     }
 
     @Test
-    fun `speed preset has highest EV bias`() {
-        val maxEv = DefaultPresets.ALL.maxOf { it.exposure.evBias }
-        assertEquals(DefaultPresets.SPEED.exposure.evBias, maxEv)
+    fun `each preset serves a different shooting mode`() {
+        // Race: burst stills, Video: coaching replay, Panning: creative motion blur
+        assertEquals(BurstMode.CONTINUOUS, DefaultPresets.RACE.burst.mode)
+        assertEquals(BurstMode.SINGLE, DefaultPresets.VIDEO.burst.mode)
+        assertEquals(BurstMode.CONTINUOUS, DefaultPresets.PANNING.burst.mode)
     }
 }

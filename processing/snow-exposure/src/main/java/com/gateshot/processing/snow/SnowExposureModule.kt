@@ -128,14 +128,26 @@ class SnowExposureModule @Inject constructor(
             // let the preset or user setting control it directly.
             if (!isEnabled) return
 
-            // Apply exposure compensation
-            val finalEv = userEvOverride ?: analysis.recommendedEvBias
+            // Apply exposure compensation with sun/shadow transition handling
+            var finalEv = userEvOverride ?: analysis.recommendedEvBias
+
+            // Sun/shadow transition: when the frame has mixed bright/dark regions
+            // (racer moving from shade into sun or vice versa), ramp EV smoothly
+            // rather than jumping. This prevents the 3-4 stop exposure swing that
+            // makes the racer flash bright/dark between frames.
+            if (analysis.hasShadowTransition) {
+                val prevEv = _latestAnalysis.value?.recommendedEvBias ?: finalEv
+                // Smooth ramp: move only 30% toward the target per frame
+                finalEv = prevEv + (finalEv - prevEv) * 0.3f
+            }
 
             cameraPlatform.setExposureCompensation(finalEv)
 
-            // Publish event if EV changed significantly
+            val flatTag = if (analysis.isFlatLight) ", FLAT" else ""
+            val shadowTag = if (analysis.hasShadowTransition) ", SHADOW_RAMP" else ""
             eventBus.tryPublish(
-                AppEvent.ExposureAdjusted(finalEv, "snow=${(analysis.snowCoveragePercent * 100).toInt()}%")
+                AppEvent.ExposureAdjusted(finalEv,
+                    "snow=${(analysis.snowCoveragePercent * 100).toInt()}%$flatTag$shadowTag")
             )
         } catch (e: Exception) {
             android.util.Log.e("SnowExposure", "analyzeFrame error: ${e.message}", e)

@@ -12,6 +12,8 @@ import com.gateshot.core.event.collect
 import com.gateshot.core.mode.AppMode
 import com.gateshot.core.module.FeatureModule
 import com.gateshot.core.module.ModuleHealth
+import com.gateshot.platform.camera.CameraXPlatform
+import com.gateshot.platform.sensor.SensorPlatform
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -19,13 +21,17 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
 class ReplayFeatureModule @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val eventBus: EventBus
+    private val eventBus: EventBus,
+    private val cameraXPlatform: CameraXPlatform,
+    private val sensorPlatform: SensorPlatform
 ) : FeatureModule {
 
     override val name = "replay"
@@ -40,14 +46,65 @@ class ReplayFeatureModule @Inject constructor(
     private val _replayState = MutableStateFlow(ReplayState())
     val replayState: StateFlow<ReplayState> = _replayState.asStateFlow()
 
-    override suspend fun initialize() {
-        // Track latest recorded clip for instant replay
-        eventBus.collect<AppEvent.VideoRecordingStopped>(scope) { event ->
-            lastRecordedClipUri = event.clipUri
+    // Reference capture state
+    private var isCapturingReference = false
+    private var captureRotationAccum = 0f
+    private var lastGyroTimestamp = 0L
+    private var capturedFrameCount = 0
+
+    // Frame listener for reference capture — grabs the preview bitmap (RGB) for gate color detection
+    private val referenceFrameListener: (androidx.camera.core.ImageProxy) -> Unit = { _ ->
+        if (isCapturingReference) {
+            // The ImageProxy from BitmapImageProxy only has Y-plane (grayscale).
+            // Gate detection needs RGB to distinguish red vs blue poles.
+            // Grab the actual color bitmap from the PreviewView instead.
+            val bitmap = cameraXPlatform.getPreviewBitmap()
+            if (bitmap != null) {
+                val w = bitmap.width
+                val h = bitmap.height
+                val pixels = IntArray(w * h)
+                bitmap.getPixels(pixels, 0, w, 0, 0, w, h)
+                bitmap.recycle()
+                courseCapture.addFrame(pixels, w, h, captureRotationAccum)
+                capturedFrameCount++
+                _replayState.value = _replayState.value.copy(
+                    referenceFramesCaptured = capturedFrameCount
+                )
+            }
         }
     }
 
+    // Gate crossing timestamps accumulated during current recording
+    private val pendingGateTimestamps = mutableListOf<Long>()
+    private var recordingStartMs = 0L
+
+    override suspend fun initialize() {
+        // Track recording lifecycle for gate timestamp capture
+        eventBus.collect<AppEvent.VideoRecordingStarted>(scope) {
+            pendingGateTimestamps.clear()
+            recordingStartMs = System.currentTimeMillis()
+        }
+
+        // Track latest recorded clip + save gate timestamps as sidecar
+        eventBus.collect<AppEvent.VideoRecordingStopped>(scope) { event ->
+            lastRecordedClipUri = event.clipUri
+            if (pendingGateTimestamps.isNotEmpty()) {
+                saveGateTimestamps(event.clipUri, pendingGateTimestamps.toList())
+            }
+        }
+
+        // Collect gate crossing events from TrackingFeatureModule
+        eventBus.collect<AppEvent.GateCrossing>(scope) { event ->
+            val ms = System.currentTimeMillis() - recordingStartMs
+            pendingGateTimestamps.add(ms)
+        }
+
+        // Try to load persisted course reference for current session
+        loadPersistedReference()
+    }
+
     override suspend fun shutdown() {
+        stopReferenceCapture()
         player?.release()
         player = null
     }
@@ -211,6 +268,307 @@ class ReplayFeatureModule @Inject constructor(
 
     private val courseCapture = CourseReferenceCapture()
 
+    /**
+     * Start capturing the course reference panorama.
+     * Registers a frame listener on CameraXPlatform and accumulates gyro rotation.
+     */
+    fun startReferenceCapture() {
+        if (isCapturingReference) return
+        isCapturingReference = true
+        capturedFrameCount = 0
+        captureRotationAccum = 0f
+        lastGyroTimestamp = 0L
+        courseCapture.startCapture()
+
+        // Register frame listener to feed camera frames
+        cameraXPlatform.addFrameListener(referenceFrameListener)
+
+        // Accumulate gyro yaw rotation for frame spacing
+        scope.launch {
+            sensorPlatform.getGyroscopeReadings().collect { gyro ->
+                if (!isCapturingReference) return@collect
+                val now = System.nanoTime()
+                if (lastGyroTimestamp > 0) {
+                    val dtSec = (now - lastGyroTimestamp) / 1_000_000_000f
+                    // Y-axis gyro = yaw (panning left-right)
+                    captureRotationAccum += Math.toDegrees(gyro.y.toDouble()).toFloat() * dtSec
+                }
+                lastGyroTimestamp = now
+            }
+        }
+
+        _replayState.value = _replayState.value.copy(
+            isCapturingReference = true,
+            referenceFramesCaptured = 0
+        )
+    }
+
+    /**
+     * Stop capturing and finalize the course reference.
+     * Stitches frames, detects gates, persists to disk.
+     * Returns the number of gates detected, or -1 on failure.
+     */
+    fun stopReferenceCapture(): Int {
+        if (!isCapturingReference) return -1
+        isCapturingReference = false
+        cameraXPlatform.removeFrameListener(referenceFrameListener)
+
+        val reference = courseCapture.stopCapture()
+        if (reference == null) {
+            _replayState.value = _replayState.value.copy(
+                isCapturingReference = false,
+                referenceFramesCaptured = 0
+            )
+            return -1
+        }
+
+        overlayEngine.setCourseReference(reference)
+        persistReference(reference)
+
+        _replayState.value = _replayState.value.copy(
+            isCapturingReference = false,
+            hasReference = true,
+            referenceGateCount = reference.gates.size
+        )
+        return reference.gates.size
+    }
+
+    /**
+     * Register a video layer's perspective against the course reference.
+     * Extracts the first frame from the video, detects gates, and computes
+     * the homography to warp it into the reference coordinate space.
+     */
+    fun registerLayerFromVideo(layerId: String, videoUri: String): Boolean {
+        val ref = overlayEngine.getConfig().hasReference
+        if (!ref) return false
+
+        return scope.launch(Dispatchers.IO) {
+            try {
+                val retriever = android.media.MediaMetadataRetriever()
+                retriever.setDataSource(videoUri)
+                val firstFrame = retriever.getFrameAtTime(0, android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                retriever.release()
+                if (firstFrame == null) return@launch
+
+                val w = firstFrame.width
+                val h = firstFrame.height
+                val pixels = IntArray(w * h)
+                firstFrame.getPixels(pixels, 0, w, 0, 0, w, h)
+                firstFrame.recycle()
+
+                // Detect gates in this video frame using the same algorithm as CourseReferenceCapture
+                val frameGates = detectGatesInFrame(pixels, w, h)
+                if (frameGates.size >= 4) {
+                    overlayEngine.registerLayerPerspective(layerId, frameGates)
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("Replay", "Layer registration failed: ${e.message}")
+            }
+        }.let { true }
+    }
+
+    /**
+     * Detect gates in a single video frame (same algorithm as CourseReferenceCapture).
+     */
+    private fun detectGatesInFrame(pixels: IntArray, width: Int, height: Int): List<CourseReferenceCapture.GatePosition> {
+        val gates = mutableListOf<CourseReferenceCapture.GatePosition>()
+        val columnSize = 8
+        var gateId = 1
+
+        for (col in 0 until width step columnSize) {
+            var redCount = 0
+            var blueCount = 0
+            var totalInColumn = 0
+            var avgY = 0f
+
+            for (y in 0 until height step 4) {
+                for (dx in 0 until columnSize) {
+                    val x = col + dx
+                    if (x >= width) continue
+                    val idx = y * width + x
+                    if (idx >= pixels.size) continue
+
+                    val pixel = pixels[idx]
+                    val r = (pixel shr 16) and 0xFF
+                    val g = (pixel shr 8) and 0xFF
+                    val b = pixel and 0xFF
+
+                    if (r > 150 && r > g * 2 && r > b * 2) {
+                        redCount++
+                        avgY += y
+                        totalInColumn++
+                    }
+                    if (b > 150 && b > r * 1.5 && b > g * 1.5) {
+                        blueCount++
+                        avgY += y
+                        totalInColumn++
+                    }
+                }
+            }
+
+            val minPixelsForGate = (height / 4) / 4
+            if (redCount > minPixelsForGate || blueCount > minPixelsForGate) {
+                val color = if (redCount > blueCount) CourseReferenceCapture.GateColor.RED
+                            else CourseReferenceCapture.GateColor.BLUE
+                val count = kotlin.math.max(redCount, blueCount)
+                val confidence = (count.toFloat() / (height / 4)).coerceIn(0f, 1f)
+                val normalizedX = (col + columnSize / 2f) / width
+
+                val nearbyGate = gates.lastOrNull()
+                if (nearbyGate != null && kotlin.math.abs(nearbyGate.x - normalizedX) < 20f / width) {
+                    gates[gates.size - 1] = nearbyGate.copy(
+                        x = (nearbyGate.x + normalizedX) / 2f,
+                        confidence = kotlin.math.max(nearbyGate.confidence, confidence)
+                    )
+                } else {
+                    gates.add(CourseReferenceCapture.GatePosition(
+                        id = gateId++,
+                        x = normalizedX,
+                        y = if (totalInColumn > 0) (avgY / totalInColumn) / height else 0.5f,
+                        color = color,
+                        confidence = confidence
+                    ))
+                }
+            }
+        }
+
+        return gates
+    }
+
+    // --- Gate Timestamp Sidecar Files ---
+
+    /**
+     * Save gate crossing timestamps alongside the video file.
+     * Format: <video_name>.gates (one timestamp per line in ms).
+     */
+    private fun saveGateTimestamps(videoUri: String, timestamps: List<Long>) {
+        scope.launch(Dispatchers.IO) {
+            try {
+                val videoFile = File(android.net.Uri.parse(videoUri).path ?: return@launch)
+                val gatesFile = File(videoFile.parent, videoFile.nameWithoutExtension + ".gates")
+                gatesFile.writeText(timestamps.joinToString("\n"))
+                android.util.Log.i("Replay", "Saved ${timestamps.size} gate timestamps to ${gatesFile.name}")
+            } catch (e: Exception) {
+                android.util.Log.e("Replay", "Failed to save gate timestamps: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Load gate crossing timestamps for a video file.
+     * Returns the timestamps in ms relative to recording start.
+     */
+    fun loadGateTimestamps(videoUri: String): List<Long> {
+        return try {
+            val videoFile = File(android.net.Uri.parse(videoUri).path ?: return emptyList())
+            val gatesFile = File(videoFile.parent, videoFile.nameWithoutExtension + ".gates")
+            if (!gatesFile.exists()) return emptyList()
+            gatesFile.readLines()
+                .filter { it.isNotBlank() }
+                .mapNotNull { it.trim().toLongOrNull() }
+        } catch (_: Exception) { emptyList() }
+    }
+
+    // --- Persistence ---
+
+    private fun getReferenceDir(): File {
+        val dir = File(context.getExternalFilesDir(null), "GateShot/reference")
+        if (!dir.exists()) dir.mkdirs()
+        return dir
+    }
+
+    /**
+     * Persist course reference panorama + gate positions to disk.
+     * Format: binary file with header + gate list + pixel data.
+     */
+    private fun persistReference(ref: CourseReferenceCapture.CourseReference) {
+        scope.launch(Dispatchers.IO) {
+            try {
+                val file = File(getReferenceDir(), "course_reference.dat")
+                java.io.DataOutputStream(java.io.BufferedOutputStream(file.outputStream())).use { out ->
+                    // Header
+                    out.writeInt(ref.panoramaWidth)
+                    out.writeInt(ref.panoramaHeight)
+                    out.writeLong(ref.captureTimestamp)
+                    out.writeUTF(ref.cameraPositionDescription)
+
+                    // Gates
+                    out.writeInt(ref.gates.size)
+                    for (gate in ref.gates) {
+                        out.writeInt(gate.id)
+                        out.writeFloat(gate.x)
+                        out.writeFloat(gate.y)
+                        out.writeUTF(gate.color.name)
+                        out.writeFloat(gate.confidence)
+                    }
+
+                    // Panorama pixels
+                    out.writeInt(ref.panoramaPixels.size)
+                    for (px in ref.panoramaPixels) {
+                        out.writeInt(px)
+                    }
+                }
+                android.util.Log.i("Replay", "Course reference saved: ${ref.gates.size} gates, ${ref.panoramaWidth}x${ref.panoramaHeight}")
+            } catch (e: Exception) {
+                android.util.Log.e("Replay", "Failed to save reference: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Load a previously persisted course reference from disk.
+     */
+    private fun loadPersistedReference() {
+        scope.launch(Dispatchers.IO) {
+            try {
+                val file = File(getReferenceDir(), "course_reference.dat")
+                if (!file.exists()) return@launch
+
+                java.io.DataInputStream(java.io.BufferedInputStream(file.inputStream())).use { inp ->
+                    val w = inp.readInt()
+                    val h = inp.readInt()
+                    val timestamp = inp.readLong()
+                    val posDesc = inp.readUTF()
+
+                    val gateCount = inp.readInt()
+                    val gates = mutableListOf<CourseReferenceCapture.GatePosition>()
+                    for (i in 0 until gateCount) {
+                        gates.add(CourseReferenceCapture.GatePosition(
+                            id = inp.readInt(),
+                            x = inp.readFloat(),
+                            y = inp.readFloat(),
+                            color = CourseReferenceCapture.GateColor.valueOf(inp.readUTF()),
+                            confidence = inp.readFloat()
+                        ))
+                    }
+
+                    val pixelCount = inp.readInt()
+                    val pixels = IntArray(pixelCount)
+                    for (i in 0 until pixelCount) {
+                        pixels[i] = inp.readInt()
+                    }
+
+                    val ref = CourseReferenceCapture.CourseReference(
+                        panoramaWidth = w,
+                        panoramaHeight = h,
+                        panoramaPixels = pixels,
+                        gates = gates,
+                        captureTimestamp = timestamp,
+                        cameraPositionDescription = posDesc
+                    )
+                    overlayEngine.setCourseReference(ref)
+                    _replayState.value = _replayState.value.copy(
+                        hasReference = true,
+                        referenceGateCount = gates.size
+                    )
+                    android.util.Log.i("Replay", "Loaded course reference: ${gates.size} gates")
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("Replay", "Failed to load reference: ${e.message}")
+            }
+        }
+    }
+
     // --- coach/overlay/reference/start ---
     inner class StartReferenceCapture : ApiEndpoint<Unit, Boolean> {
         override val path = "coach/overlay/reference/start"
@@ -218,7 +576,7 @@ class ReplayFeatureModule @Inject constructor(
         override val requiredMode = AppMode.COACH
 
         override suspend fun handle(request: Unit): ApiResponse<Boolean> {
-            courseCapture.startCapture()
+            startReferenceCapture()
             return ApiResponse.success(true)
         }
     }
@@ -230,9 +588,10 @@ class ReplayFeatureModule @Inject constructor(
         override val requiredMode = AppMode.COACH
 
         override suspend fun handle(request: Unit): ApiResponse<Boolean> {
-            val reference = courseCapture.stopCapture()
-                ?: return ApiResponse.error(400, "Not enough frames captured. Pan slowly across the course.")
-            overlayEngine.setCourseReference(reference)
+            val gateCount = stopReferenceCapture()
+            if (gateCount < 0) {
+                return ApiResponse.error(400, "Not enough frames captured. Pan slowly across the course.")
+            }
             return ApiResponse.success(true)
         }
     }
@@ -244,11 +603,26 @@ class ReplayFeatureModule @Inject constructor(
         override val requiredMode = AppMode.COACH
 
         override suspend fun handle(request: AddLayerRequest): ApiResponse<RunOverlayEngine.OverlayLayer> {
+            // Auto-load gate timestamps from sidecar file if not provided
+            val gateTimestamps = request.gateTimestamps.ifEmpty {
+                loadGateTimestamps(request.clipUri)
+            }
+
             val layer = overlayEngine.addLayer(
                 clipUri = request.clipUri,
                 label = request.label,
                 color = request.color ?: "#4FC3F7",
-                gateTimestamps = request.gateTimestamps
+                gateTimestamps = gateTimestamps
+            )
+
+            // Auto-register perspective against course reference if available
+            if (overlayEngine.getConfig().hasReference) {
+                registerLayerFromVideo(layer.id, request.clipUri)
+            }
+
+            _replayState.value = _replayState.value.copy(
+                overlayLayerCount = overlayEngine.getConfig().layers.size,
+                perspectiveCorrectionActive = overlayEngine.isLayerRegistered(layer.id)
             )
             return ApiResponse.success(layer)
         }
@@ -403,7 +777,17 @@ data class ReplayState(
     val durationMs: Long = 0,
     val playbackSpeed: Float = 1.0f,
     val clipUri: String? = null,
-    val splitScreen: SplitScreenConfig? = null
+    val splitScreen: SplitScreenConfig? = null,
+    // Course reference capture state
+    val isCapturingReference: Boolean = false,
+    val referenceFramesCaptured: Int = 0,
+    val hasReference: Boolean = false,
+    val referenceGateCount: Int = 0,
+    // Overlay state
+    val overlayLayerCount: Int = 0,
+    val overlayMode: String = "GHOST",
+    val currentGate: Int = 0,
+    val perspectiveCorrectionActive: Boolean = false
 )
 
 data class LoadClipRequest(val clipUri: String? = null)

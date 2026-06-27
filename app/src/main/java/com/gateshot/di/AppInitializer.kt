@@ -3,6 +3,7 @@ package com.gateshot.di
 import android.util.Log
 import com.gateshot.core.module.FeatureModule
 import com.gateshot.core.module.ModuleLoader
+import com.gateshot.platform.camera.CameraExtensionScanner
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -13,11 +14,13 @@ import javax.inject.Singleton
 @Singleton
 class AppInitializer @Inject constructor(
     private val moduleLoader: ModuleLoader,
-    private val featureModules: Set<@JvmSuppressWildcards FeatureModule>
+    private val featureModules: Set<@JvmSuppressWildcards FeatureModule>,
+    private val cameraExtensionScanner: CameraExtensionScanner
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     fun initialize() {
+        cameraExtensionScanner.scan()
         scope.launch {
             Log.i(TAG, "Initializing GateShot with ${featureModules.size} modules...")
             featureModules.forEach { module ->

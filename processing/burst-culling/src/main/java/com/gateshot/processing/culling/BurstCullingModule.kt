@@ -14,6 +14,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -31,9 +32,34 @@ class BurstCullingModule @Inject constructor(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     override suspend fun initialize() {
-        // Auto-cull after burst completes
+        // Auto-cull after burst completes — score all frames, mark best with .best sidecar
         eventBus.collect<AppEvent.BurstCompleted>(scope) { event ->
-            // Auto-culling would run here in background
+            scope.launch(Dispatchers.IO) {
+                try {
+                    val burstDir = File(context.getExternalFilesDir(null), "GateShot/photos")
+                    if (!burstDir.exists()) return@launch
+
+                    // Find frames from this burst (most recent files matching the session)
+                    val recentFrames = burstDir.listFiles()
+                        ?.filter { it.extension in listOf("jpg", "jpeg") }
+                        ?.sortedByDescending { it.lastModified() }
+                        ?.take(event.frameCount)
+                        ?.map { it.absolutePath }
+                        ?: return@launch
+
+                    if (recentFrames.isEmpty()) return@launch
+
+                    // Score all frames
+                    val scores = recentFrames.map { scoreFrame(it) }
+                    val best = scores.maxByOrNull { it.overallScore } ?: return@launch
+
+                    // Write .best sidecar for the top-ranked frame
+                    File("${best.filePath}.best").writeText("${best.overallScore}")
+                    android.util.Log.i("BurstCull", "Best frame: ${best.filePath} (score=${best.overallScore})")
+                } catch (e: Exception) {
+                    android.util.Log.e("BurstCull", "Auto-cull failed: ${e.message}")
+                }
+            }
         }
     }
 

@@ -558,59 +558,59 @@ Auto-generated end-of-day summary:
 
 The app is usable for daily shooting at a ski race or training session.
 
-- [ ] Discipline presets (Slalom/GS, Speed, Training Analysis)
-- [ ] Snow exposure compensation (automatic)
-- [ ] Pre-capture buffer (1.5s)
-- [ ] Glove-friendly UI with one-handed operation
-- [ ] Session organization (event / date / discipline / run)
-- [ ] Quick review between runs
-- [ ] Hasselblad telephoto auto-detection
-- [ ] RAW + JPEG capture
-- [ ] Basic voice commands (start / stop / mark)
-- [ ] Instant replay station (coaching toggle)
-- [ ] Voice-over annotation (coaching toggle)
-- [ ] Manual split entry (coaching toggle)
+- [x] Discipline presets (Race, Video, Panning — mode-aware, presets set all settings)
+- [x] Snow exposure compensation (automatic scene analysis, +1.0 to +2.0 EV)
+- [x] Pre-capture buffer (configurable 0.5-3.0s)
+- [x] Glove-friendly UI with one-handed operation (56dp buttons, volume mapping)
+- [x] Session organization (event/discipline/run with Room database + creation dialog)
+- [x] Quick review (gallery with star/share/delete, bib filter, best-frame badge)
+- [x] Hasselblad telephoto auto-detection (magnetometer-based)
+- [x] RAW + JPEG capture
+- [x] Voice commands (SpeechRecognizer: "start recording", "stop", "mark", "slow-mo", "photo", "next mode")
+- [x] Instant replay station (ExoPlayer with 0.25x-2x speed, frame stepping)
+- [x] Voice-over annotation (MediaRecorder, timeline-pinned)
+- [x] Manual split entry (persisted to disk as JSON, compare across runs)
 
 ### Phase 2 — Smart Shooting
 
 The app becomes significantly better than any generic camera app for ski racing.
 
-- [ ] Gate-zone predictive AF trigger
-- [ ] Smart burst culling (AI frame ranking)
-- [ ] Audio trigger (start beep detection)
-- [ ] Flat light mode
-- [ ] Sun/shadow transition handling
-- [ ] Stabilized crop-and-follow (4K to 1080p)
-- [ ] Auto-clip by run
-- [ ] Quick share with presets
-- [ ] Split-screen sync by gate (coaching)
-- [ ] Freeze & measure angles (coaching)
-- [ ] Athlete profiles (coaching)
-- [ ] Consistency tracker (coaching)
-- [ ] Session report (coaching)
+- [x] Gate-zone predictive AF trigger (tap to place zones, motion-based auto-shutter)
+- [x] Smart burst culling (sharpness/composition/exposure ranking + .best sidecar)
+- [x] Audio trigger (start beep frequency + amplitude detection)
+- [x] Flat light mode (viewfinder contrast boost on overcast days)
+- [x] Sun/shadow transition handling (30% EV ramp smoothing on detected shadow transitions)
+- [x] Stabilized crop-and-follow (enhance/crop-follow endpoint, 4K→1080p with tracking data)
+- [x] Auto-clip by run (audio peak segmentation + jump buttons in replay)
+- [x] Quick share (system share sheet via FileProvider)
+- [x] Gate-synced comparison (dual ExoPlayer, gate timestamps from .gates sidecars)
+- [x] Freeze & measure angles (MoveNet pose estimation with angle readout)
+- [x] Athlete profiles (Room DB CRUD: bibs, age group, team, errors, drills, progress)
+- [x] Consistency tracker (per-gate timing spread analysis across runs, Analysis screen)
+- [x] Session report (PDF generation with event/runs/gates/media summary)
 
 ### Phase 3 — AI Analysis & Connected Ecosystem
 
 The app becomes a competitive advantage for athletes and teams.
 
-- [ ] Bib number detection & auto-tagging
-- [ ] Continuous tracking with occlusion recovery
-- [ ] Multi-zone trigger
-- [ ] Skeleton / pose estimation overlay
-- [ ] Turn analysis dashboard
-- [ ] Error pattern detection
-- [ ] Live comparison overlay (ghost run)
-- [ ] Time-to-technique correlation
-- [ ] Electronic timing system integration
-- [ ] Telestrator / draw-on-frame
-- [ ] Ideal line drawing
-- [ ] Multi-camera merge
-- [ ] Remote coaching / async review
-- [ ] Team feed
-- [ ] Cloud backup with priority queuing
-- [ ] Federation export format
-- [ ] Drill library
-- [ ] Before/after progress view
+- [x] Bib number detection & auto-tagging (ML Kit OCR + .bib sidecar + gallery filter)
+- [x] Continuous tracking with occlusion recovery (20-frame hold, trajectory prediction)
+- [x] Multi-zone trigger (2-5 zones, per-zone cooldown, per-zone motion scoring)
+- [x] Skeleton / pose estimation overlay (MoveNet Lightning int8, 17 keypoints, ski angles)
+- [x] Turn analysis dashboard (per-gate split times + line choice + angles, Analysis screen)
+- [x] Error pattern detection (AthleteErrorEntity backend + Analysis screen display with severity/trend)
+- [x] Live comparison overlay (Ghost/Wipe/Difference + perspective correction via gate homography)
+- [x] Time-to-technique correlation (gate-by-gate delta with reason analysis, Analysis screen)
+- [x] Electronic timing system integration (Bluetooth connect/disconnect/status endpoints for ALGE/Microgate/Tag Heuer)
+- [x] Telestrator / draw-on-frame (freehand/line/arrow/circle on actual video frames)
+- [x] Ideal line drawing (draw on course photo, save as CSV, Coaching Tools screen)
+- [x] Multi-camera merge (audio-based sync via autoclip, compute ms offset, Coaching Tools)
+- [x] Remote coaching / async review (ZIP export with video + gates + timing + ideal line, share intent)
+- [x] Team feed (TSV-based shared workspace, post/view session clips, Coaching Tools)
+- [x] Cloud backup with priority queuing (WorkManager on WiFi, starred-first, backup log tracking)
+- [x] Federation export format (FIS-compatible naming EVENT_DISC_DATE_RUN_BIB + metadata CSV)
+- [x] Drill library (assign/complete drills per athlete via API, linked to media)
+- [x] Before/after progress view (athlete progress timeline via API, Analysis screen)
 
 ---
 

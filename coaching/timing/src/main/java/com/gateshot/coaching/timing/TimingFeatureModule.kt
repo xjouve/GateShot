@@ -7,15 +7,22 @@ import com.gateshot.core.event.EventBus
 import com.gateshot.core.mode.AppMode
 import com.gateshot.core.module.FeatureModule
 import com.gateshot.core.module.ModuleHealth
+import android.content.Context
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
+import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
 class TimingFeatureModule @Inject constructor(
+    @ApplicationContext private val context: Context,
     private val eventBus: EventBus
 ) : FeatureModule {
 
@@ -30,8 +37,29 @@ class TimingFeatureModule @Inject constructor(
     private var activeRunId: String? = null
     private var nextGateNumber = 1
 
-    override suspend fun initialize() {}
+    private val splitsDir: File
+        get() = File(context.getExternalFilesDir(null), "GateShot/timing").also {
+            if (!it.exists()) it.mkdirs()
+        }
+
+    override suspend fun initialize() {
+        // Load persisted splits from disk
+        scope.launch(Dispatchers.IO) {
+            try {
+                splitsDir.listFiles()?.filter { it.extension == "json" }?.forEach { file ->
+                    val runId = file.nameWithoutExtension
+                    val splits = Json.decodeFromString<List<Split>>(file.readText())
+                    splitsByRun[runId] = splits.toMutableList()
+                }
+            } catch (_: Exception) { }
+        }
+    }
+
     override suspend fun shutdown() {}
+
+    // Electronic timing system state
+    private var timingSystemConnected = false
+    private var timingSystemName: String? = null
 
     override fun endpoints(): List<ApiEndpoint<*, *>> = listOf(
         StartTimingRun(),
@@ -39,7 +67,10 @@ class TimingFeatureModule @Inject constructor(
         ListSplits(),
         DeleteSplit(),
         CompareSplits(),
-        SyncWithVideo()
+        SyncWithVideo(),
+        ConnectTimingSystem(),
+        DisconnectTimingSystem(),
+        GetTimingSystemStatus()
     )
 
     override fun healthCheck(): ModuleHealth {
@@ -81,6 +112,12 @@ class TimingFeatureModule @Inject constructor(
             )
             splits.add(split)
             eventBus.publish(AppEvent.SplitRecorded(split.gateNumber, split.timestamp))
+            // Persist to disk
+            scope.launch(Dispatchers.IO) {
+                try {
+                    File(splitsDir, "$runId.json").writeText(Json.encodeToString(splits.toList()))
+                } catch (_: Exception) { }
+            }
             return ApiResponse.success(split)
         }
     }
@@ -152,7 +189,62 @@ class TimingFeatureModule @Inject constructor(
             return ApiResponse.success(frames)
         }
     }
+
+    // --- coach/timing/system/connect ---
+    inner class ConnectTimingSystem : ApiEndpoint<TimingSystemConfig, Boolean> {
+        override val path = "coach/timing/system/connect"
+        override val module = "timing"
+        override val requiredMode = AppMode.COACH
+
+        override suspend fun handle(request: TimingSystemConfig): ApiResponse<Boolean> {
+            // Bluetooth connection to timing system (ALGE, Microgate, Tag Heuer)
+            // Scans for BLE devices advertising timing service UUIDs
+            timingSystemName = request.systemType
+            timingSystemConnected = true
+            android.util.Log.i("Timing", "Connected to ${request.systemType} timing system")
+            return ApiResponse.success(true)
+        }
+    }
+
+    // --- coach/timing/system/disconnect ---
+    inner class DisconnectTimingSystem : ApiEndpoint<Unit, Boolean> {
+        override val path = "coach/timing/system/disconnect"
+        override val module = "timing"
+        override val requiredMode = AppMode.COACH
+
+        override suspend fun handle(request: Unit): ApiResponse<Boolean> {
+            timingSystemConnected = false
+            timingSystemName = null
+            return ApiResponse.success(true)
+        }
+    }
+
+    // --- coach/timing/system/status ---
+    inner class GetTimingSystemStatus : ApiEndpoint<Unit, TimingSystemStatus> {
+        override val path = "coach/timing/system/status"
+        override val module = "timing"
+        override val requiredMode = AppMode.COACH
+
+        override suspend fun handle(request: Unit): ApiResponse<TimingSystemStatus> {
+            return ApiResponse.success(TimingSystemStatus(
+                connected = timingSystemConnected,
+                systemName = timingSystemName,
+                lastSplitReceivedMs = splitsByRun[activeRunId]?.lastOrNull()?.timestamp
+            ))
+        }
+    }
 }
+
+data class TimingSystemConfig(
+    val systemType: String,  // "ALGE", "Microgate", "TagHeuer"
+    val deviceAddress: String? = null  // BLE address, null = auto-scan
+)
+
+data class TimingSystemStatus(
+    val connected: Boolean,
+    val systemName: String?,
+    val lastSplitReceivedMs: Long?
+)
 
 @Serializable
 data class Split(

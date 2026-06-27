@@ -80,6 +80,28 @@ fun StatusBar(
             }
         }
 
+        // Session indicator (coach mode)
+        if (uiState.mode == AppMode.COACH && uiState.sessionName != null) {
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = Color(0xFF1B5E20),
+                modifier = Modifier.size(width = 100.dp, height = 28.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Text(
+                        text = if (uiState.activeRunNumber > 0) "Run ${uiState.activeRunNumber}" else uiState.sessionName ?: "",
+                        color = Color.White,
+                        fontSize = 10.sp,
+                        maxLines = 1
+                    )
+                }
+            }
+        }
+
         // Battery + temp
         Row(verticalAlignment = Alignment.CenterVertically) {
             // Temperature warning

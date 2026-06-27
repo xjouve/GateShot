@@ -50,13 +50,40 @@ class SessionFeatureModule @Inject constructor(
             )
         }
 
-        // Auto-tag bib when detected
+        // Native-app delegated capture (Oppo camera via Intent) — still or video.
+        // File already sits in GateShot/photos or GateShot/videos by the time we
+        // see the event; we only record metadata so it shows up in the gallery
+        // alongside native GateShot captures.
+        eventBus.collect<AppEvent.NativeCaptureCompleted>(scope) { event ->
+            val session = dao.getActiveSession() ?: return@collect
+            val run = dao.getActiveRun(session.id) ?: return@collect
+            dao.insertMedia(
+                MediaEntity(
+                    runId = run.id,
+                    type = if (event.isVideo) MediaType.VIDEO else MediaType.PHOTO,
+                    fileUri = event.fileUri,
+                    captureTimestamp = System.currentTimeMillis()
+                )
+            )
+        }
+
+        // Auto-tag bib when detected — write to both Room DB and .bib sidecar file
         eventBus.collect<AppEvent.BibDetected>(scope) { event ->
-            // Tag most recent media with detected bib
+            // Tag most recent media with detected bib in Room DB
             val session = dao.getActiveSession() ?: return@collect
             val run = dao.getActiveRun(session.id) ?: return@collect
             val media = dao.getMediaForRun(run.id).lastOrNull() ?: return@collect
             dao.tagBib(media.id, event.bibNumber)
+
+            // Also write .bib sidecar file so gallery can read it without DB query
+            try {
+                val uri = media.fileUri
+                val filePath = if (uri.startsWith("file://")) uri.removePrefix("file://")
+                               else android.net.Uri.parse(uri).path
+                if (filePath != null) {
+                    java.io.File("$filePath.bib").writeText("${event.bibNumber}")
+                }
+            } catch (_: Exception) { }
         }
     }
 
