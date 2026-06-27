@@ -140,6 +140,13 @@ interface CameraPlatform {
     fun setExtendedIsoEnabled(enabled: Boolean)
     fun setAfRegions(regions: List<AfRegion>)
 
+    /**
+     * Toggle our own real-time electronic stabilization (causal gyro EIS applied
+     * to the preview + recording via a GL warp). [strength] 0..1 maps to smoothing
+     * aggressiveness. Toggling rebinds the camera session.
+     */
+    fun setLiveStabilization(enabled: Boolean, strength: Float = 1.0f)
+
     // ── Retained vendor controls ────────────────────────────────────────────
     // MDPTZ kept as a hardware subject-framing hook for tracking; AE metering /
     // exposure ROI / manual WB are real exposure controls used by snow exposure

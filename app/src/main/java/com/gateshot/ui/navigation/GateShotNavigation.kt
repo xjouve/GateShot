@@ -158,6 +158,7 @@ fun GateShotNavHost(
                     onAddTriggerZone = viewModel::onAddTriggerZone,
                     onClearTriggerZones = viewModel::onClearTriggerZones,
                     onTrackingToggle = viewModel::onTrackingToggle,
+                    onStabilizationToggle = viewModel::toggleLiveStabilization,
                     onNativeCaptured = viewModel::onNativeCaptureComplete
                 )
             }

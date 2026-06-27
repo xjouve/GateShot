@@ -23,7 +23,6 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.EmojiEvents
 import androidx.compose.material.icons.filled.PlayArrow
@@ -103,7 +102,6 @@ fun GalleryScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val context = androidx.compose.ui.platform.LocalContext.current
-    val stabilizing by viewModel.stabilizeRunning.collectAsState()
     val galleryRefresh by viewModel.galleryRefresh.collectAsState()
 
     // Load gallery items from actual capture files on disk
@@ -224,9 +222,7 @@ fun GalleryScreen(
                 GalleryThumbnail(
                     item = item,
                     onDelete = { refreshKey++ },
-                    onStarChanged = { refreshKey++ },
-                    onStabilize = { viewModel.stabilizeVideo(it.filePath) },
-                    stabilizing = stabilizing
+                    onStarChanged = { refreshKey++ }
                 )
             }
         }
@@ -238,8 +234,6 @@ fun GalleryThumbnail(
     item: GalleryItem,
     onDelete: () -> Unit = {},
     onStarChanged: () -> Unit = {},
-    onStabilize: (GalleryItem) -> Unit = {},
-    stabilizing: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     var starRating by remember { mutableIntStateOf(item.starRating) }
@@ -418,21 +412,6 @@ fun GalleryThumbnail(
                 }
             }, modifier = Modifier.size(48.dp)) {
                 Icon(Icons.Filled.Share, contentDescription = "Share", tint = Color.White, modifier = Modifier.size(20.dp))
-            }
-            // Stabilize — videos only. Disabled while a job is running.
-            if (item.isVideo && !item.fileName.endsWith("_stab.mp4")) {
-                IconButton(
-                    onClick = { if (item.filePath.isNotEmpty()) onStabilize(item) },
-                    enabled = !stabilizing,
-                    modifier = Modifier.size(48.dp)
-                ) {
-                    Icon(
-                        Icons.Filled.AutoFixHigh,
-                        contentDescription = "Stabilize",
-                        tint = if (stabilizing) Color.Gray else Color(0xFF4FC3F7),
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
             }
             IconButton(onClick = {
                 if (item.filePath.isNotEmpty()) {

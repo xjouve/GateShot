@@ -150,4 +150,44 @@ no longer written.
 **To reimplement:** these need a real backend (auth + storage + a coach-side app /
 web) before they're worth restoring. Logic is recoverable from git history.
 
+---
+
+## Group 4 — Offline video stabilizer (replaced by the live one)
+
+**What it was:** a Gallery "Stabilize" wand action that ran our gyro + optical-residual
+hybrid as an **offline post-processing** pass over a recorded clip, producing a
+`<clip>_stab.mp4`. Implemented as the `:processing:stabilize` module's
+`process/stabilize/run` endpoint (`StabilizeModule`), the three-pass
+`StabilizerPipeline`, `VideoTranscoder` (decode → GL warp → re-encode + audio
+passthrough), and `VideoFrameSource` (luma decode for analysis), plus a
+`<clip>_gyro.csv` sidecar written during recording (`startGyroLogging` /
+`stopGyroLogging` in `CameraXPlatform`).
+
+**Why removed:** the user had already tried and abandoned post-processing
+stabilization; the offline flow was non-causal (it Gaussian-smooths the camera
+path across the *whole clip*, so every output frame depends on future frames) and
+was rejected in favour of **live** stabilization on the recording + preview. The
+stabilizer is mandatory to the app, so the algorithm was not discarded — only the
+offline *delivery surface*.
+
+**Removed:**
+- `processing/stabilize/.../StabilizerPipeline.kt`, `VideoTranscoder.kt`,
+  `VideoFrameSource.kt`, `StabilizeModule.kt` — deleted.
+- `app/.../di/AppModule.kt` — `stabilizeModule` param + set entry removed.
+- `app/.../ui/MainViewModel.kt` — `stabilizeVideo`, `stabilizeRunning`,
+  `stabilizeProgress`, and the `VideoStabilizationCompleted` collector removed.
+- `app/.../ui/gallery/GalleryScreen.kt` — the Stabilize wand `IconButton` +
+  `onStabilize`/`stabilizing` plumbing removed.
+- `core/.../event/AppEvent.kt` — `VideoStabilizationCompleted` removed.
+- `platform/.../camera/CameraXPlatform.kt` — `startGyroLogging`/`stopGyroLogging`
+  + the `<clip>_gyro.csv` sidecar removed (gyro now flows live into the stabilizer).
+
+**Kept / repurposed:** the reusable math in `:processing:stabilize` —
+`Fft`, `PhaseCorrelator`, `GyroTrack` (integration), `Calibrator`, `PathSmoother`,
+`LumaWarp`, and the GL warp shader/EGL logic in `WarpGlPipeline` — feeds the new
+**live** stabilizer (`LiveStabilizer` + a CameraX `SurfaceProcessor` effect).
+
+**To reimplement (offline):** recoverable from git history; the math classes still
+exist. An offline pass could be re-added as a non-interactive batch export without
+re-deriving the algorithm.
 

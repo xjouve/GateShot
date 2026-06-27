@@ -28,7 +28,6 @@ object AppModule {
         bibDetectionModule: com.gateshot.processing.bib.BibDetectionModule,
         autoClipModule: com.gateshot.processing.autoclip.AutoClipModule,
         exportModule: com.gateshot.processing.export.ExportModule,
-        stabilizeModule: com.gateshot.processing.stabilize.StabilizeModule,
         // Coaching
         replayModule: com.gateshot.coaching.replay.ReplayFeatureModule,
         timingModule: com.gateshot.coaching.timing.TimingFeatureModule,
@@ -39,7 +38,7 @@ object AppModule {
         return setOf(
             cameraModule, burstModule, presetModule, triggerModule, trackingModule,
             sessionModule,
-            snowExposureModule, burstCullingModule, bibDetectionModule, autoClipModule, exportModule, stabilizeModule,
+            snowExposureModule, burstCullingModule, bibDetectionModule, autoClipModule, exportModule,
             replayModule, timingModule, annotationModule, athleteModule, poseModule
         )
     }

@@ -7,7 +7,7 @@ import kotlin.math.sin
  * CPU affine warp of an NxN luma buffer, used only for the stage-2 residual
  * measurement (cheap at the 512² analysis resolution). Applies rotation about
  * the centre plus translation, sampled bilinearly — the analysis-resolution
- * equivalent of the GPU warp applied to the full-res frames in [VideoTranscoder].
+ * equivalent of the GPU warp applied to the full-res frames on the live path.
  */
 internal object LumaWarp {
 

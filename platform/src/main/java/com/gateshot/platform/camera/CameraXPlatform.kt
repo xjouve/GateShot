@@ -20,12 +20,14 @@ import android.view.Surface
 import androidx.camera.camera2.interop.Camera2CameraInfo
 import androidx.camera.camera2.interop.Camera2Interop
 import androidx.camera.core.Camera
+import androidx.camera.core.CameraEffect
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
+import androidx.camera.core.UseCaseGroup
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.video.FileOutputOptions
 import androidx.camera.video.Quality
@@ -38,9 +40,13 @@ import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import java.io.File
 import java.io.FileOutputStream
@@ -120,6 +126,18 @@ class CameraXPlatform @Inject constructor(
     // re-applied whenever the camera is rebound or the zoom changes.
     private var currentZoomRatio: Float = 1f
 
+    // ── Live (real-time) stabilization: our own causal EIS, applied to the
+    // preview + recording via a CameraX SurfaceProcessor effect. Independent of
+    // (and complementary to) OIS, which we keep on underneath to kill the
+    // high-frequency shake while our GL warp removes the slow framing path.
+    private var liveStabilizationEnabled = false
+    private var liveStabStrength: Float = 1.0f
+    private val liveStabilizer = com.gateshot.processing.stabilize.LiveStabilizer()
+    private var stabProcessor: StabilizingSurfaceProcessor? = null
+    private var stabGyroListener: android.hardware.SensorEventListener? = null
+    // Main-thread scope used to rebind the camera when stabilization is toggled.
+    private val cameraScope = CoroutineScope(Dispatchers.Main.immediate + SupervisorJob())
+
     // Video recording state
     private var recordingStartTime: Long = 0
     private var recordingFile: File? = null
@@ -142,18 +160,6 @@ class CameraXPlatform @Inject constructor(
     private var gyroPushThread: Thread? = null
     @Volatile private var lastGyroPushCount: Int = 0
     private var lastGyroLogMs: Long = 0
-
-    // Full-stream gyro logging for offline stabilization. Independent of the
-    // EIS feed above: every recording writes a `<clip>_gyro.csv` sidecar so the
-    // StabilizeModule can reconstruct the camera path. Samples are buffered in
-    // memory (a 30 s clip at ~200 Hz is ~6000 rows) and flushed once on stop,
-    // keeping file I/O off the sensor callback thread. SensorEvent.timestamp is
-    // already on the elapsedRealtimeNanos (BOOTTIME) clock the algorithm expects.
-    private class GyroLogSample(val tsNs: Long, val x: Float, val y: Float, val z: Float)
-    private val gyroLogBuffer = java.util.ArrayList<GyroLogSample>(8192)
-    private val gyroLogLock = Any()
-    private var gyroLogListener: android.hardware.SensorEventListener? = null
-    private var gyroLogClip: File? = null
 
     private val sensorManager: android.hardware.SensorManager by lazy {
         context.getSystemService(Context.SENSOR_SERVICE) as android.hardware.SensorManager
@@ -219,6 +225,12 @@ class CameraXPlatform @Inject constructor(
         // they all track together on the Find X9 Pro.
         supportsPreviewStabilization = probePreviewStabilizationSupport()
 
+        // Each (re)open starts from a clean stabilization state; the bind path
+        // below rebuilds the effect only when live stabilization is enabled.
+        stopStabGyro()
+        stabProcessor?.release()
+        stabProcessor = null
+
         try {
             val provider = getCameraProvider()
             cameraProvider = provider
@@ -240,7 +252,8 @@ class CameraXPlatform @Inject constructor(
             // stabilization take effect even on devices that don't expose
             // PREVIEW_STABILIZATION publicly (as on many Oppo/MediaTek HALs
             // where the capability is gated behind a vendor scenario flag).
-            if (!USE_VENDOR_GYRO_EIS &&
+            if (!liveStabilizationEnabled &&
+                !USE_VENDOR_GYRO_EIS &&
                 PREFER_PREVIEW_STABILIZATION &&
                 activeStabilization.eis == EisMode.STANDARD &&
                 supportsPreviewStabilization
@@ -284,8 +297,13 @@ class CameraXPlatform @Inject constructor(
             val owner = lifecycleOwner
             if (owner != null) {
                 // Try binding use cases. The Oppo Find X9 Pro's sub-cameras
-                // often support only 2 simultaneous streams.
-                camera = try {
+                // often support only 2 simultaneous streams. When live
+                // stabilization is on, the camera stream is routed through our
+                // SurfaceProcessor effect and fanned out to preview + video
+                // (one camera stream, so it does not worsen the 2-stream limit).
+                camera = if (liveStabilizationEnabled) {
+                    bindWithStabilization(provider, owner, cameraSelector)
+                } else try {
                     provider.bindToLifecycle(
                         owner, cameraSelector,
                         preview, imageCapture, videoCapture
@@ -338,6 +356,13 @@ class CameraXPlatform @Inject constructor(
                 // gyro-EIS path. With CameraX EIS owning stabilization it isn't
                 // needed (the vendor keys never engaged the HAL anyway).
                 if (USE_VENDOR_GYRO_EIS) startGyroFeed()
+
+                // Live stabilization: calibrate the gyro→pixel mapping from this
+                // lens's intrinsics + current zoom, then feed the gyro stream.
+                if (liveStabilizationEnabled) {
+                    rebuildStabCalibration()
+                    startStabGyro()
+                }
             }
 
             _state.value = CameraState.OPEN
@@ -353,6 +378,9 @@ class CameraXPlatform @Inject constructor(
         activeRecording?.stop()
         activeRecording = null
         _isRecording.value = false
+        stopStabGyro()
+        stabProcessor?.release()
+        stabProcessor = null
         rawImageReader?.close()
         rawImageReader = null
         cameraProvider?.unbindAll()
@@ -380,7 +408,6 @@ class CameraXPlatform @Inject constructor(
         activeFocusDistance = null
         sensorArraySize = null
         stopGyroFeed()
-        stopGyroLogging()
         _state.value = CameraState.CLOSED
     }
 
@@ -441,63 +468,6 @@ class CameraXPlatform @Inject constructor(
         gyroPushThread = null
         synchronized(gyroLock) { gyroBuffer.clear() }
         lastGyroPushCount = 0
-    }
-
-    /**
-     * Start capturing the full gyro stream for [clip], to be flushed to
-     * `<clip>_gyro.csv` on [stopGyroLogging]. Safe to call even with no gyro.
-     */
-    private fun startGyroLogging(clip: File) {
-        if (gyroLogListener != null) stopGyroLogging()  // defensive: never leak a listener
-        val sensor = sensorManager.getDefaultSensor(android.hardware.Sensor.TYPE_GYROSCOPE)
-        if (sensor == null) {
-            android.util.Log.w("CameraXPlatform", "No gyroscope — stabilization gyro log unavailable")
-            return
-        }
-        synchronized(gyroLogLock) { gyroLogBuffer.clear() }
-        gyroLogClip = clip
-        val listener = object : android.hardware.SensorEventListener {
-            override fun onSensorChanged(e: android.hardware.SensorEvent) {
-                synchronized(gyroLogLock) {
-                    gyroLogBuffer.add(GyroLogSample(e.timestamp, e.values[0], e.values[1], e.values[2]))
-                }
-            }
-            override fun onAccuracyChanged(s: android.hardware.Sensor?, a: Int) {}
-        }
-        sensorManager.registerListener(
-            listener, sensor, android.hardware.SensorManager.SENSOR_DELAY_FASTEST
-        )
-        gyroLogListener = listener
-        android.util.Log.i("CameraXPlatform", "Gyro logging started for ${clip.name}")
-    }
-
-    /**
-     * Stop gyro logging and write the buffered samples to `<clip>_gyro.csv`
-     * (header `t_ns,gx,gy,gz`, BOOTTIME clock). No-op if logging wasn't active.
-     */
-    private fun stopGyroLogging() {
-        val listener = gyroLogListener ?: return
-        sensorManager.unregisterListener(listener)
-        gyroLogListener = null
-        val clip = gyroLogClip
-        gyroLogClip = null
-        val samples = synchronized(gyroLogLock) {
-            val copy = ArrayList(gyroLogBuffer)
-            gyroLogBuffer.clear()
-            copy
-        }
-        if (clip == null || samples.isEmpty()) return
-        try {
-            val csv = File(clip.parentFile, "${clip.nameWithoutExtension}_gyro.csv")
-            csv.bufferedWriter().use { w ->
-                w.write("t_ns,gx,gy,gz\n")
-                for (s in samples) w.write("${s.tsNs},${s.x},${s.y},${s.z}\n")
-            }
-            android.util.Log.i("CameraXPlatform",
-                "Wrote ${samples.size} gyro samples to ${csv.name}")
-        } catch (e: Exception) {
-            android.util.Log.e("CameraXPlatform", "Gyro log write failed: ${e.message}")
-        }
     }
 
     /**
@@ -586,6 +556,151 @@ class CameraXPlatform @Inject constructor(
     override fun setStabilization(config: StabilizationConfig) {
         activeStabilization = config
         applyCaptureRequestSettings()
+    }
+
+    override fun setLiveStabilization(enabled: Boolean, strength: Float) {
+        liveStabStrength = strength.coerceIn(0f, 1f)
+        if (liveStabilizationEnabled == enabled) {
+            // Only strength changed — apply without a rebind.
+            if (enabled) rebuildStabCalibration()
+            return
+        }
+        liveStabilizationEnabled = enabled
+        // Toggling the effect requires a rebind. Re-run open() with the current
+        // config on the main thread; it tears down and rebuilds the session
+        // (with or without the SurfaceProcessor effect) from a clean state.
+        val config = currentConfig ?: return
+        if (cameraProvider == null || lifecycleOwner == null) return
+        cameraScope.launch {
+            try {
+                open(config)
+            } catch (e: Exception) {
+                android.util.Log.e("CameraXPlatform", "Stabilization rebind failed: ${e.message}", e)
+            }
+        }
+    }
+
+    /** CameraEffect is abstract with a protected ctor — subclass to instantiate. */
+    private class StabilizationEffect(
+        targets: Int,
+        executor: java.util.concurrent.Executor,
+        processor: androidx.camera.core.SurfaceProcessor,
+        errorListener: androidx.core.util.Consumer<Throwable>
+    ) : CameraEffect(targets, executor, processor, errorListener)
+
+    /**
+     * Bind preview + image + video through the stabilization [CameraEffect]
+     * (targeting PREVIEW | VIDEO_CAPTURE so one camera stream is warped and fanned
+     * out to both). Falls back to a preview-only effect if the device can't bind
+     * all three streams.
+     */
+    private fun bindWithStabilization(
+        provider: ProcessCameraProvider,
+        owner: LifecycleOwner,
+        selector: CameraSelector
+    ): Camera {
+        val processor = StabilizingSurfaceProcessor(liveStabilizer).apply {
+            cropFrac = STAB_CROP
+            rotate180 = currentZoomRatio >= TELEPHOTO_ENGAGE_ZOOM
+            // The effect's camera input is SDR 8-bit (we don't request a 10-bit
+            // DynamicRange on this pipeline), so the OES sample is already
+            // display-ready — tonemapping it would double-apply gamma. True
+            // HLG10→SDR is deferred to v2 (needs a 10-bit input stream).
+            tonemapHdr = false
+        }
+        stabProcessor?.release()
+        stabProcessor = processor
+
+        fun group(includeVideo: Boolean): UseCaseGroup {
+            val targets = if (includeVideo)
+                CameraEffect.PREVIEW or CameraEffect.VIDEO_CAPTURE else CameraEffect.PREVIEW
+            val effect = StabilizationEffect(
+                targets, processor.executor(), processor,
+                androidx.core.util.Consumer { t ->
+                    android.util.Log.e("CameraXPlatform", "Stabilizer effect error: ${t.message}", t)
+                }
+            )
+            return UseCaseGroup.Builder()
+                .addUseCase(preview!!)
+                .apply { imageCapture?.let { addUseCase(it) } }
+                .apply { if (includeVideo) videoCapture?.let { addUseCase(it) } }
+                .addEffect(effect)
+                .build()
+        }
+
+        return try {
+            provider.bindToLifecycle(owner, selector, group(includeVideo = videoCapture != null))
+        } catch (e: Exception) {
+            android.util.Log.w("CameraXPlatform",
+                "Stabilized 3-use-case bind failed, dropping video: ${e.message}")
+            provider.unbindAll()
+            videoCapture = null
+            provider.bindToLifecycle(owner, selector, group(includeVideo = false))
+        }
+    }
+
+    /** Register a dedicated gyro listener feeding the live stabilizer. */
+    private fun startStabGyro() {
+        if (stabGyroListener != null) return
+        val sensor = sensorManager.getDefaultSensor(android.hardware.Sensor.TYPE_GYROSCOPE)
+        if (sensor == null) {
+            android.util.Log.w("CameraXPlatform", "No gyroscope — live stabilization unavailable")
+            return
+        }
+        val listener = object : android.hardware.SensorEventListener {
+            override fun onSensorChanged(e: android.hardware.SensorEvent) {
+                liveStabilizer.onGyro(e.timestamp, e.values[0], e.values[1], e.values[2])
+            }
+            override fun onAccuracyChanged(s: android.hardware.Sensor?, a: Int) {}
+        }
+        sensorManager.registerListener(
+            listener, sensor, android.hardware.SensorManager.SENSOR_DELAY_FASTEST
+        )
+        stabGyroListener = listener
+        android.util.Log.i("CameraXPlatform", "Live-stabilization gyro feed started")
+    }
+
+    private fun stopStabGyro() {
+        stabGyroListener?.let { sensorManager.unregisterListener(it) }
+        stabGyroListener = null
+    }
+
+    /**
+     * Calibrate the gyro→pixel mapping from the active lens's intrinsics and the
+     * current zoom. Normalized translation per radian = focalLength / sensorSize,
+     * which is resolution-independent; digital zoom scales it linearly. Axis/sign
+     * default to the common rear-camera mounting and are verified by Stage 2.
+     */
+    private fun rebuildStabCalibration() {
+        val strength = liveStabStrength
+        try {
+            val id = rawCamera2Id ?: Camera2CameraInfo.from(camera!!.cameraInfo).cameraId
+            val cm = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            val chars = cm.getCameraCharacteristics(id)
+            val focal = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.firstOrNull()
+            val physical = chars.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)
+            if (focal == null || physical == null || physical.width <= 0f || physical.height <= 0f) {
+                android.util.Log.w("CameraXPlatform", "No intrinsics for stab calibration; using defaults")
+                return
+            }
+            val zoom = currentZoomRatio.coerceAtLeast(1f)
+            // rad → fraction of frame width/height (per 1x), ×zoom for digital zoom.
+            val sxBase = focal / physical.width * zoom
+            val syBase = focal / physical.height * zoom
+            // Lower cutoff = stronger smoothing. Map strength∈[0,1] → cutoff [1.4 .. 0.4] Hz.
+            val cutoff = 1.4f - 1.0f * strength
+            val cfg = com.gateshot.processing.stabilize.LiveStabilizer.fromIntrinsics(
+                fxPx = sxBase, fyPx = syBase, width = 1, height = 1,
+                cropFrac = STAB_CROP, cutoffHz = cutoff,
+            )
+            liveStabilizer.updateConfig(cfg)
+            stabProcessor?.cropFrac = STAB_CROP
+            android.util.Log.i("CameraXPlatform",
+                "Stab calibrated: focal=${focal}mm sensor=${physical.width}x${physical.height}mm " +
+                "zoom=$zoom sx=${cfg.sx} sy=${cfg.sy} cutoff=${cutoff}Hz")
+        } catch (e: Exception) {
+            android.util.Log.w("CameraXPlatform", "Stab calibration failed: ${e.message}")
+        }
     }
 
     override fun setAfMode(mode: CameraAfMode) {
@@ -1193,9 +1308,6 @@ class CameraXPlatform @Inject constructor(
         recordingFile = videoFile
         recordingStartTime = System.currentTimeMillis()
 
-        // Capture the gyro stream alongside the clip for offline stabilization.
-        startGyroLogging(videoFile)
-
         val outputOptions = FileOutputOptions.Builder(videoFile).build()
 
         val hasAudioPermission = ContextCompat.checkSelfPermission(
@@ -1215,7 +1327,6 @@ class CameraXPlatform @Inject constructor(
                 }
                 is VideoRecordEvent.Finalize -> {
                     _isRecording.value = false
-                    stopGyroLogging()
                     val result = RecordingResult(
                         uri = videoFile.absolutePath,
                         durationMs = System.currentTimeMillis() - recordingStartTime,
@@ -1319,7 +1430,16 @@ class CameraXPlatform @Inject constructor(
         val upsideDown = zoomRatio >= TELEPHOTO_ENGAGE_ZOOM
         val baseRotation = previewView?.display?.rotation ?: Surface.ROTATION_0
         val effectiveRotation = if (upsideDown) (baseRotation + 2) and 3 else baseRotation
-        previewView?.rotation = if (upsideDown) 180f else 0f
+        if (liveStabilizationEnabled) {
+            // The GL warp owns the flip for BOTH preview and recording; don't also
+            // rotate the PreviewView (that would double-flip the preview).
+            stabProcessor?.rotate180 = upsideDown
+            previewView?.rotation = 0f
+            // Re-derive the gyro→pixel scale for the new zoom.
+            rebuildStabCalibration()
+        } else {
+            previewView?.rotation = if (upsideDown) 180f else 0f
+        }
         imageCapture?.targetRotation = effectiveRotation
         videoCapture?.targetRotation = effectiveRotation
         applyCaptureRequestSettings()
@@ -1445,7 +1565,7 @@ class CameraXPlatform @Inject constructor(
         // NOT_SPECIFIED so we don't land in the Preview=?/Video=OFF rows of
         // the CameraX stabilization matrix, some of which force even a
         // device-default stabilization OFF.
-        if (!USE_VENDOR_GYRO_EIS && activeStabilization.eis == EisMode.STANDARD) {
+        if (!liveStabilizationEnabled && !USE_VENDOR_GYRO_EIS && activeStabilization.eis == EisMode.STANDARD) {
             try {
                 videoBuilder.setVideoStabilizationEnabled(true)
                 android.util.Log.i("CameraXPlatform",
@@ -1820,6 +1940,11 @@ class CameraXPlatform @Inject constructor(
         // Its sensor is physically mounted 180° rotated, so frames arrive
         // flipped and must be rotated back above this threshold.
         private const val TELEPHOTO_ENGAGE_ZOOM = 3.0f
+
+        // Crop margin per side for our live EIS warp. The warp can shift the frame
+        // up to this fraction to cancel shake; bigger = more headroom but more
+        // zoom-in. ~12% matches native EIS behavior.
+        private const val STAB_CROP = 0.12f
 
         /**
          * Parse a shutter speed fraction string like "1/1000" to nanoseconds.

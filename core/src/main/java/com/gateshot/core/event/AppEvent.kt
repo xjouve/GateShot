@@ -26,7 +26,6 @@ sealed interface AppEvent {
     data class PanningStopped(val totalAngleDeg: Float) : AppEvent
     data class MountDetected(val isMounted: Boolean) : AppEvent
     data class GateCrossing(val gateId: Int, val gateColor: String) : AppEvent
-    data class VideoStabilizationCompleted(val clipUri: String, val durationMs: Long) : AppEvent
 
     // System events
     data class ModeChanged(val newMode: AppMode) : AppEvent

@@ -1,0 +1,418 @@
+package com.gateshot.platform.camera
+
+import android.graphics.SurfaceTexture
+import android.opengl.EGL14
+import android.opengl.EGLConfig
+import android.opengl.EGLContext
+import android.opengl.EGLDisplay
+import android.opengl.EGLExt
+import android.opengl.EGLSurface
+import android.opengl.GLES11Ext
+import android.opengl.GLES20
+import android.opengl.Matrix
+import android.os.Handler
+import android.os.HandlerThread
+import android.util.Log
+import android.view.Surface
+import androidx.camera.core.SurfaceOutput
+import androidx.camera.core.SurfaceProcessor
+import androidx.camera.core.SurfaceRequest
+import com.gateshot.processing.stabilize.LiveStabilizer
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.nio.FloatBuffer
+import java.util.concurrent.Executor
+
+/**
+ * Real-time electronic stabilization spliced into the CameraX pipeline via the
+ * effects API ([SurfaceProcessor] + `CameraEffect`). One camera input stream is
+ * sampled through an external-OES texture and warped per-frame on the GPU, then
+ * fanned out to every output (preview + video). The per-frame warp (rotation
+ * about centre + translation + crop) comes from [LiveStabilizer.correction], the
+ * causal gyro smoother — so the same correction stabilizes both the live preview
+ * and the recorded file with zero added latency.
+ *
+ * GL work runs on a single dedicated thread that owns the EGL context. CameraX
+ * callbacks are delivered on [glExecutor] (which posts to that thread), and the
+ * input [SurfaceTexture]'s frame-available callback fires there too, so no
+ * cross-thread GL access occurs.
+ *
+ * Ported from the offline `WarpGlPipeline`; generalized from a single encoder
+ * surface to N output surfaces sharing one context, and driven live instead of
+ * from precomputed per-frame corrections.
+ */
+class StabilizingSurfaceProcessor(
+    private val stabilizer: LiveStabilizer,
+) : SurfaceProcessor {
+
+    /** Crop margin per side; must match the [LiveStabilizer.Config.cropFrac]. */
+    @Volatile var cropFrac: Float = 0.12f
+
+    /** Tonemap HLG10 → SDR (HDR fallback). Set before the first frame. */
+    @Volatile var tonemapHdr: Boolean = false
+
+    /**
+     * Extra 180° rotation baked into the warp — the Hasselblad periscope module is
+     * mounted upside-down, so at tele the frames arrive flipped. With the effect
+     * active this replaces the `PreviewView.rotation` hack (which only fixed the
+     * preview, not the recording).
+     */
+    @Volatile var rotate180: Boolean = false
+
+    private val glThread = HandlerThread("StabGL").also { it.start() }
+    private val glHandler = Handler(glThread.looper)
+    private val glExecutor = Executor { cmd -> glHandler.post(cmd) }
+
+    /** Executor for CameraX to deliver processor callbacks on. */
+    fun executor(): Executor = glExecutor
+
+    // ---- EGL / GL state (only touched on glThread) ----
+    private var eglDisplay: EGLDisplay = EGL14.EGL_NO_DISPLAY
+    private var eglContext: EGLContext = EGL14.EGL_NO_CONTEXT
+    private var eglConfig: EGLConfig? = null
+    private var pbufferSurface: EGLSurface = EGL14.EGL_NO_SURFACE
+
+    private var program = 0
+    private var texId = 0
+    private var aPositionLoc = 0
+    private var aTexCoordLoc = 0
+    private var uStMatrixLoc = 0
+    private var uWarpMatrixLoc = 0
+    private var uTonemapLoc = 0
+
+    private var inputSurfaceTexture: SurfaceTexture? = null
+    private var inputSurface: Surface? = null
+
+    private val stMatrix = FloatArray(16)
+    private val outMatrix = FloatArray(16)
+    private val warpMatrix = FloatArray(16)
+
+    private class OutTarget(
+        val output: SurfaceOutput,
+        val surface: Surface,
+        val eglSurface: EGLSurface,
+        val width: Int,
+        val height: Int,
+    )
+
+    private val outputs = ArrayList<OutTarget>(2)
+
+    private val quad: FloatBuffer = ByteBuffer.allocateDirect(QUAD.size * 4)
+        .order(ByteOrder.nativeOrder()).asFloatBuffer().apply { put(QUAD); position(0) }
+
+    private var released = false
+    private var frameCount = 0
+
+    // ------------------------------------------------------------------
+    // SurfaceProcessor
+    // ------------------------------------------------------------------
+
+    override fun onInputSurface(request: SurfaceRequest) {
+        glHandler.post {
+            if (released) { request.willNotProvideSurface(); return@post }
+            ensureEgl()
+            // Tear down any previous input (rebind).
+            inputSurface?.release()
+            inputSurfaceTexture?.release()
+
+            val st = SurfaceTexture(texId)
+            val size = request.resolution
+            st.setDefaultBufferSize(size.width, size.height)
+            st.setOnFrameAvailableListener({ glHandler.post { drawFrame() } }, glHandler)
+            val surface = Surface(st)
+            inputSurfaceTexture = st
+            inputSurface = surface
+            stabilizer.reset()
+
+            request.provideSurface(surface, glExecutor) { result ->
+                // Camera released the surface — drop it.
+                surface.release()
+                st.release()
+                if (inputSurface === surface) { inputSurface = null; inputSurfaceTexture = null }
+                Log.i(TAG, "input surface released code=${result.resultCode}")
+            }
+            Log.i(TAG, "input surface provided ${size.width}x${size.height}")
+        }
+    }
+
+    override fun onOutputSurface(output: SurfaceOutput) {
+        Log.i(TAG, "onOutputSurface called targets=${output.targets} size=${output.size}")
+        glHandler.post {
+            if (released) { output.close(); return@post }
+            ensureEgl()
+            val surface = output.getSurface(glExecutor) { event ->
+                if (event.eventCode == SurfaceOutput.Event.EVENT_REQUEST_CLOSE) {
+                    glHandler.post { removeOutput(output) }
+                }
+            }
+            val egl = createWindowSurface(surface) ?: run {
+                Log.e(TAG, "failed to create EGL surface for output targets=${output.targets}")
+                output.close(); return@post
+            }
+            val size = output.size
+            outputs.add(OutTarget(output, surface, egl, size.width, size.height))
+            Log.i(TAG, "output surface added targets=${output.targets} ${size.width}x${size.height}")
+        }
+    }
+
+    private fun removeOutput(output: SurfaceOutput) {
+        val it = outputs.iterator()
+        while (it.hasNext()) {
+            val o = it.next()
+            if (o.output === output) {
+                if (o.eglSurface != EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(eglDisplay, o.eglSurface)
+                o.output.close()
+                it.remove()
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Per-frame draw
+    // ------------------------------------------------------------------
+
+    private fun drawFrame() {
+        val st = inputSurfaceTexture ?: return
+        // Always consume the buffer (even with no outputs) so the queue drains.
+        makeCurrentPbuffer()
+        try {
+            st.updateTexImage()
+        } catch (e: Exception) {
+            Log.w(TAG, "updateTexImage failed: ${e.message}")
+            return
+        }
+        st.getTransformMatrix(stMatrix)
+        frameCount++
+        // Confirm rendering started, then go quiet (avoid logspam at 30/60 fps).
+        if (frameCount == 1 || frameCount % 1800 == 0) Log.i(TAG, "frame $frameCount outputs=${outputs.size}")
+        if (outputs.isEmpty()) return
+
+        val ts = st.timestamp
+        val corr = stabilizer.correction()
+        buildWarpMatrix(corr.rollRad, corr.txNorm, corr.tyNorm)
+
+        for (o in outputs) {
+            if (!EGL14.eglMakeCurrent(eglDisplay, o.eglSurface, o.eglSurface, eglContext)) {
+                Log.w(TAG, "eglMakeCurrent(output) failed"); continue
+            }
+            // Fold the camera ST transform together with this output's required
+            // transform (crop/rotation/mirror) — exactly what CameraX expects.
+            o.output.updateTransformMatrix(outMatrix, stMatrix)
+
+            GLES20.glViewport(0, 0, o.width, o.height)
+            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+            GLES20.glUseProgram(program)
+
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+            GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, texId)
+
+            quad.position(0)
+            GLES20.glVertexAttribPointer(aPositionLoc, 2, GLES20.GL_FLOAT, false, 16, quad)
+            GLES20.glEnableVertexAttribArray(aPositionLoc)
+            quad.position(2)
+            GLES20.glVertexAttribPointer(aTexCoordLoc, 2, GLES20.GL_FLOAT, false, 16, quad)
+            GLES20.glEnableVertexAttribArray(aTexCoordLoc)
+
+            GLES20.glUniformMatrix4fv(uStMatrixLoc, 1, false, outMatrix, 0)
+            GLES20.glUniformMatrix4fv(uWarpMatrixLoc, 1, false, warpMatrix, 0)
+            if (uTonemapLoc >= 0) GLES20.glUniform1i(uTonemapLoc, if (tonemapHdr) 1 else 0)
+
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+
+            EGLExt.eglPresentationTimeANDROID(eglDisplay, o.eglSurface, ts)
+            EGL14.eglSwapBuffers(eglDisplay, o.eglSurface)
+        }
+    }
+
+    /**
+     * Map base tex coords (0..1) to the source sampling coords: crop in, then the
+     * inverse-affine correction (rotate −angle about centre + translate), plus the
+     * fixed 180° periscope flip when engaged.
+     */
+    private fun buildWarpMatrix(angleRad: Float, txNorm: Float, tyNorm: Float) {
+        val angleDeg = Math.toDegrees(angleRad.toDouble()).toFloat() + (if (rotate180) 180f else 0f)
+        val cx = 0.5f; val cy = 0.5f
+        val crop = cropFrac
+        val scale = 1f - 2f * crop
+        Matrix.setIdentityM(warpMatrix, 0)
+        Matrix.translateM(warpMatrix, 0, cx, cy, 0f)
+        Matrix.rotateM(warpMatrix, 0, -angleDeg, 0f, 0f, 1f)
+        Matrix.translateM(warpMatrix, 0, -(cx + txNorm), -(cy + tyNorm), 0f)
+        Matrix.translateM(warpMatrix, 0, crop, crop, 0f)
+        Matrix.scaleM(warpMatrix, 0, scale, scale, 1f)
+    }
+
+    // ------------------------------------------------------------------
+    // EGL setup / teardown
+    // ------------------------------------------------------------------
+
+    private fun ensureEgl() {
+        if (eglDisplay != EGL14.EGL_NO_DISPLAY) return
+        eglDisplay = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
+        val version = IntArray(2)
+        EGL14.eglInitialize(eglDisplay, version, 0, version, 1)
+        val attribs = intArrayOf(
+            EGL14.EGL_RED_SIZE, 8, EGL14.EGL_GREEN_SIZE, 8, EGL14.EGL_BLUE_SIZE, 8,
+            EGL14.EGL_ALPHA_SIZE, 8,
+            EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT,
+            EGL_RECORDABLE_ANDROID, 1,
+            EGL14.EGL_NONE
+        )
+        val configs = arrayOfNulls<EGLConfig>(1)
+        val numConfigs = IntArray(1)
+        EGL14.eglChooseConfig(eglDisplay, attribs, 0, configs, 0, 1, numConfigs, 0)
+        eglConfig = configs[0]
+        val ctxAttribs = intArrayOf(EGL14.EGL_CONTEXT_CLIENT_VERSION, 2, EGL14.EGL_NONE)
+        eglContext = EGL14.eglCreateContext(eglDisplay, eglConfig, EGL14.EGL_NO_CONTEXT, ctxAttribs, 0)
+        pbufferSurface = EGL14.eglCreatePbufferSurface(
+            eglDisplay, eglConfig, intArrayOf(EGL14.EGL_WIDTH, 1, EGL14.EGL_HEIGHT, 1, EGL14.EGL_NONE), 0
+        )
+        makeCurrentPbuffer()
+        setupGl()
+    }
+
+    private fun setupGl() {
+        program = buildProgram(VERTEX_SHADER, if (tonemapHdr) FRAG_SHADER_HLG else FRAG_SHADER_PLAIN)
+        aPositionLoc = GLES20.glGetAttribLocation(program, "aPosition")
+        aTexCoordLoc = GLES20.glGetAttribLocation(program, "aTexCoord")
+        uStMatrixLoc = GLES20.glGetUniformLocation(program, "uSTMatrix")
+        uWarpMatrixLoc = GLES20.glGetUniformLocation(program, "uWarpMatrix")
+        uTonemapLoc = GLES20.glGetUniformLocation(program, "uTonemap")
+
+        val tex = IntArray(1)
+        GLES20.glGenTextures(1, tex, 0)
+        texId = tex[0]
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, texId)
+        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_MIRRORED_REPEAT)
+        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_MIRRORED_REPEAT)
+    }
+
+    private fun makeCurrentPbuffer() {
+        if (pbufferSurface != EGL14.EGL_NO_SURFACE) {
+            EGL14.eglMakeCurrent(eglDisplay, pbufferSurface, pbufferSurface, eglContext)
+        }
+    }
+
+    private fun createWindowSurface(surface: Surface): EGLSurface? {
+        return try {
+            val s = EGL14.eglCreateWindowSurface(
+                eglDisplay, eglConfig, surface, intArrayOf(EGL14.EGL_NONE), 0
+            )
+            if (s == EGL14.EGL_NO_SURFACE) null else s
+        } catch (e: Exception) {
+            Log.e(TAG, "eglCreateWindowSurface failed: ${e.message}"); null
+        }
+    }
+
+    /** Release everything. Safe to call once; further callbacks are ignored. */
+    fun release() {
+        glHandler.post {
+            released = true
+            for (o in outputs) {
+                if (o.eglSurface != EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(eglDisplay, o.eglSurface)
+                o.output.close()
+            }
+            outputs.clear()
+            inputSurface?.release(); inputSurface = null
+            inputSurfaceTexture?.release(); inputSurfaceTexture = null
+            if (eglDisplay != EGL14.EGL_NO_DISPLAY) {
+                EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
+                if (pbufferSurface != EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(eglDisplay, pbufferSurface)
+                EGL14.eglDestroyContext(eglDisplay, eglContext)
+                EGL14.eglReleaseThread()
+                EGL14.eglTerminate(eglDisplay)
+            }
+            eglDisplay = EGL14.EGL_NO_DISPLAY
+            eglContext = EGL14.EGL_NO_CONTEXT
+            pbufferSurface = EGL14.EGL_NO_SURFACE
+            glThread.quitSafely()
+        }
+    }
+
+    private fun buildProgram(vs: String, fs: String): Int {
+        val v = compile(GLES20.GL_VERTEX_SHADER, vs)
+        val f = compile(GLES20.GL_FRAGMENT_SHADER, fs)
+        val p = GLES20.glCreateProgram()
+        GLES20.glAttachShader(p, v)
+        GLES20.glAttachShader(p, f)
+        GLES20.glLinkProgram(p)
+        val status = IntArray(1)
+        GLES20.glGetProgramiv(p, GLES20.GL_LINK_STATUS, status, 0)
+        check(status[0] == GLES20.GL_TRUE) { "Program link failed: ${GLES20.glGetProgramInfoLog(p)}" }
+        return p
+    }
+
+    private fun compile(type: Int, src: String): Int {
+        val shader = GLES20.glCreateShader(type)
+        GLES20.glShaderSource(shader, src)
+        GLES20.glCompileShader(shader)
+        val status = IntArray(1)
+        GLES20.glGetShaderiv(shader, GLES20.GL_COMPILE_STATUS, status, 0)
+        check(status[0] == GLES20.GL_TRUE) { "Shader compile failed: ${GLES20.glGetShaderInfoLog(shader)}" }
+        return shader
+    }
+
+    companion object {
+        private const val TAG = "StabProcessor"
+        private const val EGL_RECORDABLE_ANDROID = 0x3142
+
+        private val QUAD = floatArrayOf(
+            -1f, -1f, 0f, 0f,
+             1f, -1f, 1f, 0f,
+            -1f,  1f, 0f, 1f,
+             1f,  1f, 1f, 1f
+        )
+
+        private const val VERTEX_SHADER = """
+            attribute vec4 aPosition;
+            attribute vec4 aTexCoord;
+            uniform mat4 uSTMatrix;
+            uniform mat4 uWarpMatrix;
+            varying vec2 vTex;
+            void main() {
+                gl_Position = aPosition;
+                vec4 warped = uWarpMatrix * vec4(aTexCoord.xy, 0.0, 1.0);
+                vTex = (uSTMatrix * vec4(warped.xy, 0.0, 1.0)).xy;
+            }
+        """
+
+        private const val FRAG_SHADER_PLAIN = """
+            #extension GL_OES_EGL_image_external : require
+            precision mediump float;
+            uniform samplerExternalOES sTexture;
+            uniform int uTonemap;
+            varying vec2 vTex;
+            void main() {
+                gl_FragColor = texture2D(sTexture, vTex);
+            }
+        """
+
+        private const val FRAG_SHADER_HLG = """
+            #extension GL_OES_EGL_image_external : require
+            precision highp float;
+            uniform samplerExternalOES sTexture;
+            uniform int uTonemap;
+            varying vec2 vTex;
+            float hlgToLinear(float e) {
+                const float a = 0.17883277;
+                const float b = 0.28466892;
+                const float c = 0.55991073;
+                if (e <= 0.5) return (e * e) / 3.0;
+                return (exp((e - c) / a) + b) / 12.0;
+            }
+            void main() {
+                vec4 s = texture2D(sTexture, vTex);
+                if (uTonemap == 1) {
+                    vec3 lin = vec3(hlgToLinear(s.r), hlgToLinear(s.g), hlgToLinear(s.b));
+                    vec3 mapped = lin / (lin + vec3(1.0));
+                    vec3 srgb = pow(mapped, vec3(1.0 / 2.2));
+                    gl_FragColor = vec4(srgb, 1.0);
+                } else {
+                    gl_FragColor = s;
+                }
+            }
+        """
+    }
+}

@@ -63,6 +63,7 @@ data class MainUiState(
     val trackingTargetY: Float = 0f,
     val trackingRegionSize: Float = 0.15f,
     val trackingOccluded: Boolean = false,
+    val liveStabilization: Boolean = false,
     val moduleStatuses: Map<String, String> = emptyMap()
 )
 
@@ -77,39 +78,14 @@ class MainViewModel @Inject constructor(
     private val trackingModule: TrackingFeatureModule,
     private val sensorPlatform: SensorPlatform,
     private val configStore: ConfigStore,
-    private val replayModule: ReplayFeatureModule,
-    private val stabilizeModule: com.gateshot.processing.stabilize.StabilizeModule
+    private val replayModule: ReplayFeatureModule
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(MainUiState())
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
 
-    // Offline video stabilization status (observed by the gallery).
-    val stabilizeRunning: StateFlow<Boolean> = stabilizeModule.running
-    val stabilizeProgress: StateFlow<Float> = stabilizeModule.progress
     private val _galleryRefresh = MutableStateFlow(0)
     val galleryRefresh: StateFlow<Int> = _galleryRefresh.asStateFlow()
-
-    /** Stabilize a recorded clip offline (gyro + optical-residual hybrid). */
-    fun stabilizeVideo(filePath: String) {
-        if (filePath.isEmpty()) return
-        viewModelScope.launch {
-            val resp = endpointRegistry.call<
-                com.gateshot.processing.stabilize.StabilizeRequest,
-                com.gateshot.processing.stabilize.StabilizeResult>(
-                "process/stabilize/run",
-                com.gateshot.processing.stabilize.StabilizeRequest(clipPath = filePath)
-            )
-            val data = resp.dataOrNull()
-            if (data != null) {
-                android.util.Log.i("Stabilize",
-                    "Done: ${data.outputPath} frames=${data.frames} sync=${data.syncOffsetMs}ms " +
-                    "R2=(${data.r2x},${data.r2y}) optical=${data.fellBackToOptical} in ${data.elapsedMs}ms")
-            } else {
-                android.util.Log.e("Stabilize", "Failed: $resp")
-            }
-        }
-    }
 
     init {
         android.util.Log.e("GateShot", "MainViewModel INIT — camera state: ${cameraXPlatform.state.value}")
@@ -130,11 +106,6 @@ class MainViewModel @Inject constructor(
             cameraXPlatform.isRecording.collect { recording ->
                 _uiState.update { it.copy(isRecording = recording) }
             }
-        }
-
-        // Refresh the gallery when a stabilized clip is produced.
-        eventBus.collect<AppEvent.VideoStabilizationCompleted>(viewModelScope) {
-            _galleryRefresh.update { it + 1 }
         }
 
         // Observe camera events
@@ -292,6 +263,19 @@ class MainViewModel @Inject constructor(
                 else -> EisMode.STANDARD
             }
         ))
+        // Our own real-time EIS (GL warp). Set the flag before bind so open()
+        // routes the camera through the stabilization effect from the start.
+        val liveStab = loadSettingBool("video", "live_stab", false)
+        cameraXPlatform.setLiveStabilization(liveStab, loadSettingFloat("video", "live_stab_strength", 1f))
+        _uiState.update { it.copy(liveStabilization = liveStab) }
+    }
+
+    /** Toggle our real-time electronic stabilization (preview + recording). */
+    fun toggleLiveStabilization() {
+        val enabled = !_uiState.value.liveStabilization
+        saveSetting("video", "live_stab", enabled)
+        cameraXPlatform.setLiveStabilization(enabled, loadSettingFloat("video", "live_stab_strength", 1f))
+        _uiState.update { it.copy(liveStabilization = enabled) }
     }
 
     /**

@@ -63,6 +63,7 @@ fun ViewfinderScreen(
     onAddTriggerZone: (Float, Float) -> Unit,
     onClearTriggerZones: () -> Unit,
     onTrackingToggle: () -> Unit,
+    onStabilizationToggle: () -> Unit,
     onNativeCaptured: (absolutePath: String, isVideo: Boolean) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -238,6 +239,23 @@ fun ViewfinderScreen(
                         text = if (uiState.trackingEnabled) "AF" else "AF",
                         color = Color.White,
                         fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+
+            // Live stabilization toggle (our own real-time EIS on preview + record).
+            Surface(
+                onClick = onStabilizationToggle,
+                shape = RoundedCornerShape(8.dp),
+                color = if (uiState.liveStabilization) Color(0xFF4FC3F7) else Color(0x88000000),
+                modifier = Modifier.size(48.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Text(
+                        text = "STAB",
+                        color = Color.White,
+                        fontSize = 12.sp,
                         fontWeight = FontWeight.Bold
                     )
                 }

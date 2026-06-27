@@ -25,6 +25,7 @@ android {
 
 dependencies {
     implementation(project(":core"))
+    implementation(project(":processing:stabilize"))
     implementation(libs.core.ktx)
     implementation(libs.coroutines.core)
     implementation(libs.camerax.core)
