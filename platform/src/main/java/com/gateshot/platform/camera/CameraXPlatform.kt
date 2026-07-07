@@ -137,6 +137,9 @@ class CameraXPlatform @Inject constructor(
         liveStabilizer, cropFrac = STAB_CROP, cutoffHz = 0.8f, enableResidual = STAB_OPTICAL_RESIDUAL
     )
     private var stabProcessor: StabilizingSurfaceProcessor? = null
+    /** Digital-zoom ratio the live-stab magnitude currently corresponds to, so a
+     *  zoom change rescales the (possibly calibrated) mapping instead of discarding it. */
+    private var stabZoom: Float = 1f
     private var stabGyroListener: android.hardware.SensorEventListener? = null
     // Main-thread scope used to rebind the camera when stabilization is toggled.
     private val cameraScope = CoroutineScope(Dispatchers.Main.immediate + SupervisorJob())
@@ -537,6 +540,7 @@ class CameraXPlatform @Inject constructor(
     // ─────────────────────────────────────────────────────────────────────────
 
     override fun setZoom(ratio: Float) {
+        android.util.Log.i("CameraXPlatform", "setZoom ratio=$ratio liveStab=$liveStabilizationEnabled")
         camera?.cameraControl?.setZoomRatio(ratio)
         applyTelephotoUpsideDownFix(ratio)
     }
@@ -682,6 +686,31 @@ class CameraXPlatform @Inject constructor(
      */
     private fun rebuildStabCalibration() {
         val strength = liveStabStrength
+        val zoom = currentZoomRatio.coerceAtLeast(1f)
+        // Lower cutoff = stronger smoothing. Map strength∈[0,1] → cutoff [1.4 .. 0.4] Hz.
+        val cutoff = 1.4f - 1.0f * strength
+
+        // If the OnlineCalibrator already found a data-driven axis/sign/scale, do
+        // NOT recompute from intrinsics — that would silently revert the learned
+        // mapping on every zoom change (the original zoom-reverts-calibration bug).
+        // Digital zoom scales the mapping linearly, so just rescale the current
+        // magnitude by the zoom ratio and keep the calibrated axis/sign. The
+        // measured magnitude is also the trustworthy one at tele, where the
+        // logical camera can report the main-lens focal after the periscope engages.
+        if (onlineCalibrator.hasFit()) {
+            val cur = liveStabilizer.config()
+            val scale = if (stabZoom > 0f) zoom / stabZoom else 1f
+            liveStabilizer.updateConfig(
+                cur.copy(cutoffHz = cutoff, cropFrac = STAB_CROP,
+                    sx = cur.sx * scale, sy = cur.sy * scale)
+            )
+            stabZoom = zoom
+            stabProcessor?.cropFrac = STAB_CROP
+            android.util.Log.i("CameraXPlatform",
+                "Stab rescaled (calibrated): zoom=$zoom sx=${cur.sx * scale} sy=${cur.sy * scale} cutoff=${cutoff}Hz")
+            return
+        }
+
         try {
             val id = rawCamera2Id ?: Camera2CameraInfo.from(camera!!.cameraInfo).cameraId
             val cm = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
@@ -692,17 +721,17 @@ class CameraXPlatform @Inject constructor(
                 android.util.Log.w("CameraXPlatform", "No intrinsics for stab calibration; using defaults")
                 return
             }
-            val zoom = currentZoomRatio.coerceAtLeast(1f)
             // rad → fraction of frame width/height (per 1x), ×zoom for digital zoom.
             val sxBase = focal / physical.width * zoom
             val syBase = focal / physical.height * zoom
-            // Lower cutoff = stronger smoothing. Map strength∈[0,1] → cutoff [1.4 .. 0.4] Hz.
-            val cutoff = 1.4f - 1.0f * strength
+            // Roll is left off until the data-driven calibrator has verified its
+            // sign — a wrong-signed roll correction is very visible at tele.
             val cfg = com.gateshot.processing.stabilize.LiveStabilizer.fromIntrinsics(
                 fxPx = sxBase, fyPx = syBase, width = 1, height = 1,
-                cropFrac = STAB_CROP, cutoffHz = cutoff,
+                cropFrac = STAB_CROP, cutoffHz = cutoff, enableRoll = false,
             )
             liveStabilizer.updateConfig(cfg)
+            stabZoom = zoom
             stabProcessor?.cropFrac = STAB_CROP
             android.util.Log.i("CameraXPlatform",
                 "Stab calibrated: focal=${focal}mm sensor=${physical.width}x${physical.height}mm " +

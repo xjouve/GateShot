@@ -76,16 +76,32 @@ class OnlineCalibratorTest {
     }
 
     @Test
-    fun `stays in COLLECTING when there is no motion`() {
+    fun `engages the warp even with no motion to calibrate against`() {
+        // Regression test for the "fully unstabilized" bug: when the user films
+        // without deliberately waving the phone, the calibrator can't get a fit,
+        // but it must still turn the warp ON (with the intrinsic mapping) within a
+        // bounded window instead of holding the preview at identity forever.
         val base = field()
         val stab = LiveStabilizer()
         val cal = OnlineCalibrator(stab, cropFrac = 0.12f, cutoffHz = 0.8f, n = n, enableResidual = false)
+        // Fake WarpController to observe when the warp is enabled.
+        var warpActive = true
+        cal.setController(object : OnlineCalibrator.WarpController {
+            override fun setWarpActive(active: Boolean) { warpActive = active }
+        })
+        assertTrue(!warpActive, "calibrator should hold the warp at identity while measuring")
+
         var t = 0L
         repeat(80) {
             cal.onGyro(t, 0f, 0f, 0f)               // perfectly still
             cal.submitFrame(base.copyOf(), t)
             t += 5_000_000L
         }
-        assertEquals("COLLECTING", cal.state())
+
+        // Fell back to the intrinsic mapping and turned the warp on...
+        assertEquals("DONE", cal.state())
+        assertTrue(warpActive, "warp must engage after the calibration window")
+        // ...but without pretending it found a data-driven fit.
+        assertTrue(!cal.hasFit(), "no motion → no confident fit")
     }
 }

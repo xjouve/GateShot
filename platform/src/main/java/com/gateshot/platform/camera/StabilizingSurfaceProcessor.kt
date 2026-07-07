@@ -209,8 +209,11 @@ class StabilizingSurfaceProcessor(
         val corr = if (warpActive) stabilizer.correction()
             else LiveStabilizer.Correction(0f, 0f, 0f)
         if (frameCount % 60 == 0) {
+            val cfg = stabilizer.config()
+            val outs = outputs.joinToString(",") { it.output.targets.toString() }
             Log.i(TAG, "corr tx=${"%.4f".format(corr.txNorm)} ty=${"%.4f".format(corr.tyNorm)} " +
-                "active=$warpActive cal=${calibrator?.state()}")
+                "active=$warpActive cal=${calibrator?.state()} sx=${"%.3f".format(cfg.sx)} " +
+                "sy=${"%.3f".format(cfg.sy)} crop=$cropFrac outs=[$outs]")
         }
         buildWarpMatrix(corr.rollRad, corr.txNorm, corr.tyNorm)
 
@@ -303,14 +306,24 @@ class StabilizingSurfaceProcessor(
      * fixed 180° periscope flip when engaged.
      */
     private fun buildWarpMatrix(angleRad: Float, txNorm: Float, tyNorm: Float) {
-        val angleDeg = Math.toDegrees(angleRad.toDouble()).toFloat() + (if (rotate180) 180f else 0f)
+        // The periscope 180° flip is folded into the rotation below to right the
+        // upside-down tele sensor. But a 180° rotation also inverts the sign of the
+        // translation applied after it, so the SAME gyro correction pushes the
+        // opposite way at tele vs. wide — i.e. a sign that's calibrated at 1× is
+        // wrong once the periscope engages (stabilization fails exactly at tele).
+        // Pre-negate the translation under the flip so the correction direction is
+        // consistent across the wide↔tele boundary and the 1× calibration carries.
+        val flip = rotate180
+        val tx = if (flip) -txNorm else txNorm
+        val ty = if (flip) -tyNorm else tyNorm
+        val angleDeg = Math.toDegrees(angleRad.toDouble()).toFloat() + (if (flip) 180f else 0f)
         val cx = 0.5f; val cy = 0.5f
         val crop = cropFrac
         val scale = 1f - 2f * crop
         Matrix.setIdentityM(warpMatrix, 0)
         Matrix.translateM(warpMatrix, 0, cx, cy, 0f)
         Matrix.rotateM(warpMatrix, 0, -angleDeg, 0f, 0f, 1f)
-        Matrix.translateM(warpMatrix, 0, -(cx + txNorm), -(cy + tyNorm), 0f)
+        Matrix.translateM(warpMatrix, 0, -(cx + tx), -(cy + ty), 0f)
         Matrix.translateM(warpMatrix, 0, crop, crop, 0f)
         Matrix.scaleM(warpMatrix, 0, scale, scale, 1f)
     }

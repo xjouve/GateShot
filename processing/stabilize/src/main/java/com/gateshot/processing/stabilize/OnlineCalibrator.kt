@@ -115,6 +115,16 @@ class OnlineCalibrator(
     private var axX = 1; private var sxN = 0f
     private var axY = 0; private var syN = 0f
 
+    /** Total readback frames seen while COLLECTING — bounds the raw-measurement
+     *  window by wall-clock so the warp always engages (see [collect]). */
+    private var totalFrames = 0
+
+    /** True once a confident data-driven fit was applied (not the intrinsic
+     *  fallback). Lets the platform preserve the learned axis/sign across zoom
+     *  changes instead of reverting to the intrinsic default. */
+    @Volatile private var fitted = false
+    fun hasFit(): Boolean = fitted
+
     fun submitFrame(luma: FloatArray, tsNs: Long) {
         if (luma.size != n * n) return
         when (state) {
@@ -132,22 +142,51 @@ class OnlineCalibrator(
     }
 
     private fun collect(luma: FloatArray, tsNs: Long) {
+        totalFrames++
+        // Wall-clock bound on the raw-measurement window, checked on *every*
+        // readback frame. In gentle handheld filming few frames clear
+        // MIN_GYRO_STEP, so this must precede the informative-sample gating below
+        // (which early-returns on near-still frames) — otherwise the warp could
+        // stay at identity indefinitely, which was the "fully unstabilized" bug.
+        if (totalFrames >= ACTIVATE_AFTER) { fallbackDone(); return }
         val ang = angleAt(tsNs)
         val pl = prevLuma; val pa = prevAng
         prevLuma = luma; prevTs = tsNs; if (ang != null) prevAng = ang
-        if (pl == null || pa == null || ang == null) return
+        if (pl == null || pa == null || ang == null) {
+            if (dbgFrames++ % 20 == 0) {
+                val (lo, hi) = gyroRangeNs() ?: (0L to 0L)
+                Log.i(TAG, "COLLECT seeding ang=${ang != null} gyroRange=[$lo..$hi] frameTs=$tsNs " +
+                    "inRange=${tsNs in lo..hi}")
+            }
+            return
+        }
 
-        val r = motion(pl, luma) ?: return
+        val cr = corr.correlate(pl, luma)
         val da = DoubleArray(3) { ang[it] - pa[it] }
-        // Require real rotation this frame, else the sample is uninformative.
-        if (abs(da[0]) + abs(da[1]) + abs(da[2]) < MIN_GYRO_STEP) return
+        val gmot = abs(da[0]) + abs(da[1]) + abs(da[2])
+        val tooBig = abs(cr[0]) > MAX_STEP * n || abs(cr[1]) > MAX_STEP * n
+        if (dbgFrames++ % 20 == 0) {
+            val (lo, hi) = gyroRangeNs() ?: (0L to 0L)
+            Log.i(TAG, "COLLECT frames=$dbgFrames samples=${dA.size} peak=${"%.5f".format(cr[2])} " +
+                "mdx=${"%.2f".format(cr[0])} mdy=${"%.2f".format(cr[1])} gyroMot=${"%.4f".format(gmot)} " +
+                "clockInRange=${tsNs in lo..hi} tooBig=$tooBig")
+        }
 
-        dA.add(da); mdx.add(r[0].toDouble()); mdy.add(r[1].toDouble())
-        rawEnergy += r[0] * r[0] + r[1].toDouble() * r[1]
+        if (cr[2] < MIN_PEAK) return
+        if (tooBig) return
+        // Require real rotation this frame, else the sample is uninformative.
+        if (gmot < MIN_GYRO_STEP) return
+
+        dA.add(da); mdx.add(cr[0].toDouble()); mdy.add(cr[1].toDouble())
+        rawEnergy += cr[0] * cr[0] + cr[1].toDouble() * cr[1]
         collectFrames++
 
         if (dA.size >= MIN_SAMPLES) tryFit()
-        if (collectFrames > COLLECT_TIMEOUT) fallbackDone()
+    }
+
+    private var dbgFrames = 0
+    private fun gyroRangeNs(): Pair<Long, Long>? = synchronized(gLock) {
+        if (gHist.isEmpty()) null else gHist.first()[0].toLong() to gHist.last()[0].toLong()
     }
 
     private fun tryFit() {
@@ -158,6 +197,7 @@ class OnlineCalibrator(
         axX = ax0; sxN = (s0 / n).toFloat()
         axY = ax1; syN = (s1 / n).toFloat()
         applyConfig(flip = false)
+        fitted = true
 
         Log.i(TAG, "calibrated axX=$axX sx=$sxN (r2=$r20) axY=$axY sy=$syN (r2=$r21) " +
             "from ${dA.size} samples")
@@ -223,11 +263,34 @@ class OnlineCalibrator(
     }
 
     private fun fallbackDone() {
-        // Couldn't get a confident fit (too little motion). Leave the intrinsic
-        // guess in place, turn the warp on, and let the residual tracker run.
-        Log.w(TAG, "calibration timed out; using intrinsic mapping")
+        // The raw-measurement window closed without a confident fit (not enough
+        // clean rotational motion). Rather than leave the preview unstabilized,
+        // engage the intrinsic mapping (already set on the stabilizer by the
+        // platform) and let the residual tracker refine from there.
+        Log.w(TAG, "calibration window closed after $totalFrames frames; using intrinsic mapping")
         controller?.setWarpActive(true)
-        finishCalibration()
+        // If we gathered a usable motion baseline (motion was present but the
+        // per-axis fit never became confident), still verify the intrinsic
+        // mapping's overall sign against that baseline and flip it once if the
+        // warp isn't actually reducing motion — cheap insurance against a wrong
+        // hardcoded sign amplifying shake. With little/no baseline there's nothing
+        // to verify against (and little shake to get wrong), so just accept it.
+        if (dA.size >= MIN_VERIFY_BASELINE && rawEnergy > 0.0) {
+            seedResultFromConfig()
+            verifyResidual = 0.0; verifyMotion = 0.0; verifyFrames = 0; signFlipped = false
+            prevLuma = null; prevAng = null
+            state = State.VERIFYING
+        } else {
+            finishCalibration()
+        }
+    }
+
+    /** Seed the fitted-result fields from the stabilizer's current (intrinsic)
+     *  config so [verify]'s sign-flip operates on the intrinsic mapping. */
+    private fun seedResultFromConfig() {
+        val c = stabilizer.config()
+        axX = c.axX; sxN = c.sx
+        axY = c.axY; syN = c.sy
     }
 
     /** Per-axis least-squares fit of [meas] onto each gyro-axis delta column.
@@ -256,7 +319,7 @@ class OnlineCalibrator(
         state = State.COLLECTING
         prevLuma = null; prevAng = null
         dA.clear(); mdx.clear(); mdy.clear()
-        rawEnergy = 0.0; collectFrames = 0
+        rawEnergy = 0.0; collectFrames = 0; totalFrames = 0; fitted = false
         verifyResidual = 0.0; verifyMotion = 0.0; verifyFrames = 0; signFlipped = false
         residual?.reset()
         controller?.setWarpActive(false)
@@ -267,13 +330,15 @@ class OnlineCalibrator(
 
     companion object {
         private const val TAG = "OnlineCalibrator"
-        private const val MIN_SAMPLES = 40
-        private const val COLLECT_TIMEOUT = 600     // readback frames (~60 s @10 Hz) before giving up
-        private const val MIN_GYRO_STEP = 0.0015    // rad/frame — ignore near-still frames
+        private const val MIN_SAMPLES = 20          // enough clean samples to fit axis+sign
+        private const val ACTIVATE_AFTER = 45       // readback frames (~2-4.5 s) before engaging
+                                                    // the intrinsic mapping regardless of motion
+        private const val MIN_GYRO_STEP = 0.0008    // rad/frame — ignore near-still frames
         private const val MAX_STEP = 0.05f          // reject phase-corr mismatches
         private const val MIN_PEAK = 1e-4f
         private const val R2_MIN = 0.5
         private const val VERIFY_FRAMES = 40
         private const val IMPROVE_RATIO = 0.9       // residual must be < 90% of baseline to pass
+        private const val MIN_VERIFY_BASELINE = 8   // samples needed to sign-verify the fallback
     }
 }
