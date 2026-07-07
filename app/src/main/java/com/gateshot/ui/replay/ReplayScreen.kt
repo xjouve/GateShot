@@ -22,6 +22,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Accessibility
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ChevronLeft
@@ -40,6 +41,7 @@ import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.Vibration
 import androidx.compose.material.icons.filled.ViewColumn
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material3.Icon
@@ -75,12 +77,17 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.withFrameNanos
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
+import com.gateshot.processing.stabilize.PlaybackStabilizer
 import com.gateshot.ui.MainViewModel
+import com.gateshot.videoenhance.AutoColorAnalyzer
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.io.File
 
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
@@ -136,6 +143,27 @@ fun ReplayScreen(
         }
     }
 
+    // Supplementary stabilization (per-clip, analyzed once, warped at playback)
+    val enhanceScope = rememberCoroutineScope()
+    var stabEnabled by remember { mutableStateOf(false) }
+    var stabAnalyzing by remember { mutableStateOf(false) }
+    var stabProgress by remember { mutableFloatStateOf(0f) }
+    var stabTrack by remember { mutableStateOf<PlaybackStabilizer.Track?>(null) }
+    var stabDx by remember { mutableFloatStateOf(0f) }
+    var stabDy by remember { mutableFloatStateOf(0f) }
+
+    // Automatic color correction (per-clip ColorMatrix, applied at playback)
+    var colorEnabled by remember { mutableStateOf(false) }
+    var colorAnalyzing by remember { mutableStateOf(false) }
+    var colorMatrix by remember { mutableStateOf<android.graphics.ColorMatrix?>(null) }
+
+    // Both are per-clip — reset when the loaded video changes
+    LaunchedEffect(videoFile) {
+        stabEnabled = false; stabTrack = null; stabAnalyzing = false
+        colorEnabled = false; colorMatrix = null; colorAnalyzing = false
+        stabDx = 0f; stabDy = 0f
+    }
+
     // Create ExoPlayer instance for the reference (main) video
     val exoPlayer = remember {
         ExoPlayer.Builder(context).build().apply {
@@ -150,6 +178,22 @@ fun ReplayScreen(
             repeatMode = Player.REPEAT_MODE_OFF
             playWhenReady = false
             volume = 0f  // Mute overlay — only reference audio plays
+        }
+    }
+
+    // Per-display-frame stabilization correction lookup
+    LaunchedEffect(stabEnabled, stabTrack) {
+        val track = stabTrack
+        if (stabEnabled && track != null) {
+            while (true) {
+                withFrameNanos { }
+                val (dx, dy) = track.correctionAt(exoPlayer.currentPosition)
+                stabDx = dx
+                stabDy = dy
+            }
+        } else {
+            stabDx = 0f
+            stabDy = 0f
         }
     }
 
@@ -397,19 +441,65 @@ fun ReplayScreen(
         ) {
             if (videoFile != null && videoFile.exists()) {
                 // Reference (main) video — always fully opaque, on bottom.
+                // TextureView-backed so the stabilization warp and color
+                // render effect actually reach the pixels (a SurfaceView
+                // ignores both — ticket 020).
                 AndroidView(
                     factory = { ctx ->
-                        PlayerView(ctx).apply {
-                            player = exoPlayer
-                            useController = false
-                            layoutParams = ViewGroup.LayoutParams(
-                                ViewGroup.LayoutParams.MATCH_PARENT,
-                                ViewGroup.LayoutParams.MATCH_PARENT
-                            )
-                        }
+                        (android.view.LayoutInflater.from(ctx)
+                            .inflate(com.gateshot.R.layout.stabilized_player_view, null) as PlayerView)
+                            .apply {
+                                player = exoPlayer
+                                layoutParams = ViewGroup.LayoutParams(
+                                    ViewGroup.LayoutParams.MATCH_PARENT,
+                                    ViewGroup.LayoutParams.MATCH_PARENT
+                                )
+                            }
                     },
-                    modifier = Modifier.fillMaxSize()
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clipToBounds()
+                        .graphicsLayer {
+                            if (stabEnabled && stabTrack != null) {
+                                val crop = stabTrack?.cropFactor ?: 1f
+                                scaleX = crop
+                                scaleY = crop
+                                translationX = stabDx * size.width
+                                translationY = stabDy * size.height
+                            }
+                            val matrix = colorMatrix
+                            if (colorEnabled && matrix != null) {
+                                renderEffect = android.graphics.RenderEffect
+                                    .createColorFilterEffect(
+                                        android.graphics.ColorMatrixColorFilter(matrix)
+                                    ).asComposeRenderEffect()
+                            }
+                        }
                 )
+
+                // Stabilization status badge
+                if (stabAnalyzing || (stabEnabled && stabTrack != null)) {
+                    Surface(
+                        shape = RoundedCornerShape(4.dp),
+                        color = Color(0xCC000000),
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .padding(8.dp)
+                    ) {
+                        Text(
+                            when {
+                                stabAnalyzing -> "Analyzing motion… ${(stabProgress * 100).toInt()}%"
+                                else -> {
+                                    val red = ((stabTrack?.jitterReduction ?: 0f) * 100).toInt()
+                                    if (red > 0) "Stabilized (jitter −$red%)" else "Stabilized"
+                                }
+                            },
+                            color = Color(0xFF66BB6A),
+                            fontSize = 10.sp,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                        )
+                    }
+                }
 
                 // Overlay layer — composited on top based on overlay mode
                 if (overlayClipUri != null) {
@@ -669,10 +759,82 @@ fun ReplayScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Filled.Speed, "Speed", tint = Color.Gray, modifier = Modifier.size(16.dp))
-                Spacer(modifier = Modifier.width(4.dp))
-                Text("${playbackSpeed}x", color = Color.White, fontSize = 12.sp)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                // Supplementary stabilization toggle (analyzes on first use)
+                Surface(
+                    onClick = {
+                        val file = videoFile ?: return@Surface
+                        when {
+                            stabAnalyzing -> { /* analysis running */ }
+                            stabEnabled -> stabEnabled = false
+                            stabTrack != null -> stabEnabled = true
+                            else -> {
+                                stabAnalyzing = true
+                                stabProgress = 0f
+                                enhanceScope.launch {
+                                    val track = PlaybackStabilizer()
+                                        .analyze(file.absolutePath) { stabProgress = it }
+                                    stabTrack = track
+                                    stabAnalyzing = false
+                                    stabEnabled = track != null
+                                }
+                            }
+                        }
+                    },
+                    shape = RoundedCornerShape(8.dp),
+                    color = when {
+                        stabAnalyzing -> Color(0xFF666633)
+                        stabEnabled -> MaterialTheme.colorScheme.primary
+                        else -> Color(0xFF333333)
+                    },
+                    modifier = Modifier.size(width = 48.dp, height = 32.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            Icons.Filled.Vibration, "Stabilize",
+                            tint = if (stabEnabled) Color.Black else Color.White,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+                // Auto color correction toggle (analyzes on first use)
+                Surface(
+                    onClick = {
+                        val file = videoFile ?: return@Surface
+                        when {
+                            colorAnalyzing -> { /* analysis running */ }
+                            colorEnabled -> colorEnabled = false
+                            colorMatrix != null -> colorEnabled = true
+                            else -> {
+                                colorAnalyzing = true
+                                enhanceScope.launch {
+                                    val matrix = AutoColorAnalyzer().analyze(file.absolutePath)
+                                    colorMatrix = matrix
+                                    colorAnalyzing = false
+                                    colorEnabled = matrix != null
+                                }
+                            }
+                        }
+                    },
+                    shape = RoundedCornerShape(8.dp),
+                    color = when {
+                        colorAnalyzing -> Color(0xFF666633)
+                        colorEnabled -> MaterialTheme.colorScheme.primary
+                        else -> Color(0xFF333333)
+                    },
+                    modifier = Modifier.size(width = 48.dp, height = 32.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            Icons.Filled.AutoFixHigh, "Auto color",
+                            tint = if (colorEnabled) Color.Black else Color.White,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf(0.25f, 0.5f, 1.0f, 2.0f).forEach { speed ->
