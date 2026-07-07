@@ -40,43 +40,30 @@ data class OnboardingPage(
 val onboardingPages = listOf(
     OnboardingPage(
         title = "Welcome to GateShot",
-        description = "The ski racing camera and coaching app for the Oppo Find X9 Pro.\n\nBuilt for photographers, videographers, and coaches — from club training to World Cup events.",
+        description = "Ski racing video analysis for coaches and athletes.\n\nFilm your runs with your phone's camera app — its stabilization is unbeatable — then bring the footage here to break it down.",
         icon = "🎿"
     ),
     OnboardingPage(
-        title = "Discipline Presets",
-        description = "Tap a preset on the left side of the viewfinder. Each one configures shutter speed, burst, AF, exposure, and stabilization for the specific situation.",
-        icon = "🏔️",
-        tip = "Volume Down cycles presets — no need to touch the screen"
+        title = "Film with the Camera App",
+        description = "Record runs in your phone's native camera app as usual — zoom, teleconverter, stabilization all work at their best there.\n\nThen import the clips into GateShot's Library.",
+        icon = "📹",
+        tip = "Or share a video straight from your gallery to GateShot"
     ),
     OnboardingPage(
-        title = "Hasselblad Teleconverter",
-        description = "Attach the magnetic teleconverter to get 10x optical zoom (230mm). GateShot auto-detects it and enables lens deconvolution for maximum sharpness.",
-        icon = "🔭",
-        tip = "At slalom distance (3-8m), the native 5x telephoto is usually enough"
+        title = "Replay & Compare",
+        description = "Slow motion, frame stepping, and run-over-run comparison: ghost overlay, wipe, and split-screen — synchronized gate by gate.",
+        icon = "🔁",
+        tip = "Mark gates while reviewing to unlock timing analysis"
     ),
     OnboardingPage(
-        title = "Gate-Zone Trigger",
-        description = "Long-press the viewfinder to place a trigger zone on a gate. GateShot auto-fires a burst when a racer enters the zone.\n\nDouble-tap to clear all zones.",
-        icon = "🎯",
-        tip = "Place zones slightly ahead of the gate for perfect timing"
+        title = "Coach Tools",
+        description = "Draw on frames, record voice-over feedback, track athletes across sessions, and generate session reports.\n\nGlove-friendly controls, built for the slope.",
+        icon = "📋"
     ),
     OnboardingPage(
-        title = "Racer Tracking",
-        description = "Tap the AF button to enable tracking. GateShot locks onto the fastest-moving subject (the racer) and ignores officials.\n\nThe tracker holds focus even when the racer goes behind a gate panel.",
-        icon = "🔒",
-        tip = "Green bracket = locked. Orange = holding through occlusion."
-    ),
-    OnboardingPage(
-        title = "Coach Mode",
-        description = "Tap the Coach toggle to unlock replay, overlay, timing, and annotation tools.\n\nCapture a blank reference panorama before training to enable perspective-corrected run overlays.",
-        icon = "📋",
-        tip = "Replay, Annotate, and Settings tabs appear in Coach mode"
-    ),
-    OnboardingPage(
-        title = "Ready to Shoot",
-        description = "Volume Up = Shutter\nVolume Down = Next Preset\n\nGlove-friendly buttons, snow-aware exposure, pre-capture buffer — everything you need on the slope.\n\nGood luck out there! 🏁",
-        icon = "📸"
+        title = "Ready to Analyze",
+        description = "Start a session, import today's runs, and dive in.\n\nGood luck out there! 🏁",
+        icon = "🏆"
     )
 )
 

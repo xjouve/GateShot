@@ -1,33 +1,16 @@
 package com.gateshot.ui
 
-import androidx.camera.view.PreviewView
-import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.gateshot.core.api.EndpointRegistry
 import com.gateshot.core.config.ConfigStore
 import com.gateshot.core.event.AppEvent
 import com.gateshot.core.event.EventBus
-import com.gateshot.core.event.collect
 import com.gateshot.core.mode.AppMode
 import com.gateshot.core.mode.ModeManager
-import com.gateshot.capture.tracking.TrackingFeatureModule
-import com.gateshot.capture.trigger.TriggerFeatureModule
-import com.gateshot.capture.trigger.TriggerZone
-import com.gateshot.capture.trigger.ZoneAddRequest
 import com.gateshot.coaching.replay.ReplayFeatureModule
 import com.gateshot.coaching.replay.ReplayState
 import dagger.hilt.android.qualifiers.ApplicationContext
-import com.gateshot.platform.camera.CameraAfMode
-import com.gateshot.platform.camera.CameraConfig
-import com.gateshot.platform.camera.CameraLens
-import com.gateshot.platform.camera.CameraXPlatform
-import com.gateshot.platform.camera.EisMode
-import com.gateshot.platform.camera.HdrProfile
-import com.gateshot.platform.camera.ImageOutputFormat
-import com.gateshot.platform.camera.OisMode
-import com.gateshot.platform.camera.StabilizationConfig
-import com.gateshot.platform.sensor.SensorPlatform
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -37,33 +20,11 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 data class MainUiState(
-    val mode: AppMode = AppMode.SHOOT,
-    val currentPreset: String = "race",
-    val presetDisplayName: String = "Race",
+    val mode: AppMode = AppMode.COACH,
     val sessionName: String? = null,
     val sessionDiscipline: String? = null,
     val activeRunNumber: Int = 0,
-    val isRecording: Boolean = false,
-    val zoomLevel: Float = 1f,
-    val batteryLevel: Int = 100,
-    val batteryTemp: Float = 20f,
     val storageRemainingGb: Float = 400f,
-    val shotCount: Int = 0,
-    val cameraReady: Boolean = false,
-    val lensAttached: Boolean = false,
-    val snowCoveragePercent: Float = 0f,
-    val currentEvBias: Float = 0f,
-    val isFlatLight: Boolean = false,
-    val bufferFrameCount: Int = 0,
-    val triggerZones: List<TriggerZone> = emptyList(),
-    val triggerArmed: Boolean = false,
-    val trackingEnabled: Boolean = false,
-    val trackingHasLock: Boolean = false,
-    val trackingTargetX: Float = 0f,
-    val trackingTargetY: Float = 0f,
-    val trackingRegionSize: Float = 0.15f,
-    val trackingOccluded: Boolean = false,
-    val liveStabilization: Boolean = false,
     val moduleStatuses: Map<String, String> = emptyMap()
 )
 
@@ -73,10 +34,6 @@ class MainViewModel @Inject constructor(
     private val modeManager: ModeManager,
     private val eventBus: EventBus,
     val endpointRegistry: EndpointRegistry,
-    val cameraXPlatform: CameraXPlatform,
-    private val triggerModule: TriggerFeatureModule,
-    private val trackingModule: TrackingFeatureModule,
-    private val sensorPlatform: SensorPlatform,
     private val configStore: ConfigStore,
     private val replayModule: ReplayFeatureModule
 ) : ViewModel() {
@@ -88,446 +45,24 @@ class MainViewModel @Inject constructor(
     val galleryRefresh: StateFlow<Int> = _galleryRefresh.asStateFlow()
 
     init {
-        android.util.Log.e("GateShot", "MainViewModel INIT — camera state: ${cameraXPlatform.state.value}")
-        // Observe mode changes — auto-switch preset to match
         viewModelScope.launch {
             modeManager.currentMode.collect { mode ->
                 _uiState.update { it.copy(mode = mode) }
-                // COACH mode → Video preset, SHOOT mode → Race preset
-                val targetPreset = if (mode == AppMode.COACH) "video" else "race"
-                if (_uiState.value.currentPreset != targetPreset) {
-                    onPresetSelected(targetPreset)
-                }
             }
         }
 
-        // Observe recording state
-        viewModelScope.launch {
-            cameraXPlatform.isRecording.collect { recording ->
-                _uiState.update { it.copy(isRecording = recording) }
-            }
-        }
-
-        // Observe camera events
-        eventBus.collect<AppEvent.CameraOpened>(viewModelScope) {
-            _uiState.update { it.copy(cameraReady = true) }
-        }
-        eventBus.collect<AppEvent.CameraClosed>(viewModelScope) {
-            _uiState.update { it.copy(cameraReady = false) }
-        }
-        eventBus.collect<AppEvent.LensDetected>(viewModelScope) {
-            _uiState.update { it.copy(lensAttached = true) }
-        }
-        eventBus.collect<AppEvent.LensRemoved>(viewModelScope) {
-            _uiState.update { it.copy(lensAttached = false) }
-        }
-        eventBus.collect<AppEvent.PresetApplied>(viewModelScope) { event ->
-            if (event.presetName == "__cycle_next__") {
-                cyclePreset()
-            } else {
-                val displayName = com.gateshot.ui.components.PRESETS
-                    .firstOrNull { it.id == event.presetName }?.displayName ?: event.presetName
-                // Show actual EV being applied (user override if snow comp is off)
-                val snowCompOn = loadSettingBool("exposure", "snow_compensation", true)
-                val actualEv = if (snowCompOn) {
-                    // Snow module will update dynamically
-                    _uiState.value.currentEvBias
-                } else {
-                    loadSettingFloat("exposure", "ev_bias", 0f)
-                }
-                _uiState.update { it.copy(
-                    currentPreset = event.presetName,
-                    presetDisplayName = displayName,
-                    currentEvBias = actualEv
-                ) }
-            }
-        }
-        eventBus.collect<AppEvent.BurstCompleted>(viewModelScope) { event ->
-            _uiState.update { it.copy(shotCount = it.shotCount + event.frameCount) }
-        }
-        // Poll battery, storage, and snow status every 10 seconds
+        // Poll storage every 10 seconds (imported clips are copied into app
+        // storage, so free space is worth surfacing)
         viewModelScope.launch {
             while (true) {
-                val battLevel = sensorPlatform.getBatteryLevel()
-                val battTemp = sensorPlatform.getBatteryTemperature() ?: 20f
-
-                // Real storage remaining
                 val storageDir = appContext.getExternalFilesDir(null)
                 val storageGb = if (storageDir != null) {
                     val stat = android.os.StatFs(storageDir.absolutePath)
                     (stat.availableBlocksLong * stat.blockSizeLong) / (1024.0 * 1024 * 1024)
                 } else 0.0
-
-                _uiState.update {
-                    it.copy(
-                        batteryLevel = battLevel,
-                        batteryTemp = battTemp,
-                        storageRemainingGb = storageGb.toFloat()
-                    )
-                }
+                _uiState.update { it.copy(storageRemainingGb = storageGb.toFloat()) }
                 kotlinx.coroutines.delay(10_000)
             }
-        }
-
-        // Observe snow exposure analysis
-        eventBus.collect<AppEvent.ExposureAdjusted>(viewModelScope) { event ->
-            val snowCompOn = loadSettingBool("exposure", "snow_compensation", true)
-
-            // Only update EV indicator from snow module when snow comp is on.
-            // When off, the user's manual setting controls the indicator.
-            val evToShow = if (snowCompOn) {
-                event.evBias
-            } else {
-                loadSettingFloat("exposure", "ev_bias", 0f)
-            }
-
-            val snowMatch = Regex("snow=(\\d+)%").find(event.reason)
-            val snowPct = snowMatch?.groupValues?.get(1)?.toFloatOrNull()?.div(100f)
-            val isFlatLight = snowCompOn && event.reason.contains("FLAT", ignoreCase = true)
-
-            _uiState.update {
-                it.copy(
-                    currentEvBias = evToShow,
-                    snowCoveragePercent = snowPct ?: it.snowCoveragePercent,
-                    isFlatLight = isFlatLight
-                )
-            }
-        }
-
-        // Observe trigger zones
-        viewModelScope.launch {
-            triggerModule.zones.collect { zones ->
-                _uiState.update { it.copy(triggerZones = zones, triggerArmed = zones.isNotEmpty()) }
-            }
-        }
-
-        // Observe racer tracking state
-        viewModelScope.launch {
-            trackingModule.trackingState.collect { state ->
-                _uiState.update {
-                    it.copy(
-                        trackingEnabled = state.enabled,
-                        trackingHasLock = state.hasLock,
-                        trackingTargetX = state.targetX,
-                        trackingTargetY = state.targetY,
-                        trackingRegionSize = state.regionSize,
-                        trackingOccluded = state.isOccluded
-                    )
-                }
-            }
-        }
-    }
-
-    fun bindCameraPreview(previewView: PreviewView, lifecycleOwner: LifecycleOwner) {
-        cameraXPlatform.bindPreview(previewView, lifecycleOwner)
-        // Auto-open camera after binding, then restore zoom level and push
-        // every persisted setting into the live camera so the user's last
-        // session is reproduced (otherwise prefs were ignored at startup).
-        viewModelScope.launch {
-            // Pre-seed bind-time state from prefs *before* open(). Settings
-            // like EIS/OIS mode must be applied to the platform's internal
-            // `activeStabilization` before the first bind, otherwise the
-            // initial CameraX session uses the default (EIS=OFF) and the
-            // post-open replay is blocked from rebinding by the
-            // pushingPersistedSettings guard — leaving the session stuck at
-            // the defaults until the user manually toggles a setting.
-            preloadStabilizationFromPrefs()
-
-            cameraXPlatform.open(buildCameraConfigFromPrefs())
-            pushAllPersistedSettingsToCamera()
-            val savedZoom = _uiState.value.zoomLevel
-            if (savedZoom != 1f) {
-                cameraXPlatform.setZoom(savedZoom)
-            }
-        }
-    }
-
-    /**
-     * Read OIS/EIS mode from persisted prefs and push them into the camera
-     * platform's `activeStabilization` before the first bind. The platform
-     * no-ops if the camera isn't open yet (good) but stashes the config for
-     * the upcoming open() to read at session-config time.
-     */
-    private fun preloadStabilizationFromPrefs() {
-        val oisIdx = loadSettingFloat("video", "ois_mode", 1f).toInt()
-        val eisIdx = loadSettingFloat("video", "eis_mode", 0f).toInt()
-        cameraXPlatform.setStabilization(StabilizationConfig(
-            ois = when (oisIdx) {
-                0 -> OisMode.OFF
-                2 -> OisMode.MAXIMUM
-                else -> OisMode.STANDARD
-            },
-            eis = when (eisIdx) {
-                0 -> EisMode.OFF
-                2 -> EisMode.PANNING
-                else -> EisMode.STANDARD
-            }
-        ))
-        // Our own real-time EIS (GL warp). Set the flag before bind so open()
-        // routes the camera through the stabilization effect from the start.
-        val liveStab = loadSettingBool("video", "live_stab", false)
-        cameraXPlatform.setLiveStabilization(liveStab, loadSettingFloat("video", "live_stab_strength", 1f))
-        _uiState.update { it.copy(liveStabilization = liveStab) }
-    }
-
-    /** Toggle our real-time electronic stabilization (preview + recording). */
-    fun toggleLiveStabilization() {
-        val enabled = !_uiState.value.liveStabilization
-        saveSetting("video", "live_stab", enabled)
-        cameraXPlatform.setLiveStabilization(enabled, loadSettingFloat("video", "live_stab_strength", 1f))
-        _uiState.update { it.copy(liveStabilization = enabled) }
-    }
-
-    /**
-     * Build a CameraConfig from currently-persisted settings. Used both at
-     * initial bind and whenever a setting that requires rebind changes
-     * (resolution, fps, HDR, RAW, JPEG quality, output format).
-     */
-    private fun buildCameraConfigFromPrefs(): CameraConfig {
-        val width = loadSettingFloat("video", "resolution", 2160f).toInt().let { res ->
-            when (res) { 720 -> 1280; 1080 -> 1920; else -> 3840 }
-        }
-        val height = loadSettingFloat("video", "resolution", 2160f).toInt()
-        val fps = loadSettingFloat("video", "frame_rate", 30f).toInt()
-        val hdr = if (loadSettingBool("video", "hdr", false)) HdrProfile.DOLBY_VISION else HdrProfile.OFF
-        val raw = loadSettingBool("camera", "save_raw", false)
-        val heif = loadSettingBool("camera", "heif", false)
-        val quality = loadSettingFloat("camera", "jpeg_quality", 95f).toInt().coerceIn(70, 100)
-        return CameraConfig(
-            lens = CameraLens.MAIN,
-            resolution = android.util.Size(width, height),
-            frameRate = fps,
-            enableRaw = raw,
-            hdrProfile = hdr,
-            outputFormat = if (heif) ImageOutputFormat.HEIF else ImageOutputFormat.JPEG,
-            jpegQuality = quality
-        )
-    }
-
-    // Guards re-entrant rebinds. While this is true, any applyCameraSetting
-    // branch that would normally call rebindCameraFromPrefs() must be a
-    // no-op — the values are already being pushed by the in-flight rebind.
-    private var pushingPersistedSettings: Boolean = false
-
-    /**
-     * Replay every Settings-screen pref through applyCameraSetting after a
-     * fresh camera open. Without this, settings persisted between sessions
-     * would be dormant until the user re-toggles them.
-     */
-    private fun pushAllPersistedSettingsToCamera() {
-        val keys = listOf(
-            "exposure" to "snow_compensation",
-            "exposure" to "ev_bias",
-            "camera" to "manual_mode",
-            "camera" to "iso",
-            "camera" to "shutter_speed",
-            "camera" to "auto_wb",
-            "camera" to "wb_temperature",
-            "camera" to "flash",
-            "camera" to "bokeh_enabled",
-            "camera" to "nd_filter",
-            "color" to "hasselblad_enabled",
-            "video" to "ois_mode",
-            "video" to "eis_mode",
-            "video" to "log_profile",
-            "af" to "mode_index",
-            "af" to "face_priority",
-            "camera" to "extended_iso",
-            "tracking" to "hardware",
-            "vendor" to "ai_shutter",
-            "vendor" to "bracket_mode",
-            "vendor" to "mdptz_mode",
-            "vendor" to "ai_scene",
-            "vendor" to "ae_metering",
-            "vendor" to "smvr_mode",
-            "vendor" to "fast_motion",
-            "vendor" to "pro_torch",
-            "vendor" to "filter_preset",
-            "vendor" to "manual_wb_kelvin",
-            "vendor" to "ultra_hr"
-        )
-        pushingPersistedSettings = true
-        try {
-            keys.forEach { (section, key) ->
-                val value: Any? = when (key) {
-                    "snow_compensation", "manual_mode", "auto_wb", "flash",
-                    "bokeh_enabled", "hasselblad_enabled", "face_priority",
-                    "log_profile", "extended_iso", "hardware",
-                    "ai_shutter", "ai_scene", "fast_motion", "ultra_hr" ->
-                        loadSettingBool(section, key, false)
-                    else -> loadSettingFloat(section, key, Float.NaN)
-                        .takeUnless { it.isNaN() }
-                }
-                if (value != null) applyCameraSetting(section, key, value)
-            }
-        } finally {
-            pushingPersistedSettings = false
-        }
-    }
-
-    /**
-     * Re-open the camera so that CameraConfig-only settings (resolution,
-     * fps, HDR, RAW, output format, JPEG quality) take effect. Other live
-     * settings are re-pushed afterwards so toggles aren't lost on rebind.
-     */
-    private fun rebindCameraFromPrefs() {
-        viewModelScope.launch {
-            try {
-                cameraXPlatform.close()
-                // close() resets activeStabilization to default — re-seed
-                // from prefs before open() so the new session is bound with
-                // the correct EIS/OIS state (same reason as bindCameraPreview).
-                preloadStabilizationFromPrefs()
-                cameraXPlatform.open(buildCameraConfigFromPrefs())
-                pushAllPersistedSettingsToCamera()
-                val savedZoom = _uiState.value.zoomLevel
-                if (savedZoom != 1f) cameraXPlatform.setZoom(savedZoom)
-            } catch (e: Exception) {
-                android.util.Log.e("MainViewModel", "Camera rebind failed: ${e.message}")
-            }
-        }
-    }
-
-    private var isCapturing = false
-
-    fun onShutterPress() {
-        if (isCapturing) return
-        isCapturing = true
-        viewModelScope.launch {
-            try {
-                val result = cameraXPlatform.takePicture()
-                _uiState.update { it.copy(shotCount = it.shotCount + 1) }
-
-                // Run post-processing in background
-                viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-                    // Hasselblad color grading
-                    val hassEnabled = loadSettingBool("color", "hasselblad_enabled", false)
-                    if (hassEnabled) {
-                        applyHasselbladGrading(result.uri)
-                    }
-                }
-            } catch (_: Exception) { }
-            finally { isCapturing = false }
-        }
-    }
-
-    /**
-     * Apply Hasselblad color grading as post-processing on a captured JPEG.
-     * Uses per-channel LUT derived from the native Oppo Hasselblad mode.
-     * This preserves the ISP's default brightness/tone mapping and only
-     * applies the color character on top.
-     */
-    private fun applyHasselbladGrading(filePath: String) {
-        try {
-            val file = java.io.File(filePath)
-            if (!file.exists()) return
-
-            val bitmap = android.graphics.BitmapFactory.decodeFile(filePath) ?: return
-            val w = bitmap.width
-            val h = bitmap.height
-            val pixels = IntArray(w * h)
-            bitmap.getPixels(pixels, 0, w, 0, 0, w, h)
-            bitmap.recycle()
-
-            // Build per-channel LUTs (256 entries each)
-            // Hasselblad character: lifted shadows, warm midtones (R>G>B in shadows),
-            // soft highlight rolloff, slightly desaturated
-            val rLut = IntArray(256)
-            val gLut = IntArray(256)
-            val bLut = IntArray(256)
-
-            for (i in 0..255) {
-                val t = i / 255f
-
-                // Shadow lift: subtle — native Hasselblad has deep but not crushed blacks
-                val shadowLiftR = 0.015f
-                val shadowLiftG = 0.010f
-                val shadowLiftB = 0.005f
-
-                var r = shadowLiftR + (1f - shadowLiftR) * t
-                var g = shadowLiftG + (1f - shadowLiftG) * t
-                var b = shadowLiftB + (1f - shadowLiftB) * t
-
-                // S-curve contrast: stronger to match native Hasselblad's darker rendering
-                r = applySCurve(r, 0.20f)
-                g = applySCurve(g, 0.18f)
-                b = applySCurve(b, 0.16f)
-
-                // Soft highlight rolloff
-                r = softHighlight(r, 0.97f)
-                g = softHighlight(g, 0.97f)
-                b = softHighlight(b, 0.96f)
-
-                // Slight desaturation in shadows (pull channels toward luminance)
-                if (t < 0.3f) {
-                    val lum = 0.299f * r + 0.587f * g + 0.114f * b
-                    val blend = 0.15f * (1f - t / 0.3f) // 15% desaturation at black, 0% at 0.3
-                    r = r * (1f - blend) + lum * blend
-                    g = g * (1f - blend) + lum * blend
-                    b = b * (1f - blend) + lum * blend
-                }
-
-                rLut[i] = (r * 255f).toInt().coerceIn(0, 255)
-                gLut[i] = (g * 255f).toInt().coerceIn(0, 255)
-                bLut[i] = (b * 255f).toInt().coerceIn(0, 255)
-            }
-
-            // Apply LUT to all pixels
-            for (i in pixels.indices) {
-                val a = (pixels[i] shr 24) and 0xFF
-                val r = (pixels[i] shr 16) and 0xFF
-                val g = (pixels[i] shr 8) and 0xFF
-                val b = pixels[i] and 0xFF
-                pixels[i] = (a shl 24) or (rLut[r] shl 16) or (gLut[g] shl 8) or bLut[b]
-            }
-
-            val result = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888)
-            result.setPixels(pixels, 0, w, 0, 0, w, h)
-            java.io.FileOutputStream(file).use { out ->
-                result.compress(android.graphics.Bitmap.CompressFormat.JPEG, 100, out)
-            }
-            result.recycle()
-        } catch (_: Exception) { }
-    }
-
-    private fun applySCurve(x: Float, amount: Float): Float {
-        // Attempt sigmoid-like contrast: pulls midtones toward 0 or 1
-        return x + amount * x * (1f - x) * (2f * x - 1f)
-    }
-
-    private fun softHighlight(x: Float, ceiling: Float): Float {
-        if (x <= ceiling) return x
-        // Soft compress above ceiling
-        val excess = x - ceiling
-        return ceiling + excess * 0.3f
-    }
-
-    fun onVideoToggle() {
-        viewModelScope.launch {
-            android.util.Log.e("GateShot", "VideoToggle: isRecording=${_uiState.value.isRecording}, camera state=${cameraXPlatform.state.value}")
-            try {
-                if (_uiState.value.isRecording) {
-                    val result = cameraXPlatform.stopRecording()
-                    android.util.Log.e("GateShot", "Recording stopped: ${result.uri}")
-                    _uiState.update { it.copy(isRecording = false) }
-                } else {
-                    cameraXPlatform.startRecording()
-                    android.util.Log.e("GateShot", "Recording started")
-                    _uiState.update { it.copy(isRecording = true) }
-                }
-            } catch (e: Exception) {
-                android.util.Log.e("GateShot", "Video toggle failed", e)
-            }
-        }
-    }
-
-    fun onModeToggle() {
-        modeManager.toggleMode()
-    }
-
-    fun onPresetSelected(presetName: String) {
-        viewModelScope.launch {
-            endpointRegistry.call<String, Any>("preset/apply", presetName)
         }
     }
 
@@ -575,29 +110,6 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    fun onZoomChanged(zoom: Float) {
-        _uiState.update { it.copy(zoomLevel = zoom) }
-        cameraXPlatform.setZoom(zoom)
-    }
-
-    fun onAddTriggerZone(normalizedX: Float, normalizedY: Float) {
-        viewModelScope.launch {
-            endpointRegistry.call<ZoneAddRequest, Any>(
-                "af/zone/add",
-                ZoneAddRequest(normalizedX, normalizedY)
-            )
-        }
-        // Also set the camera AF region to focus at the tap point
-        cameraXPlatform.setAfRegions(listOf(
-            com.gateshot.platform.camera.AfRegion(
-                centerX = normalizedX,
-                centerY = normalizedY,
-                size = 0.1f,
-                weight = 1000
-            )
-        ))
-    }
-
     fun loadSettingFloat(section: String, key: String, default: Float): Float {
         return try {
             val prefs = appContext.getSharedPreferences("gateshot_config", android.content.Context.MODE_PRIVATE)
@@ -623,264 +135,15 @@ class MainViewModel @Inject constructor(
             }
             apply()
         }
-        // Apply camera-relevant settings immediately so they override the active preset
-        applyCameraSetting(section, key, value)
-    }
-
-    private fun applyCameraSetting(section: String, key: String, value: Any) {
         // Mirror to ConfigStore so modules reading from it see the updated value
         configStore.set(section, key, value)
-
-        when {
-            section == "exposure" && key == "snow_compensation" -> {
-                if (value == true) {
-                    // Snow comp toggled ON — the SnowExposureModule will take over EV
-                    // on the next frame analysis. Nothing to do here; the module
-                    // observes this config change and sets isEnabled = true.
-                } else {
-                    // Snow comp toggled OFF — apply the user's manual EV immediately
-                    val manualEv = loadSettingFloat("exposure", "ev_bias", 0f)
-                    configStore.set("exposure", "ev_bias", manualEv)
-                    cameraXPlatform.setExposureCompensation(manualEv)
-                    _uiState.update { it.copy(currentEvBias = manualEv) }
-                }
-            }
-            section == "exposure" && key == "ev_bias" -> {
-                // Only apply directly if snow comp is off (otherwise SnowExposureModule handles it)
-                val snowCompOn = loadSettingBool("exposure", "snow_compensation", true)
-                if (!snowCompOn) {
-                    val ev = value as Float
-                    cameraXPlatform.setExposureCompensation(ev)
-                    _uiState.update { it.copy(currentEvBias = ev) }
-                }
-            }
-            section == "camera" && key == "manual_mode" -> {
-                if (value == true) {
-                    val iso = loadSettingFloat("camera", "iso", 400f).toInt()
-                    val shutter = loadSettingFloat("camera", "shutter_speed", 500f)
-                    val shutterNs = (1_000_000_000L / shutter.toLong())
-                    cameraXPlatform.setManualExposure(com.gateshot.platform.camera.ManualExposure(
-                        shutterSpeedNs = shutterNs, iso = iso, enabled = true
-                    ))
-                } else {
-                    cameraXPlatform.setManualExposure(com.gateshot.platform.camera.ManualExposure())
-                }
-            }
-            section == "camera" && key == "iso" -> {
-                val manualOn = loadSettingBool("camera", "manual_mode", false)
-                if (manualOn) {
-                    val shutter = loadSettingFloat("camera", "shutter_speed", 500f)
-                    val shutterNs = (1_000_000_000L / shutter.toLong())
-                    cameraXPlatform.setManualExposure(com.gateshot.platform.camera.ManualExposure(
-                        shutterSpeedNs = shutterNs, iso = (value as Float).toInt(), enabled = true
-                    ))
-                }
-            }
-            section == "camera" && key == "shutter_speed" -> {
-                val manualOn = loadSettingBool("camera", "manual_mode", false)
-                if (manualOn) {
-                    val iso = loadSettingFloat("camera", "iso", 400f).toInt()
-                    val shutterNs = (1_000_000_000L / (value as Float).toLong())
-                    cameraXPlatform.setManualExposure(com.gateshot.platform.camera.ManualExposure(
-                        shutterSpeedNs = shutterNs, iso = iso, enabled = true
-                    ))
-                }
-            }
-            section == "camera" && key == "auto_wb" -> {
-                if (value == true) {
-                    // Re-enable auto WB by clearing manual gains
-                    cameraXPlatform.setWhiteBalanceGains(com.gateshot.platform.camera.WhiteBalanceGains())
-                }
-                // When false, the wb_temperature handler will apply the manual CCT
-            }
-            section == "camera" && key == "wb_temperature" -> {
-                val autoWb = loadSettingBool("camera", "auto_wb", true)
-                if (!autoWb) {
-                    // Convert CCT to approximate RGB gains
-                    val cct = (value as Float).toInt()
-                    val gains = cctToGains(cct)
-                    cameraXPlatform.setWhiteBalanceGains(gains)
-                }
-            }
-            section == "camera" && key == "flash" -> {
-                cameraXPlatform.setIspPipeline(com.gateshot.platform.camera.IspPipelineConfig(
-                    flashMode = if (value == true) com.gateshot.platform.camera.FlashMode.AUTO
-                                else com.gateshot.platform.camera.FlashMode.OFF,
-                    faceDetection = loadSettingBool("camera", "bokeh_enabled", false)
-                ))
-            }
-            section == "camera" && key == "bokeh_enabled" || section == "camera" && key == "bokeh_level" -> {
-                val bokehOn = if (key == "bokeh_enabled") value == true
-                              else loadSettingBool("camera", "bokeh_enabled", false)
-                val level = if (key == "bokeh_level") value as Float
-                            else loadSettingFloat("camera", "bokeh_level", 0.5f)
-                cameraXPlatform.setIspPipeline(com.gateshot.platform.camera.IspPipelineConfig(
-                    faceDetection = bokehOn,
-                    flashMode = if (loadSettingBool("camera", "flash", false))
-                        com.gateshot.platform.camera.FlashMode.AUTO
-                        else com.gateshot.platform.camera.FlashMode.OFF
-                ))
-                // Set bokeh level via vendor tag if available
-                if (bokehOn) {
-                    configStore.set("camera", "bokeh_level_active", level)
-                }
-            }
-            section == "camera" && key == "nd_filter" -> {
-                // ND filter: reduce EV compensation to simulate light reduction
-                val ndStops = (value as Float)
-                if (ndStops > 0.5f) {
-                    cameraXPlatform.setExposureCompensation(-ndStops)
-                } else {
-                    // ND off — restore normal EV
-                    val snowOn = loadSettingBool("exposure", "snow_compensation", true)
-                    if (!snowOn) {
-                        val manualEv = loadSettingFloat("exposure", "ev_bias", 0f)
-                        cameraXPlatform.setExposureCompensation(manualEv)
-                    }
-                }
-            }
-            section == "color" && key == "hasselblad_enabled" -> {
-                if (value == true) {
-                    val curve = com.gateshot.capture.preset.HasselbladProfile.buildTonemapCurve()
-                    cameraXPlatform.setTonemapCurve(com.gateshot.platform.camera.TonemapConfig(
-                        enabled = true,
-                        curveRed = curve.red,
-                        curveGreen = curve.green,
-                        curveBlue = curve.blue
-                    ))
-                } else {
-                    cameraXPlatform.setTonemapCurve(com.gateshot.platform.camera.TonemapConfig())
-                }
-            }
-            section == "video" && (key == "ois_mode" || key == "eis_mode") -> {
-                val oisIdx = loadSettingFloat("video", "ois_mode", 1f).toInt()
-                val eisIdx = loadSettingFloat("video", "eis_mode", 0f).toInt()
-                cameraXPlatform.setStabilization(StabilizationConfig(
-                    ois = when (oisIdx) {
-                        0 -> OisMode.OFF
-                        2 -> OisMode.MAXIMUM
-                        else -> OisMode.STANDARD
-                    },
-                    eis = when (eisIdx) {
-                        0 -> EisMode.OFF
-                        2 -> EisMode.PANNING
-                        else -> EisMode.STANDARD
-                    }
-                ))
-                // The MediaTek/Oppo EIS pipeline can't always be reconfigured
-                // mid-session — toggling on/off via repeating-request keys
-                // sometimes leaves the preview stuck on the previous state.
-                // Force a clean rebind so the new EIS state is part of the
-                // session config from the start. Skip during startup replay
-                // (the bind already happened with the right config).
-                if (!pushingPersistedSettings) rebindCameraFromPrefs()
-            }
-            section == "af" && key == "mode_index" -> {
-                val mode = when ((value as Float).toInt()) {
-                    0 -> CameraAfMode.SINGLE
-                    1 -> CameraAfMode.CONTINUOUS
-                    3 -> CameraAfMode.MANUAL
-                    else -> CameraAfMode.PREDICTIVE
-                }
-                cameraXPlatform.setAfMode(mode)
-            }
-            section == "af" && key == "face_priority" -> {
-                // Face priority is folded into the ISP pipeline alongside the
-                // existing flash/bokeh state so we don't clobber those.
-                cameraXPlatform.setIspPipeline(com.gateshot.platform.camera.IspPipelineConfig(
-                    faceDetection = (value == true) ||
-                        loadSettingBool("camera", "bokeh_enabled", false),
-                    flashMode = if (loadSettingBool("camera", "flash", false))
-                        com.gateshot.platform.camera.FlashMode.AUTO
-                        else com.gateshot.platform.camera.FlashMode.OFF
-                ))
-            }
-            // Settings that require a fresh CameraX bind (CameraConfig fields)
-            section == "video" && (key == "resolution" || key == "frame_rate" || key == "hdr") -> {
-                if (!pushingPersistedSettings) rebindCameraFromPrefs()
-            }
-            section == "camera" && (key == "save_raw" || key == "heif" ||
-                key == "jpeg_quality" || key == "resolution_mp") -> {
-                if (!pushingPersistedSettings) rebindCameraFromPrefs()
-            }
-            // Vendor-key driven features
-            section == "video" && key == "log_profile" -> {
-                cameraXPlatform.setLogColorProfile(value == true)
-            }
-            section == "camera" && key == "extended_iso" -> {
-                cameraXPlatform.setExtendedIsoEnabled(value == true)
-                // If manual mode is on, re-push the ISO so the HAL clamps to
-                // the new range immediately.
-                if (loadSettingBool("camera", "manual_mode", false)) {
-                    val iso = loadSettingFloat("camera", "iso", 400f).toInt()
-                    val shutter = loadSettingFloat("camera", "shutter_speed", 500f)
-                    val shutterNs = (1_000_000_000L / shutter.toLong())
-                    cameraXPlatform.setManualExposure(com.gateshot.platform.camera.ManualExposure(
-                        shutterSpeedNs = shutterNs, iso = iso, enabled = true
-                    ))
-                }
-            }
-            section == "tracking" && key == "hardware" -> {
-                // Hardware tracking starts in "armed" mode with no region —
-                // SubjectTracker hands it a region when it locks on a racer.
-                cameraXPlatform.setHardwareTracking(enabled = (value == true), region = null)
-            }
-            // ── Retained vendor controls (tracking + exposure/WB) ──────────
-            section == "vendor" && key == "mdptz_mode" -> {
-                cameraXPlatform.setMdptzMode((value as? Float)?.toInt() ?: 0)
-            }
-            section == "vendor" && key == "ae_metering" -> {
-                cameraXPlatform.setAeMetering((value as? Float)?.toInt() ?: 0)
-            }
-            section == "vendor" && (key == "manual_wb_kelvin" || key == "manual_wb_tint") -> {
-                val k = loadSettingFloat("vendor", "manual_wb_kelvin", -1f).toInt()
-                    .takeIf { it > 0 }
-                val t = loadSettingFloat("vendor", "manual_wb_tint", Float.NaN).toInt()
-                    .takeIf { !it.toFloat().isNaN() }
-                cameraXPlatform.setManualWb(k, t)
-            }
-        }
     }
 
-    /** Convert color temperature (Kelvin) to approximate WB gains */
-    private fun cctToGains(cct: Int): com.gateshot.platform.camera.WhiteBalanceGains {
-        val temp = cct.toFloat()
-        val rGain: Float
-        val bGain: Float
-        if (temp <= 6500f) {
-            val t = ((temp - 2000f) / 4500f).coerceIn(0f, 1f)
-            rGain = 1.0f + (1f - t) * 0.4f
-            bGain = 1.0f - (1f - t) * 0.3f
-        } else {
-            val t = ((temp - 6500f) / 3500f).coerceAtMost(1f)
-            rGain = 1.0f + t * 0.15f
-            bGain = 1.0f - t * 0.3f
-        }
-        return com.gateshot.platform.camera.WhiteBalanceGains(
-            redGain = rGain, greenEvenGain = 1f, greenOddGain = 1f, blueGain = bGain
-        )
-    }
-
-    private val shootPresets = listOf("race", "panning")
-    private val coachPresets = listOf("video")
-
-    private fun cyclePreset() {
-        val presets = if (_uiState.value.mode == AppMode.COACH) coachPresets else shootPresets
-        val currentIndex = presets.indexOf(_uiState.value.currentPreset)
-        val nextIndex = (currentIndex + 1) % presets.size
-        onPresetSelected(presets[nextIndex])
-    }
-
-    fun onTrackingToggle() {
-        viewModelScope.launch {
-            if (_uiState.value.trackingEnabled) {
-                endpointRegistry.call<Unit, Any>("af/track/disable", Unit)
-            } else {
-                endpointRegistry.call<Unit, Any>("af/track/enable", Unit)
-            }
-        }
-    }
-
+    /**
+     * A video captured outside GateShot has landed in app storage (today via
+     * import; historically via the native-capture bridge). Publishes the
+     * event SessionFeatureModule listens to for recording media metadata.
+     */
     fun onNativeCaptureComplete(absolutePath: String, isVideo: Boolean) {
         viewModelScope.launch {
             eventBus.publish(
@@ -889,7 +152,7 @@ class MainViewModel @Inject constructor(
                     isVideo = isVideo
                 )
             )
-            _uiState.update { it.copy(shotCount = it.shotCount + 1) }
+            _galleryRefresh.update { it + 1 }
         }
     }
 
@@ -931,24 +194,24 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    fun onClearTriggerZones() {
-        viewModelScope.launch {
-            endpointRegistry.call<Unit, Any>("af/zone/clear", Unit)
-        }
-        // Reset AF to auto (clear manual AF regions)
-        cameraXPlatform.setAfRegions(emptyList())
-    }
-
     // --- Course Reference & Perspective Correction ---
 
     val replayState: StateFlow<ReplayState> = replayModule.replayState
 
+    // Live panning-scan reference capture was removed with the in-app camera;
+    // the endpoints currently return 501. Kept so the Replay panel degrades
+    // gracefully until reference-from-imported-video lands.
     fun onStartReferenceCapture() {
-        replayModule.startReferenceCapture()
+        viewModelScope.launch {
+            endpointRegistry.call<Unit, Any>("coach/overlay/reference/start", Unit)
+        }
     }
 
     fun onStopReferenceCapture(): Int {
-        return replayModule.stopReferenceCapture()
+        viewModelScope.launch {
+            endpointRegistry.call<Unit, Any>("coach/overlay/reference/stop", Unit)
+        }
+        return -1
     }
 
     fun onAddOverlayLayer(clipUri: String, label: String) {
@@ -1237,9 +500,9 @@ class MainViewModel @Inject constructor(
 
                 // Media summary
                 val photoDir = java.io.File(context.getExternalFilesDir(null), "GateShot/photos")
-                val photoCount = photoDir.listFiles()?.size ?: 0
+                val frameCount = photoDir.listFiles()?.size ?: 0
                 val videoCount = videoDir.listFiles()?.count { it.extension == "mp4" } ?: 0
-                canvas.drawText("Media: $photoCount photos, $videoCount videos", 50f, y + 20f, paint)
+                canvas.drawText("Media: $videoCount videos, $frameCount annotated frames", 50f, y + 20f, paint)
 
                 paint.textSize = 10f
                 paint.color = android.graphics.Color.GRAY

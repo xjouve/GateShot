@@ -2,7 +2,6 @@ package com.gateshot.ui.navigation
 
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Camera
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.Settings
@@ -30,30 +29,26 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
-import com.gateshot.core.mode.AppMode
 import com.gateshot.ui.MainViewModel
 import com.gateshot.ui.coaching.CoachScreen
 import com.gateshot.ui.gallery.GalleryScreen
 import com.gateshot.ui.replay.ReplayScreen
 import com.gateshot.ui.settings.SettingsScreen
-import com.gateshot.ui.viewfinder.ViewfinderScreen
 
-sealed class Screen(val route: String, val label: String, val icon: ImageVector, val coachOnly: Boolean = false) {
-    data object Viewfinder : Screen("viewfinder", "Shoot", Icons.Filled.Camera)
-    data object Gallery : Screen("gallery", "Gallery", Icons.Filled.PhotoLibrary)
-    data object Replay : Screen("replay", "Replay", Icons.Filled.SlowMotionVideo, coachOnly = true)
-    data object Coach : Screen("coach", "Coach", Icons.Filled.School, coachOnly = true)
+sealed class Screen(val route: String, val label: String, val icon: ImageVector) {
+    data object Gallery : Screen("gallery", "Library", Icons.Filled.PhotoLibrary)
+    data object Replay : Screen("replay", "Replay", Icons.Filled.SlowMotionVideo)
+    data object Coach : Screen("coach", "Coach", Icons.Filled.School)
     data object Settings : Screen("settings", "Settings", Icons.Filled.Settings)
 }
 
-val allScreens = listOf(Screen.Viewfinder, Screen.Gallery, Screen.Replay, Screen.Coach, Screen.Settings)
+val allScreens = listOf(Screen.Gallery, Screen.Replay, Screen.Coach, Screen.Settings)
 
 @Composable
 fun GateShotNavHost(
@@ -62,19 +57,15 @@ fun GateShotNavHost(
 ) {
     val navController = rememberNavController()
     val uiState by viewModel.uiState.collectAsState()
-    val lifecycleOwner = LocalLifecycleOwner.current
 
-    val visibleScreens = allScreens.filter { screen ->
-        !screen.coachOnly || uiState.mode == AppMode.COACH
-    }
-
-    // Session creation dialog — shows when entering COACH mode without an active session
+    // Session creation dialog — offered once at startup when no session is
+    // active; also reachable later from the session flow.
     var showSessionDialog by remember { mutableStateOf(false) }
     var sessionEventName by remember { mutableStateOf("") }
     var sessionDiscipline by remember { mutableStateOf("SL") }
 
-    LaunchedEffect(uiState.mode) {
-        if (uiState.mode == AppMode.COACH && uiState.sessionName == null) {
+    LaunchedEffect(Unit) {
+        if (uiState.sessionName == null) {
             showSessionDialog = true
         }
     }
@@ -133,36 +124,16 @@ fun GateShotNavHost(
         bottomBar = {
             GateShotBottomBar(
                 navController = navController,
-                screens = visibleScreens
+                screens = allScreens
             )
         },
         containerColor = Color.Black
     ) { padding ->
         NavHost(
             navController = navController,
-            startDestination = Screen.Viewfinder.route,
+            startDestination = Screen.Gallery.route,
             modifier = modifier.padding(padding)
         ) {
-            composable(Screen.Viewfinder.route) {
-                ViewfinderScreen(
-                    uiState = uiState,
-                    cameraXPlatform = viewModel.cameraXPlatform,
-                    onCameraPreviewReady = { previewView ->
-                        viewModel.bindCameraPreview(previewView, lifecycleOwner)
-                    },
-                    onShutterPress = viewModel::onShutterPress,
-                    onModeToggle = viewModel::onModeToggle,
-                    onPresetSelected = viewModel::onPresetSelected,
-                    onZoomChanged = viewModel::onZoomChanged,
-                    onVideoToggle = viewModel::onVideoToggle,
-                    onAddTriggerZone = viewModel::onAddTriggerZone,
-                    onClearTriggerZones = viewModel::onClearTriggerZones,
-                    onTrackingToggle = viewModel::onTrackingToggle,
-                    onStabilizationToggle = viewModel::toggleLiveStabilization,
-                    onNativeCaptured = viewModel::onNativeCaptureComplete
-                )
-            }
-
             composable(Screen.Gallery.route) {
                 GalleryScreen(viewModel = viewModel)
             }
@@ -204,7 +175,7 @@ fun GateShotBottomBar(
                 onClick = {
                     if (currentRoute != screen.route) {
                         navController.navigate(screen.route) {
-                            popUpTo(Screen.Viewfinder.route) { saveState = true }
+                            popUpTo(Screen.Gallery.route) { saveState = true }
                             launchSingleTop = true
                             restoreState = true
                         }

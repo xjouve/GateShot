@@ -6,14 +6,10 @@ import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import com.gateshot.core.api.ApiEndpoint
 import com.gateshot.core.api.ApiResponse
-import com.gateshot.core.event.AppEvent
 import com.gateshot.core.event.EventBus
-import com.gateshot.core.event.collect
 import com.gateshot.core.mode.AppMode
 import com.gateshot.core.module.FeatureModule
 import com.gateshot.core.module.ModuleHealth
-import com.gateshot.platform.camera.CameraXPlatform
-import com.gateshot.platform.sensor.SensorPlatform
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -29,9 +25,7 @@ import javax.inject.Singleton
 @Singleton
 class ReplayFeatureModule @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val eventBus: EventBus,
-    private val cameraXPlatform: CameraXPlatform,
-    private val sensorPlatform: SensorPlatform
+    private val eventBus: EventBus
 ) : FeatureModule {
 
     override val name = "replay"
@@ -46,65 +40,12 @@ class ReplayFeatureModule @Inject constructor(
     private val _replayState = MutableStateFlow(ReplayState())
     val replayState: StateFlow<ReplayState> = _replayState.asStateFlow()
 
-    // Reference capture state
-    private var isCapturingReference = false
-    private var captureRotationAccum = 0f
-    private var lastGyroTimestamp = 0L
-    private var capturedFrameCount = 0
-
-    // Frame listener for reference capture — grabs the preview bitmap (RGB) for gate color detection
-    private val referenceFrameListener: (androidx.camera.core.ImageProxy) -> Unit = { _ ->
-        if (isCapturingReference) {
-            // The ImageProxy from BitmapImageProxy only has Y-plane (grayscale).
-            // Gate detection needs RGB to distinguish red vs blue poles.
-            // Grab the actual color bitmap from the PreviewView instead.
-            val bitmap = cameraXPlatform.getPreviewBitmap()
-            if (bitmap != null) {
-                val w = bitmap.width
-                val h = bitmap.height
-                val pixels = IntArray(w * h)
-                bitmap.getPixels(pixels, 0, w, 0, 0, w, h)
-                bitmap.recycle()
-                courseCapture.addFrame(pixels, w, h, captureRotationAccum)
-                capturedFrameCount++
-                _replayState.value = _replayState.value.copy(
-                    referenceFramesCaptured = capturedFrameCount
-                )
-            }
-        }
-    }
-
-    // Gate crossing timestamps accumulated during current recording
-    private val pendingGateTimestamps = mutableListOf<Long>()
-    private var recordingStartMs = 0L
-
     override suspend fun initialize() {
-        // Track recording lifecycle for gate timestamp capture
-        eventBus.collect<AppEvent.VideoRecordingStarted>(scope) {
-            pendingGateTimestamps.clear()
-            recordingStartMs = System.currentTimeMillis()
-        }
-
-        // Track latest recorded clip + save gate timestamps as sidecar
-        eventBus.collect<AppEvent.VideoRecordingStopped>(scope) { event ->
-            lastRecordedClipUri = event.clipUri
-            if (pendingGateTimestamps.isNotEmpty()) {
-                saveGateTimestamps(event.clipUri, pendingGateTimestamps.toList())
-            }
-        }
-
-        // Collect gate crossing events from TrackingFeatureModule
-        eventBus.collect<AppEvent.GateCrossing>(scope) { event ->
-            val ms = System.currentTimeMillis() - recordingStartMs
-            pendingGateTimestamps.add(ms)
-        }
-
         // Try to load persisted course reference for current session
         loadPersistedReference()
     }
 
     override suspend fun shutdown() {
-        stopReferenceCapture()
         player?.release()
         player = null
     }
@@ -265,73 +206,6 @@ class ReplayFeatureModule @Inject constructor(
     // =============================================
     // OVERLAY ENDPOINTS
     // =============================================
-
-    private val courseCapture = CourseReferenceCapture()
-
-    /**
-     * Start capturing the course reference panorama.
-     * Registers a frame listener on CameraXPlatform and accumulates gyro rotation.
-     */
-    fun startReferenceCapture() {
-        if (isCapturingReference) return
-        isCapturingReference = true
-        capturedFrameCount = 0
-        captureRotationAccum = 0f
-        lastGyroTimestamp = 0L
-        courseCapture.startCapture()
-
-        // Register frame listener to feed camera frames
-        cameraXPlatform.addFrameListener(referenceFrameListener)
-
-        // Accumulate gyro yaw rotation for frame spacing
-        scope.launch {
-            sensorPlatform.getGyroscopeReadings().collect { gyro ->
-                if (!isCapturingReference) return@collect
-                val now = System.nanoTime()
-                if (lastGyroTimestamp > 0) {
-                    val dtSec = (now - lastGyroTimestamp) / 1_000_000_000f
-                    // Y-axis gyro = yaw (panning left-right)
-                    captureRotationAccum += Math.toDegrees(gyro.y.toDouble()).toFloat() * dtSec
-                }
-                lastGyroTimestamp = now
-            }
-        }
-
-        _replayState.value = _replayState.value.copy(
-            isCapturingReference = true,
-            referenceFramesCaptured = 0
-        )
-    }
-
-    /**
-     * Stop capturing and finalize the course reference.
-     * Stitches frames, detects gates, persists to disk.
-     * Returns the number of gates detected, or -1 on failure.
-     */
-    fun stopReferenceCapture(): Int {
-        if (!isCapturingReference) return -1
-        isCapturingReference = false
-        cameraXPlatform.removeFrameListener(referenceFrameListener)
-
-        val reference = courseCapture.stopCapture()
-        if (reference == null) {
-            _replayState.value = _replayState.value.copy(
-                isCapturingReference = false,
-                referenceFramesCaptured = 0
-            )
-            return -1
-        }
-
-        overlayEngine.setCourseReference(reference)
-        persistReference(reference)
-
-        _replayState.value = _replayState.value.copy(
-            isCapturingReference = false,
-            hasReference = true,
-            referenceGateCount = reference.gates.size
-        )
-        return reference.gates.size
-    }
 
     /**
      * Register a video layer's perspective against the course reference.
@@ -570,14 +444,17 @@ class ReplayFeatureModule @Inject constructor(
     }
 
     // --- coach/overlay/reference/start ---
+    // Live panning-scan capture was removed with the in-app camera. Course
+    // reference will be rebuilt from an imported clip's frames in a later
+    // release; the endpoints stay registered so existing callers get a clear
+    // error instead of notFound.
     inner class StartReferenceCapture : ApiEndpoint<Unit, Boolean> {
         override val path = "coach/overlay/reference/start"
         override val module = "replay"
         override val requiredMode = AppMode.COACH
 
         override suspend fun handle(request: Unit): ApiResponse<Boolean> {
-            startReferenceCapture()
-            return ApiResponse.success(true)
+            return ApiResponse.error(501, "Course reference capture from live camera was removed; it will be rebuilt from imported video in a later release.")
         }
     }
 
@@ -588,11 +465,7 @@ class ReplayFeatureModule @Inject constructor(
         override val requiredMode = AppMode.COACH
 
         override suspend fun handle(request: Unit): ApiResponse<Boolean> {
-            val gateCount = stopReferenceCapture()
-            if (gateCount < 0) {
-                return ApiResponse.error(400, "Not enough frames captured. Pan slowly across the course.")
-            }
-            return ApiResponse.success(true)
+            return ApiResponse.error(501, "Course reference capture from live camera was removed; it will be rebuilt from imported video in a later release.")
         }
     }
 

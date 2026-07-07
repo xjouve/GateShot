@@ -16,12 +16,10 @@ android {
 
 dependencies {
     implementation(project(":core"))
-    implementation(project(":platform"))
     implementation(libs.core.ktx)
     implementation(libs.coroutines.core)
     implementation(libs.serialization.json)
     implementation(libs.exoplayer)
-    implementation(libs.camerax.core)
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
 }

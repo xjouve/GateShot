@@ -44,16 +44,7 @@ android {
 
 dependencies {
     implementation(project(":core"))
-    implementation(project(":platform"))
-    implementation(project(":capture:camera"))
-    implementation(project(":capture:burst"))
-    implementation(project(":capture:preset"))
-    implementation(project(":capture:trigger"))
-    implementation(project(":capture:tracking"))
     implementation(project(":session"))
-    implementation(project(":processing:snow-exposure"))
-    implementation(project(":processing:burst-culling"))
-    implementation(project(":processing:bib-detection"))
     implementation(project(":processing:autoclip"))
     implementation(project(":processing:export"))
     implementation(project(":processing:stabilize"))
@@ -83,13 +74,6 @@ dependencies {
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
     implementation(libs.hilt.navigation.compose)
-
-    // CameraX
-    implementation(libs.camerax.core)
-    implementation(libs.camerax.camera2)
-    implementation(libs.camerax.lifecycle)
-    implementation(libs.camerax.view)
-    implementation(libs.camerax.video)
 
     // ExoPlayer (for replay)
     implementation(libs.exoplayer)

@@ -14,18 +14,9 @@ object AppModule {
     @Provides
     @ElementsIntoSet
     fun provideFeatureModules(
-        // Capture
-        cameraModule: com.gateshot.capture.camera.CameraFeatureModule,
-        burstModule: com.gateshot.capture.burst.BurstFeatureModule,
-        presetModule: com.gateshot.capture.preset.PresetFeatureModule,
-        triggerModule: com.gateshot.capture.trigger.TriggerFeatureModule,
-        trackingModule: com.gateshot.capture.tracking.TrackingFeatureModule,
         // Session
         sessionModule: com.gateshot.session.SessionFeatureModule,
         // Processing
-        snowExposureModule: com.gateshot.processing.snow.SnowExposureModule,
-        burstCullingModule: com.gateshot.processing.culling.BurstCullingModule,
-        bibDetectionModule: com.gateshot.processing.bib.BibDetectionModule,
         autoClipModule: com.gateshot.processing.autoclip.AutoClipModule,
         exportModule: com.gateshot.processing.export.ExportModule,
         // Coaching
@@ -36,9 +27,8 @@ object AppModule {
         poseModule: com.gateshot.coaching.pose.PoseEstimationModule
     ): Set<FeatureModule> {
         return setOf(
-            cameraModule, burstModule, presetModule, triggerModule, trackingModule,
             sessionModule,
-            snowExposureModule, burstCullingModule, bibDetectionModule, autoClipModule, exportModule,
+            autoClipModule, exportModule,
             replayModule, timingModule, annotationModule, athleteModule, poseModule
         )
     }

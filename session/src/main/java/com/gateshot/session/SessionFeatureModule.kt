@@ -35,25 +35,10 @@ class SessionFeatureModule @Inject constructor(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override suspend fun initialize() {
-        // Auto-save media when burst completes
-        eventBus.collect<AppEvent.BurstCompleted>(scope) { event ->
-            val session = dao.getActiveSession() ?: return@collect
-            val run = dao.getActiveRun(session.id) ?: return@collect
-            // Burst module saves files — we just record metadata
-            dao.insertMedia(
-                MediaEntity(
-                    runId = run.id,
-                    type = MediaType.BURST_FRAME,
-                    fileUri = "burst://${event.sessionId}",
-                    captureTimestamp = System.currentTimeMillis()
-                )
-            )
-        }
-
-        // Native-app delegated capture (Oppo camera via Intent) — still or video.
-        // File already sits in GateShot/photos or GateShot/videos by the time we
-        // see the event; we only record metadata so it shows up in the gallery
-        // alongside native GateShot captures.
+        // Video landed in GateShot's storage from outside the app (import
+        // flow, historically the native-capture bridge). Record metadata so
+        // it shows up in the library. Requires an active session AND run —
+        // the importer must ensure both exist before publishing.
         eventBus.collect<AppEvent.NativeCaptureCompleted>(scope) { event ->
             val session = dao.getActiveSession() ?: return@collect
             val run = dao.getActiveRun(session.id) ?: return@collect
@@ -65,25 +50,6 @@ class SessionFeatureModule @Inject constructor(
                     captureTimestamp = System.currentTimeMillis()
                 )
             )
-        }
-
-        // Auto-tag bib when detected — write to both Room DB and .bib sidecar file
-        eventBus.collect<AppEvent.BibDetected>(scope) { event ->
-            // Tag most recent media with detected bib in Room DB
-            val session = dao.getActiveSession() ?: return@collect
-            val run = dao.getActiveRun(session.id) ?: return@collect
-            val media = dao.getMediaForRun(run.id).lastOrNull() ?: return@collect
-            dao.tagBib(media.id, event.bibNumber)
-
-            // Also write .bib sidecar file so gallery can read it without DB query
-            try {
-                val uri = media.fileUri
-                val filePath = if (uri.startsWith("file://")) uri.removePrefix("file://")
-                               else android.net.Uri.parse(uri).path
-                if (filePath != null) {
-                    java.io.File("$filePath.bib").writeText("${event.bibNumber}")
-                }
-            } catch (_: Exception) { }
         }
     }
 

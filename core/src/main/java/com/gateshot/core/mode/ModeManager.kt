@@ -12,7 +12,10 @@ import javax.inject.Singleton
 class ModeManager @Inject constructor(
     private val eventBus: EventBus
 ) {
-    private val _currentMode = MutableStateFlow(AppMode.SHOOT)
+    // Analysis-first app: COACH is the only meaningful mode since in-app
+    // capture was removed (video-analysis pivot). SHOOT survives in the enum
+    // for endpoint declarations but nothing switches to it anymore.
+    private val _currentMode = MutableStateFlow(AppMode.COACH)
     val currentMode: StateFlow<AppMode> = _currentMode.asStateFlow()
 
     suspend fun setMode(mode: AppMode) {

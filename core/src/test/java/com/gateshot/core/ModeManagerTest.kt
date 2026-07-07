@@ -15,23 +15,24 @@ class ModeManagerTest {
     private val modeManager = ModeManager(eventBus)
 
     @Test
-    fun `default mode is SHOOT`() {
-        assertEquals(AppMode.SHOOT, modeManager.currentMode.value)
+    fun `default mode is COACH`() {
+        // Analysis-first app: coaching endpoints must be live from startup.
+        assertEquals(AppMode.COACH, modeManager.currentMode.value)
     }
 
     @Test
     fun `toggle switches between modes`() {
         modeManager.toggleMode()
-        assertEquals(AppMode.COACH, modeManager.currentMode.value)
+        assertEquals(AppMode.SHOOT, modeManager.currentMode.value)
 
         modeManager.toggleMode()
-        assertEquals(AppMode.SHOOT, modeManager.currentMode.value)
+        assertEquals(AppMode.COACH, modeManager.currentMode.value)
     }
 
     @Test
     fun `setMode changes mode`() = runTest {
-        modeManager.setMode(AppMode.COACH)
-        assertEquals(AppMode.COACH, modeManager.currentMode.value)
+        modeManager.setMode(AppMode.SHOOT)
+        assertEquals(AppMode.SHOOT, modeManager.currentMode.value)
     }
 
     @Test
@@ -46,13 +47,13 @@ class ModeManagerTest {
 
     @Test
     fun `COACH features blocked in SHOOT mode`() {
+        modeManager.toggleMode()
         assertEquals(AppMode.SHOOT, modeManager.currentMode.value)
         assertFalse(modeManager.isFeatureAvailable(AppMode.COACH))
     }
 
     @Test
     fun `COACH features available in COACH mode`() {
-        modeManager.toggleMode()
         assertTrue(modeManager.isFeatureAvailable(AppMode.COACH))
     }
 }
