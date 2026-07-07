@@ -1,4 +1,11 @@
-## TICKET-020: Teleconverter video stabilization (HAL gyro-EIS dead end → software replay stabilization, IN PROGRESS)
+## TICKET-020: Teleconverter video stabilization (CLOSED — resolved by product pivot, 2026-07-07)
+
+**RESOLUTION:** GateShot no longer records video. After every avenue below hit the same wall
+(native-quality teleconverter EIS is gated to a system-only camera path on a non-rooted device),
+the app was pivoted to a pure video-analysis tool: record in the native Oppo camera app, import
+into GateShot for analysis. See the `video-analysis-pivot` commits (Phase 1–3); the live-EIS
+work-in-progress is preserved on the `live-eis-attempt` branch. The investigation below is kept
+as the definitive record of why in-app stabilization cannot match the native app.
 
 **Status:** Post-production (replay) stabilization REMOVED at user's request 2026-06-26 — neither the gyro nor the image-based replay approach gave acceptable results (still shaky and/or too heavily cropped). Reverted to **on-recording CameraX EIS** (`USE_VENDOR_GYRO_EIS=false`). See "Attempt 5".
 **Date:** 2026-06-12 (updated 2026-06-26)
