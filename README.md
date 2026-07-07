@@ -27,6 +27,7 @@ Ski racing **video analysis** for coaches and athletes, built for the Oppo Find 
 - **Enhanced export** — bake the active enhancements into a shareable `<name>_enhanced.mp4` (hardware decode → GL warp/grade → encode, audio kept); every export self-checks by re-measuring jitter and reports the result
 - **Manual gate tagging** — flag button marks the current position; tick marks on the scrubber; editable gate list (tap-to-seek, delete). Stored as `.gates` sidecar files that power the analysis features
 - **Run comparison overlays** — Ghost (adjustable opacity), Wipe (draggable split), Difference (divergence glows), gate-synced playback
+- **Course reference from a clip** — build the perspective-correction reference from an imported video (a slow pan across the course, or a wide static view); panning is measured frame-to-frame to pick stitch anchors, gates are auto-detected when filmed close enough
 - **Pose estimation** — MoveNet Lightning skeleton overlay with ski-specific angles (knee, hip, torso lean)
 - **Autoclip** — segments continuous video into per-run clips by audio peaks
 - **Split timing** — mark splits at video positions, compare run deltas
@@ -124,8 +125,8 @@ No upfront permissions. The microphone permission is requested only when recordi
 
 ## Roadmap
 
-- **Course reference from imported video** — rebuild the perspective-correction reference from clip frames (live panning capture was removed with the camera)
 - **Electronic timing** — BLE protocol integration with ALGE/Microgate/Tag Heuer units
+- **Gate detection at distance** — the color-based detector needs gates filmed reasonably close; distant thin poles are indistinguishable from sky/terrain without a smarter detector
 
 ## History
 

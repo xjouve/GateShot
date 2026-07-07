@@ -59,9 +59,8 @@ class ReplayFeatureModule @Inject constructor(
         SetPlaybackSpeed(),
         SeekTo(),
         SetupSplitScreen(),
-        // Course reference capture
-        StartReferenceCapture(),
-        StopReferenceCapture(),
+        // Course reference (built from an imported clip)
+        BuildReferenceFromVideo(),
         // Manual gate tagging
         MarkGate(),
         ListGates(),
@@ -285,7 +284,9 @@ class ReplayFeatureModule @Inject constructor(
                 }
             }
 
-            val minPixelsForGate = (height / 4) / 4
+            // Keep in sync with CourseReferenceCapture.detectGates (tuned for
+            // distant, thin poles in imported footage)
+            val minPixelsForGate = height / 32
             if (redCount > minPixelsForGate || blueCount > minPixelsForGate) {
                 val color = if (redCount > blueCount) CourseReferenceCapture.GateColor.RED
                             else CourseReferenceCapture.GateColor.BLUE
@@ -523,29 +524,52 @@ class ReplayFeatureModule @Inject constructor(
         }
     }
 
-    // --- coach/overlay/reference/start ---
-    // Live panning-scan capture was removed with the in-app camera. Course
-    // reference will be rebuilt from an imported clip's frames in a later
-    // release; the endpoints stay registered so existing callers get a clear
-    // error instead of notFound.
-    inner class StartReferenceCapture : ApiEndpoint<Unit, Boolean> {
-        override val path = "coach/overlay/reference/start"
+    // --- coach/overlay/reference/build ---
+    // Replaces the live panning-scan capture removed with the in-app camera:
+    // the coach films a slow pan (or a wide static view) of the course with
+    // the native app, imports it, and the reference is built from its frames.
+    inner class BuildReferenceFromVideo : ApiEndpoint<String, Int> {
+        override val path = "coach/overlay/reference/build"
         override val module = "replay"
         override val requiredMode = AppMode.COACH
 
-        override suspend fun handle(request: Unit): ApiResponse<Boolean> {
-            return ApiResponse.error(501, "Course reference capture from live camera was removed; it will be rebuilt from imported video in a later release.")
-        }
-    }
-
-    // --- coach/overlay/reference/stop ---
-    inner class StopReferenceCapture : ApiEndpoint<Unit, Boolean> {
-        override val path = "coach/overlay/reference/stop"
-        override val module = "replay"
-        override val requiredMode = AppMode.COACH
-
-        override suspend fun handle(request: Unit): ApiResponse<Boolean> {
-            return ApiResponse.error(501, "Course reference capture from live camera was removed; it will be rebuilt from imported video in a later release.")
+        override suspend fun handle(request: String): ApiResponse<Int> {
+            if (_replayState.value.isCapturingReference) {
+                return ApiResponse.error(409, "Reference build already running")
+            }
+            _replayState.value = _replayState.value.copy(
+                isCapturingReference = true,
+                referenceFramesCaptured = 0
+            )
+            return try {
+                kotlinx.coroutines.withContext(Dispatchers.IO) {
+                    val frames = VideoReferenceBuilder().selectFrames(request) { count ->
+                        _replayState.value = _replayState.value.copy(
+                            referenceFramesCaptured = count
+                        )
+                    }
+                    val reference = CourseReferenceCapture().buildFromFrames(frames)
+                        ?: return@withContext ApiResponse.error(
+                            400, "Could not read frames from this clip"
+                        )
+                    overlayEngine.setCourseReference(reference)
+                    persistReference(reference)
+                    _replayState.value = _replayState.value.copy(
+                        isCapturingReference = false,
+                        hasReference = true,
+                        referenceGateCount = reference.gates.size
+                    )
+                    android.util.Log.i(
+                        "Replay",
+                        "Reference built from video: ${frames.size} frames, ${reference.gates.size} gates"
+                    )
+                    ApiResponse.success(reference.gates.size)
+                }
+            } finally {
+                if (_replayState.value.isCapturingReference) {
+                    _replayState.value = _replayState.value.copy(isCapturingReference = false)
+                }
+            }
         }
     }
 

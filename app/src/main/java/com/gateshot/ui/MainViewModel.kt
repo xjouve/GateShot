@@ -351,20 +351,18 @@ class MainViewModel @Inject constructor(
 
     val replayState: StateFlow<ReplayState> = replayModule.replayState
 
-    // Live panning-scan reference capture was removed with the in-app camera;
-    // the endpoints currently return 501. Kept so the Replay panel degrades
-    // gracefully until reference-from-imported-video lands.
-    fun onStartReferenceCapture() {
+    /**
+     * Build the course reference from an imported clip (a slow pan across the
+     * course, or a wide static view). Progress and the result surface through
+     * replayState (isCapturingReference / hasReference / referenceGateCount).
+     */
+    fun buildCourseReference(videoPath: String, onDone: (Int?) -> Unit = {}) {
         viewModelScope.launch {
-            endpointRegistry.call<Unit, Any>("coach/overlay/reference/start", Unit)
+            val response = endpointRegistry.call<String, Int>(
+                "coach/overlay/reference/build", videoPath
+            )
+            onDone(response.dataOrNull())
         }
-    }
-
-    fun onStopReferenceCapture(): Int {
-        viewModelScope.launch {
-            endpointRegistry.call<Unit, Any>("coach/overlay/reference/stop", Unit)
-        }
-        return -1
     }
 
     fun onAddOverlayLayer(clipUri: String, label: String) {

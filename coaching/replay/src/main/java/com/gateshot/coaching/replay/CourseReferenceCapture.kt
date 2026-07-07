@@ -84,17 +84,28 @@ class CourseReferenceCapture {
     fun stopCapture(): CourseReference? {
         isCapturing = false
         if (capturedFrames.size < 3) return null
+        return buildFromFrames(capturedFrames)
+    }
 
-        // Step 1: Stitch frames into panorama
-        val panorama = stitchFrames(capturedFrames)
+    /**
+     * Build a reference from pre-selected, display-oriented frames (the
+     * imported-video path). Unlike the live-capture flow a SINGLE frame is
+     * valid: a static full-course view is a perfectly usable reference when
+     * the coach films from a fixed position.
+     */
+    fun buildFromFrames(frames: List<CapturedFrame>): CourseReference? {
+        if (frames.isEmpty()) return null
+        val (pixels, width, height) =
+            if (frames.size == 1) Triple(frames[0].pixels, frames[0].width, frames[0].height)
+            else stitchFrames(frames)
+        if (width <= 0 || height <= 0) return null
 
-        // Step 2: Detect gates in the panorama
-        val gates = detectGates(panorama.first, panorama.second, panorama.third)
+        val gates = detectGates(pixels, width, height)
 
         return CourseReference(
-            panoramaWidth = panorama.second,
-            panoramaHeight = panorama.third,
-            panoramaPixels = panorama.first,
+            panoramaWidth = width,
+            panoramaHeight = height,
+            panoramaPixels = pixels,
             gates = gates,
             captureTimestamp = System.currentTimeMillis(),
             cameraPositionDescription = ""
@@ -206,8 +217,11 @@ class CourseReferenceCapture {
                 }
             }
 
-            // A gate is a vertical cluster of colored pixels
-            val minPixelsForGate = (height / 4) / 4  // Gate should span at least 1/4 of frame height
+            // A gate is a vertical cluster of colored pixels. Threshold tuned
+            // for imported footage where poles are distant and thin (a 1-2px
+            // pole spanning ~10% of frame height) — the original 1/4-height
+            // requirement found nothing on real coaching clips.
+            val minPixelsForGate = height / 32
             if (redCount > minPixelsForGate || blueCount > minPixelsForGate) {
                 val color = if (redCount > blueCount) GateColor.RED else GateColor.BLUE
                 val count = max(redCount, blueCount)

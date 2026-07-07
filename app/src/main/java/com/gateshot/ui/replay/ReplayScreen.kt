@@ -423,6 +423,7 @@ fun ReplayScreen(
             PerspectiveOverlayPanel(
                 replayState = replayState,
                 viewModel = viewModel,
+                currentVideoPath = videoFile?.absolutePath,
                 onVideoSelected = { file ->
                     val uri = Uri.fromFile(file).toString()
                     overlayClipUri = uri
@@ -1124,6 +1125,7 @@ fun ReplayScreen(
 private fun PerspectiveOverlayPanel(
     replayState: com.gateshot.coaching.replay.ReplayState,
     viewModel: MainViewModel,
+    currentVideoPath: String?,
     onVideoSelected: (File) -> Unit,
     overlayOpacity: Float = 0.5f,
     onOpacityChanged: (Float) -> Unit = {},
@@ -1157,12 +1159,11 @@ private fun PerspectiveOverlayPanel(
             verticalAlignment = Alignment.CenterVertically
         ) {
             if (replayState.isCapturingReference) {
-                // Capturing in progress
+                // Build in progress
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    // Pulsing red dot
                     val pulseColor by animateColorAsState(
                         targetValue = if (replayState.referenceFramesCaptured % 2 == 0)
                             Color.Red else Color(0xFFFF5555),
@@ -1174,48 +1175,51 @@ private fun PerspectiveOverlayPanel(
                             .background(pulseColor, CircleShape)
                     )
                     Text(
-                        "Panning... ${replayState.referenceFramesCaptured} frames",
+                        "Building reference… ${replayState.referenceFramesCaptured} frames",
                         color = Color.White,
                         fontSize = 13.sp
                     )
                 }
-                Surface(
-                    onClick = { viewModel.onStopReferenceCapture() },
-                    shape = RoundedCornerShape(8.dp),
-                    color = Color(0xFFB71C1C)
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Icon(Icons.Filled.Stop, null, tint = Color.White, modifier = Modifier.size(16.dp))
-                        Text("Stop", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Medium)
-                    }
-                }
             } else if (replayState.hasReference) {
-                // Reference captured
+                // Reference captured — text column takes the slack so the
+                // button keeps its intrinsic single-line width
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.weight(1f)
                 ) {
                     Icon(Icons.Filled.CheckCircle, null, tint = Color(0xFF66BB6A), modifier = Modifier.size(18.dp))
-                    Column {
-                        Text(
-                            "${replayState.referenceGateCount} gates detected",
-                            color = Color.White,
-                            fontSize = 13.sp
-                        )
-                        Text(
-                            "Perspective correction ready",
-                            color = Color(0xFF66BB6A),
-                            fontSize = 11.sp
-                        )
+                    Column(modifier = Modifier.padding(end = 8.dp)) {
+                        if (replayState.referenceGateCount > 0) {
+                            Text(
+                                "${replayState.referenceGateCount} gates detected",
+                                color = Color.White,
+                                fontSize = 13.sp
+                            )
+                            Text(
+                                "Perspective correction ready",
+                                color = Color(0xFF66BB6A),
+                                fontSize = 11.sp
+                            )
+                        } else {
+                            Text(
+                                "Reference ready — no gates found",
+                                color = Color.White,
+                                fontSize = 13.sp
+                            )
+                            Text(
+                                "Overlays work; perspective matching needs closer gates",
+                                color = Color(0xFFFFAB40),
+                                fontSize = 11.sp
+                            )
+                        }
                     }
                 }
-                // Re-capture button
+                // Rebuild from the loaded clip
                 Surface(
-                    onClick = { viewModel.onStartReferenceCapture() },
+                    onClick = {
+                        currentVideoPath?.let { viewModel.buildCourseReference(it) }
+                    },
                     shape = RoundedCornerShape(8.dp),
                     color = Color(0xFF333333)
                 ) {
@@ -1225,25 +1229,28 @@ private fun PerspectiveOverlayPanel(
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         Icon(Icons.Filled.Panorama, null, tint = Color.White, modifier = Modifier.size(16.dp))
-                        Text("Re-scan", color = Color.White, fontSize = 13.sp)
+                        Text("Rebuild from clip", color = Color.White, fontSize = 13.sp)
                     }
                 }
             } else {
-                // No reference yet
-                Column {
+                // No reference yet — text column takes the slack so the
+                // button keeps its intrinsic single-line width
+                Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
                     Text(
-                        "Scan the blank course before training",
+                        "Build the course reference from this clip",
                         color = Color(0xFFAABBCC),
                         fontSize = 12.sp
                     )
                     Text(
-                        "Pan slowly left-to-right across all gates",
+                        "Best from a slow pan or a wide view of the gates",
                         color = Color(0xFF667788),
                         fontSize = 11.sp
                     )
                 }
                 Surface(
-                    onClick = { viewModel.onStartReferenceCapture() },
+                    onClick = {
+                        currentVideoPath?.let { viewModel.buildCourseReference(it) }
+                    },
                     shape = RoundedCornerShape(8.dp),
                     color = MaterialTheme.colorScheme.primary
                 ) {
@@ -1252,8 +1259,8 @@ private fun PerspectiveOverlayPanel(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        Icon(Icons.Filled.CameraAlt, null, tint = Color.Black, modifier = Modifier.size(16.dp))
-                        Text("Scan Course", color = Color.Black, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        Icon(Icons.Filled.Panorama, null, tint = Color.Black, modifier = Modifier.size(16.dp))
+                        Text("Build Reference", color = Color.Black, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                     }
                 }
             }
