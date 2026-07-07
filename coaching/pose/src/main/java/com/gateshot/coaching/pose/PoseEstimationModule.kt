@@ -264,10 +264,14 @@ class PoseEstimationModule @Inject constructor(
      *
      * Resizes the frame to 192×192 using nearest-neighbor sampling (fast),
      * and packs RGB values into a ByteBuffer in NHWC format.
+     *
+     * The bundled movenet_lightning.tflite is the int8-quantized variant:
+     * its input tensor is uint8 [1,192,192,3] (110592 bytes), NOT float32 —
+     * raw 0-255 channel bytes, no normalization.
      */
     private fun prepareInput(pixels: IntArray, width: Int, height: Int): ByteBuffer {
         val inputSize = MODEL_INPUT_SIZE
-        val buffer = ByteBuffer.allocateDirect(1 * inputSize * inputSize * 3 * 4)
+        val buffer = ByteBuffer.allocateDirect(1 * inputSize * inputSize * 3)
         buffer.order(ByteOrder.nativeOrder())
 
         val xRatio = width.toFloat() / inputSize
@@ -281,14 +285,9 @@ class PoseEstimationModule @Inject constructor(
 
                 val pixel = if (srcIdx < pixels.size) pixels[srcIdx] else 0
 
-                // Extract RGB and normalize to 0-1 float (MoveNet expects float input)
-                val r = ((pixel shr 16) and 0xFF) / 255f
-                val g = ((pixel shr 8) and 0xFF) / 255f
-                val b = (pixel and 0xFF) / 255f
-
-                buffer.putFloat(r)
-                buffer.putFloat(g)
-                buffer.putFloat(b)
+                buffer.put(((pixel shr 16) and 0xFF).toByte())  // R
+                buffer.put(((pixel shr 8) and 0xFF).toByte())   // G
+                buffer.put((pixel and 0xFF).toByte())           // B
             }
         }
 

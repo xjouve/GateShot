@@ -453,7 +453,13 @@ class MainViewModel @Inject constructor(
 
     // --- Athlete Management ---
 
-    fun onCreateAthlete(name: String, bibNumbers: String, ageGroup: String, team: String) {
+    fun onCreateAthlete(
+        name: String,
+        bibNumbers: String,
+        ageGroup: String,
+        team: String,
+        onDone: () -> Unit = {}
+    ) {
         viewModelScope.launch {
             endpointRegistry.call<com.gateshot.coaching.athlete.data.AthleteEntity, Long>(
                 "coach/athlete/create",
@@ -464,6 +470,10 @@ class MainViewModel @Inject constructor(
                     team = team
                 )
             )
+            // Fires only after the insert completed, so a follow-up list
+            // refresh actually sees the new row (refreshing in parallel
+            // raced the insert and made saves look like no-ops).
+            onDone()
         }
     }
 

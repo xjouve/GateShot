@@ -145,10 +145,11 @@ fun AthleteScreen(
                 Surface(
                     onClick = {
                         if (name.isNotBlank()) {
-                            viewModel.onCreateAthlete(name, bibNumbers, ageGroup, team)
+                            viewModel.onCreateAthlete(name, bibNumbers, ageGroup, team) {
+                                viewModel.getAthletes { athletes = it }
+                            }
                             name = ""; bibNumbers = ""; team = ""
                             showAddForm = false
-                            viewModel.getAthletes { athletes = it }
                         }
                     },
                     shape = RoundedCornerShape(8.dp),
