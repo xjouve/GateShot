@@ -26,15 +26,21 @@ import kotlin.math.roundToInt
 class PlaybackStabilizer {
 
     data class Track(
-        /** Per-analyzed-frame view translation as a fraction of width/height. */
+        /**
+         * Per-analyzed-frame content correction as a fraction of frame
+         * width/height, in CODED (unrotated) frame space — getFrameAtIndex
+         * does not apply rotation metadata (unlike getFrameAtTime).
+         */
         val dxFrac: FloatArray,
         val dyFrac: FloatArray,
         val frameIntervalMs: Float,
         val cropFactor: Float,
+        /** Clockwise rotation applied to the coded frame for display. */
+        val rotationDeg: Int,
         /** Measured jitter reduction on the verification sample, 0..1. */
         val jitterReduction: Float
     ) {
-        /** Linearly interpolated correction at a playback position. */
+        /** Linearly interpolated coded-space correction at a playback position. */
         fun correctionAt(positionMs: Long): Pair<Float, Float> {
             if (dxFrac.isEmpty()) return 0f to 0f
             val f = (positionMs / frameIntervalMs).coerceIn(0f, (dxFrac.size - 1).toFloat())
@@ -43,6 +49,20 @@ class PlaybackStabilizer {
             val t = f - i0
             return (dxFrac[i0] + (dxFrac[i1] - dxFrac[i0]) * t) to
                    (dyFrac[i0] + (dyFrac[i1] - dyFrac[i0]) * t)
+        }
+
+        /**
+         * Correction rotated into DISPLAY space (what a view translation
+         * needs): a coded-space vector rotated by [rotationDeg] clockwise.
+         */
+        fun displayCorrectionAt(positionMs: Long): Pair<Float, Float> {
+            val (dx, dy) = correctionAt(positionMs)
+            return when (((rotationDeg % 360) + 360) % 360) {
+                90 -> -dy to dx
+                180 -> -dx to -dy
+                270 -> dy to -dx
+                else -> dx to dy
+            }
         }
     }
 
@@ -63,6 +83,9 @@ class PlaybackStabilizer {
             val durationMs = retriever
                 .extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
                 ?.toFloatOrNull() ?: return@withContext null
+            val rotationDeg = retriever
+                .extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)
+                ?.toIntOrNull() ?: 0
             if (frameCount < MIN_FRAMES || durationMs <= 0f) return@withContext null
 
             // Bound the analysis cost on long clips by striding frames.
@@ -121,6 +144,7 @@ class PlaybackStabilizer {
                 dyFrac = FloatArray(analyzed) { sign * corrY[it] / ANALYSIS_SIZE },
                 frameIntervalMs = frameIntervalMs,
                 cropFactor = CROP_FACTOR,
+                rotationDeg = rotationDeg,
                 jitterReduction = reduction
             )
         } catch (e: Exception) {

@@ -25,7 +25,9 @@ import java.nio.FloatBuffer
 internal class WarpGlPipeline(
     encoderSurface: Surface,
     private val cropFrac: Float,
-    private val tonemapHdr: Boolean
+    private val tonemapHdr: Boolean,
+    /** Optional 4x5 android.graphics.ColorMatrix array (offsets in 0..255). */
+    private val colorMatrix: FloatArray? = null
 ) {
     private var eglDisplay: EGLDisplay = EGL14.EGL_NO_DISPLAY
     private var eglContext: EGLContext = EGL14.EGL_NO_CONTEXT
@@ -38,6 +40,9 @@ internal class WarpGlPipeline(
     private var uStMatrixLoc = 0
     private var uWarpMatrixLoc = 0
     private var uTonemapLoc = 0
+    private var uApplyColorLoc = 0
+    private var uColorMatLoc = 0
+    private var uColorOffsetLoc = 0
 
     lateinit var surfaceTexture: SurfaceTexture
         private set
@@ -83,6 +88,9 @@ internal class WarpGlPipeline(
         uStMatrixLoc = GLES20.glGetUniformLocation(program, "uSTMatrix")
         uWarpMatrixLoc = GLES20.glGetUniformLocation(program, "uWarpMatrix")
         uTonemapLoc = GLES20.glGetUniformLocation(program, "uTonemap")
+        uApplyColorLoc = GLES20.glGetUniformLocation(program, "uApplyColor")
+        uColorMatLoc = GLES20.glGetUniformLocation(program, "uColorMat")
+        uColorOffsetLoc = GLES20.glGetUniformLocation(program, "uColorOffset")
 
         val tex = IntArray(1)
         GLES20.glGenTextures(1, tex, 0)
@@ -126,6 +134,24 @@ internal class WarpGlPipeline(
         GLES20.glUniformMatrix4fv(uStMatrixLoc, 1, false, stMatrix, 0)
         GLES20.glUniformMatrix4fv(uWarpMatrixLoc, 1, false, warpMatrix, 0)
         if (uTonemapLoc >= 0) GLES20.glUniform1i(uTonemapLoc, if (tonemapHdr) 1 else 0)
+
+        // Optional color grade: android 4x5 ColorMatrix split into a GL mat4
+        // (column-major) plus an offset vec4 (rescaled from 0..255 to 0..1).
+        val cm = colorMatrix
+        if (uApplyColorLoc >= 0) GLES20.glUniform1i(uApplyColorLoc, if (cm != null) 1 else 0)
+        if (cm != null && uColorMatLoc >= 0) {
+            val m = floatArrayOf(
+                cm[0], cm[5], cm[10], cm[15],
+                cm[1], cm[6], cm[11], cm[16],
+                cm[2], cm[7], cm[12], cm[17],
+                cm[3], cm[8], cm[13], cm[18]
+            )
+            GLES20.glUniformMatrix4fv(uColorMatLoc, 1, false, m, 0)
+            GLES20.glUniform4f(
+                uColorOffsetLoc,
+                cm[4] / 255f, cm[9] / 255f, cm[14] / 255f, cm[19] / 255f
+            )
+        }
 
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
 
@@ -219,9 +245,16 @@ internal class WarpGlPipeline(
             precision mediump float;
             uniform samplerExternalOES sTexture;
             uniform int uTonemap;
+            uniform int uApplyColor;
+            uniform mat4 uColorMat;
+            uniform vec4 uColorOffset;
             varying vec2 vTex;
             void main() {
-                gl_FragColor = texture2D(sTexture, vTex);
+                vec4 c = texture2D(sTexture, vTex);
+                if (uApplyColor == 1) {
+                    c = clamp(uColorMat * c + uColorOffset, 0.0, 1.0);
+                }
+                gl_FragColor = c;
             }
         """
 
@@ -241,14 +274,17 @@ internal class WarpGlPipeline(
             }
             void main() {
                 vec4 s = texture2D(sTexture, vTex);
+                vec4 c = s;
                 if (uTonemap == 1) {
                     vec3 lin = vec3(hlgToLinear(s.r), hlgToLinear(s.g), hlgToLinear(s.b));
                     vec3 mapped = lin / (lin + vec3(1.0));      // Reinhard
                     vec3 srgb = pow(mapped, vec3(1.0 / 2.2));   // gamma
-                    gl_FragColor = vec4(srgb, 1.0);
-                } else {
-                    gl_FragColor = s;
+                    c = vec4(srgb, 1.0);
                 }
+                if (uApplyColor == 1) {
+                    c = clamp(uColorMat * c + uColorOffset, 0.0, 1.0);
+                }
+                gl_FragColor = c;
             }
         """
     }

@@ -83,6 +83,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
+import com.gateshot.processing.stabilize.EnhancedExporter
 import com.gateshot.processing.stabilize.PlaybackStabilizer
 import com.gateshot.ui.MainViewModel
 import com.gateshot.videoenhance.AutoColorAnalyzer
@@ -157,11 +158,17 @@ fun ReplayScreen(
     var colorAnalyzing by remember { mutableStateOf(false) }
     var colorMatrix by remember { mutableStateOf<android.graphics.ColorMatrix?>(null) }
 
+    // Export of the enhanced clip (stabilization/color baked into a new MP4)
+    var exporting by remember { mutableStateOf(false) }
+    var exportProgress by remember { mutableFloatStateOf(0f) }
+    var exportMessage by remember { mutableStateOf<String?>(null) }
+
     // Both are per-clip — reset when the loaded video changes
     LaunchedEffect(videoFile) {
         stabEnabled = false; stabTrack = null; stabAnalyzing = false
         colorEnabled = false; colorMatrix = null; colorAnalyzing = false
         stabDx = 0f; stabDy = 0f
+        exportMessage = null
     }
 
     // Create ExoPlayer instance for the reference (main) video
@@ -181,13 +188,14 @@ fun ReplayScreen(
         }
     }
 
-    // Per-display-frame stabilization correction lookup
+    // Per-display-frame stabilization correction lookup. The view translation
+    // acts in display space; the track stores coded-space corrections.
     LaunchedEffect(stabEnabled, stabTrack) {
         val track = stabTrack
         if (stabEnabled && track != null) {
             while (true) {
                 withFrameNanos { }
-                val (dx, dy) = track.correctionAt(exoPlayer.currentPosition)
+                val (dx, dy) = track.displayCorrectionAt(exoPlayer.currentPosition)
                 stabDx = dx
                 stabDy = dy
             }
@@ -476,6 +484,60 @@ fun ReplayScreen(
                             }
                         }
                 )
+
+                // Export-enhanced button — appears once an enhancement is active
+                if ((stabEnabled && stabTrack != null) || (colorEnabled && colorMatrix != null) || exporting || exportMessage != null) {
+                    Surface(
+                        onClick = onClick@{
+                            if (exporting || videoFile == null) return@onClick
+                            val outFile = run {
+                                var candidate = File(videoFile.parent, videoFile.nameWithoutExtension + "_enhanced.mp4")
+                                var i = 1
+                                while (candidate.exists()) {
+                                    candidate = File(videoFile.parent, videoFile.nameWithoutExtension + "_enhanced_$i.mp4")
+                                    i++
+                                }
+                                candidate
+                            }
+                            exporting = true
+                            exportProgress = 0f
+                            exportMessage = null
+                            exoPlayer.pause()
+                            enhanceScope.launch {
+                                val result = EnhancedExporter().export(
+                                    srcPath = videoFile.absolutePath,
+                                    outPath = outFile.absolutePath,
+                                    track = if (stabEnabled) stabTrack else null,
+                                    colorMatrix = if (colorEnabled) colorMatrix?.array?.copyOf() else null
+                                ) { exportProgress = it }
+                                exporting = false
+                                exportMessage = if (result != null) {
+                                    viewModel.onNativeCaptureComplete(result.outputPath, isVideo = true)
+                                    val jitterNote = result.jitterChangePercent
+                                        ?.takeIf { it != 0 }
+                                        ?.let { " (jitter ${if (it > 0) "+" else ""}$it%)" } ?: ""
+                                    "Saved ${File(result.outputPath).name}$jitterNote"
+                                } else "Export failed"
+                            }
+                        },
+                        shape = RoundedCornerShape(4.dp),
+                        color = Color(0xCC000000),
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(8.dp)
+                    ) {
+                        Text(
+                            when {
+                                exporting -> "Exporting… ${(exportProgress * 100).toInt()}%"
+                                exportMessage != null -> exportMessage!!
+                                else -> "⬇ Export enhanced clip"
+                            },
+                            color = if (exportMessage == "Export failed") Color(0xFFEF5350) else Color(0xFF4FC3F7),
+                            fontSize = 10.sp,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                        )
+                    }
+                }
 
                 // Stabilization status badge
                 if (stabAnalyzing || (stabEnabled && stabTrack != null)) {
