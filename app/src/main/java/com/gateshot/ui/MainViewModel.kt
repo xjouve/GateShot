@@ -10,10 +10,14 @@ import com.gateshot.core.mode.AppMode
 import com.gateshot.core.mode.ModeManager
 import com.gateshot.coaching.replay.ReplayFeatureModule
 import com.gateshot.coaching.replay.ReplayState
+import com.gateshot.videoimport.VideoImportManager
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -35,7 +39,8 @@ class MainViewModel @Inject constructor(
     private val eventBus: EventBus,
     val endpointRegistry: EndpointRegistry,
     private val configStore: ConfigStore,
-    private val replayModule: ReplayFeatureModule
+    private val replayModule: ReplayFeatureModule,
+    private val videoImportManager: VideoImportManager
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(MainUiState())
@@ -62,6 +67,60 @@ class MainViewModel @Inject constructor(
                 } else 0.0
                 _uiState.update { it.copy(storageRemainingGb = storageGb.toFloat()) }
                 kotlinx.coroutines.delay(10_000)
+            }
+        }
+    }
+
+    // --- Video import & selection ---
+
+    /** Clip explicitly chosen in the Library; Replay prefers it over the newest file. */
+    private val _selectedVideoPath = MutableStateFlow<String?>(null)
+    val selectedVideoPath: StateFlow<String?> = _selectedVideoPath.asStateFlow()
+
+    /** One-shot navigation signal: a clip is ready, switch to the Replay tab. */
+    private val _openInReplay = MutableSharedFlow<Unit>()
+    val openInReplay: SharedFlow<Unit> = _openInReplay.asSharedFlow()
+
+    private val _isImporting = MutableStateFlow(false)
+    val isImporting: StateFlow<Boolean> = _isImporting.asStateFlow()
+
+    /** Import videos picked from the system Photo Picker into the Library. */
+    fun importVideos(uris: List<android.net.Uri>) {
+        if (uris.isEmpty()) return
+        viewModelScope.launch {
+            _isImporting.value = true
+            try {
+                val imported = videoImportManager.import(uris)
+                if (imported.isNotEmpty()) {
+                    _galleryRefresh.update { it + 1 }
+                }
+            } finally {
+                _isImporting.value = false
+            }
+        }
+    }
+
+    /** Open a Library clip in the Replay tab. */
+    fun openVideoInReplay(path: String) {
+        viewModelScope.launch {
+            _selectedVideoPath.value = path
+            _openInReplay.emit(Unit)
+        }
+    }
+
+    /** Video handed to GateShot from outside (Open with / Share): import, then replay. */
+    fun onOpenExternalVideo(uri: android.net.Uri) {
+        viewModelScope.launch {
+            _isImporting.value = true
+            try {
+                val imported = videoImportManager.import(listOf(uri))
+                imported.firstOrNull()?.let { file ->
+                    _galleryRefresh.update { it + 1 }
+                    _selectedVideoPath.value = file.absolutePath
+                    _openInReplay.emit(Unit)
+                }
+            } finally {
+                _isImporting.value = false
             }
         }
     }
@@ -245,11 +304,12 @@ class MainViewModel @Inject constructor(
 
     fun onCreateSession(eventName: String, discipline: String) {
         viewModelScope.launch {
-            endpointRegistry.call<Map<String, String>, Any>(
+            endpointRegistry.call<com.gateshot.session.CreateSessionRequest, Any>(
                 "session/create",
-                mapOf("eventName" to eventName, "discipline" to discipline)
+                com.gateshot.session.CreateSessionRequest(eventName = eventName, discipline = discipline)
             )
-            _uiState.update { it.copy(sessionName = eventName, sessionDiscipline = discipline, activeRunNumber = 0) }
+            // session/create auto-starts run 1
+            _uiState.update { it.copy(sessionName = eventName, sessionDiscipline = discipline, activeRunNumber = 1) }
         }
     }
 
@@ -262,11 +322,11 @@ class MainViewModel @Inject constructor(
 
     fun onStartRun() {
         viewModelScope.launch {
-            val runNum = _uiState.value.activeRunNumber + 1
-            endpointRegistry.call<Map<String, Any>, Any>(
-                "session/run/start",
-                mapOf("runNumber" to runNum)
+            // Handler numbers the run itself (max existing + 1)
+            val response = endpointRegistry.call<Unit, com.gateshot.session.data.RunEntity>(
+                "session/run/start", Unit
             )
+            val runNum = response.dataOrNull()?.runNumber ?: (_uiState.value.activeRunNumber + 1)
             _uiState.update { it.copy(activeRunNumber = runNum) }
         }
     }

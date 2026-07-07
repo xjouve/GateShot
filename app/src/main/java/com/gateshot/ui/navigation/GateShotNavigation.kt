@@ -53,10 +53,30 @@ val allScreens = listOf(Screen.Gallery, Screen.Replay, Screen.Coach, Screen.Sett
 @Composable
 fun GateShotNavHost(
     modifier: Modifier = Modifier,
+    pendingVideoUri: android.net.Uri? = null,
+    onPendingVideoConsumed: () -> Unit = {},
     viewModel: MainViewModel = hiltViewModel()
 ) {
     val navController = rememberNavController()
     val uiState by viewModel.uiState.collectAsState()
+
+    // A clip is ready for review (Library tap or external open) — switch tab
+    LaunchedEffect(Unit) {
+        viewModel.openInReplay.collect {
+            navController.navigate(Screen.Replay.route) {
+                popUpTo(Screen.Gallery.route) { saveState = true }
+                launchSingleTop = true
+            }
+        }
+    }
+
+    // Video handed to GateShot via Open with / Share
+    LaunchedEffect(pendingVideoUri) {
+        pendingVideoUri?.let { uri ->
+            viewModel.onOpenExternalVideo(uri)
+            onPendingVideoConsumed()
+        }
+    }
 
     // Session creation dialog — offered once at startup when no session is
     // active; also reachable later from the session flow.

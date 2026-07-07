@@ -18,11 +18,17 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Timer
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -58,6 +64,14 @@ fun GalleryScreen(
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val galleryRefresh by viewModel.galleryRefresh.collectAsState()
+    val isImporting by viewModel.isImporting.collectAsState()
+
+    // System Photo Picker — no storage permission needed
+    val pickVideos = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickMultipleVisualMedia()
+    ) { uris ->
+        viewModel.importVideos(uris)
+    }
 
     // Load videos from GateShot storage (in-app recordings historically,
     // imported clips going forward)
@@ -80,45 +94,91 @@ fun GalleryScreen(
             ?: emptyList()
     }
 
-    Column(
+    Box(
         modifier = modifier
             .fillMaxSize()
             .background(Color.Black)
     ) {
-        // Header
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(Color(0xFF1A1A1A))
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = "Library",
-                color = Color.White,
-                fontSize = 20.sp,
-                fontWeight = FontWeight.Bold
-            )
-            Text(
-                text = "${items.size} videos",
-                color = Color.Gray,
-                fontSize = 14.sp
-            )
+        Column(modifier = Modifier.fillMaxSize()) {
+            // Header
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xFF1A1A1A))
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Library",
+                    color = Color.White,
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "${items.size} videos",
+                    color = Color.Gray,
+                    fontSize = 14.sp
+                )
+            }
+
+            if (items.isEmpty() && !isImporting) {
+                Column(
+                    modifier = Modifier.fillMaxSize().padding(32.dp),
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text("No videos yet", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                    Text(
+                        "Film runs with your phone's camera app, then import them here.",
+                        color = Color.Gray,
+                        fontSize = 14.sp,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+                }
+            } else {
+                LazyVerticalGrid(
+                    columns = GridCells.Fixed(3),
+                    contentPadding = PaddingValues(4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    items(items) { item ->
+                        GalleryThumbnail(
+                            item = item,
+                            onOpen = { viewModel.openVideoInReplay(item.filePath) },
+                            onDelete = { refreshKey++ }
+                        )
+                    }
+                }
+            }
         }
 
-        LazyVerticalGrid(
-            columns = GridCells.Fixed(3),
-            contentPadding = PaddingValues(4.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-            modifier = Modifier.fillMaxSize()
+        ExtendedFloatingActionButton(
+            onClick = {
+                if (!isImporting) {
+                    pickVideos.launch(
+                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
+                    )
+                }
+            },
+            containerColor = MaterialTheme.colorScheme.primary,
+            contentColor = Color.Black,
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(16.dp)
         ) {
-            items(items) { item ->
-                GalleryThumbnail(
-                    item = item,
-                    onDelete = { refreshKey++ }
+            if (isImporting) {
+                CircularProgressIndicator(
+                    color = Color.Black,
+                    modifier = Modifier.size(20.dp)
                 )
+                Text("  Importing…", fontWeight = FontWeight.Bold)
+            } else {
+                Icon(Icons.Filled.Add, contentDescription = null)
+                Text(" Import videos", fontWeight = FontWeight.Bold)
             }
         }
     }
@@ -127,38 +187,17 @@ fun GalleryScreen(
 @Composable
 fun GalleryThumbnail(
     item: GalleryItem,
+    onOpen: () -> Unit = {},
     onDelete: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
-    var showFullPreview by remember { mutableStateOf(false) }
     val context = androidx.compose.ui.platform.LocalContext.current
-
-    // Open in external player when tapped
-    if (showFullPreview && item.filePath.isNotEmpty()) {
-        androidx.compose.runtime.LaunchedEffect(item.filePath) {
-            try {
-                val file = java.io.File(item.filePath)
-                val uri = androidx.core.content.FileProvider.getUriForFile(
-                    context, "${context.packageName}.fileprovider", file
-                )
-                val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
-                    setDataAndType(uri, "video/mp4")
-                    addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                }
-                context.startActivity(intent)
-            } catch (e: Exception) {
-                android.util.Log.e("Gallery", "Video open failed: ${e.message}", e)
-            }
-            showFullPreview = false
-        }
-    }
 
     Box(
         modifier = modifier
             .aspectRatio(1f)
             .background(Color(0xFF2A2A2A), RoundedCornerShape(4.dp))
-            .clickable { showFullPreview = true }
+            .clickable { onOpen() }
     ) {
         // Video thumbnail
         if (item.filePath.isNotEmpty()) {

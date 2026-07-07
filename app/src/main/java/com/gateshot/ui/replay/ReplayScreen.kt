@@ -110,12 +110,16 @@ fun ReplayScreen(
     var overlayOpacity by remember { mutableFloatStateOf(0.5f) }
     var wipePosition by remember { mutableFloatStateOf(0.5f) }
 
-    // Find the most recent video file to load
-    val videoFile = remember {
-        val videoDir = File(context.getExternalFilesDir(null), "GateShot/videos")
-        videoDir.listFiles()
-            ?.filter { it.extension == "mp4" }
-            ?.maxByOrNull { it.lastModified() }
+    // Load the clip chosen in the Library, falling back to the most recent one
+    val selectedVideoPath by viewModel.selectedVideoPath.collectAsState()
+    val videoFile = remember(selectedVideoPath) {
+        selectedVideoPath?.let { File(it) }?.takeIf { it.exists() }
+            ?: run {
+                val videoDir = File(context.getExternalFilesDir(null), "GateShot/videos")
+                videoDir.listFiles()
+                    ?.filter { it.extension == "mp4" }
+                    ?.maxByOrNull { it.lastModified() }
+            }
     }
 
     // Create ExoPlayer instance for the reference (main) video
