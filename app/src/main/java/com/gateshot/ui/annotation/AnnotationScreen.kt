@@ -41,6 +41,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -53,9 +54,45 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.gateshot.coaching.annotation.DrawingElement
+import com.gateshot.coaching.annotation.DrawingType
+import com.gateshot.coaching.annotation.PointF
 import com.gateshot.ui.MainViewModel
 
 enum class DrawTool { FREEHAND, LINE, ARROW, CIRCLE }
+
+/** Convert screen-space strokes to the annotation module's normalized model. */
+private fun strokesToElements(
+    strokes: List<DrawingStroke>,
+    canvasWidth: Float,
+    canvasHeight: Float
+): List<DrawingElement> {
+    if (canvasWidth <= 0f || canvasHeight <= 0f) return emptyList()
+    fun norm(o: Offset) = PointF(o.x / canvasWidth, o.y / canvasHeight)
+    fun colorHex(c: Color) = String.format(
+        "#%02X%02X%02X",
+        (c.red * 255).toInt(), (c.green * 255).toInt(), (c.blue * 255).toInt()
+    )
+    return strokes.mapNotNull { stroke ->
+        if (stroke.points.isEmpty()) return@mapNotNull null
+        val points = when (stroke.tool) {
+            DrawTool.FREEHAND -> stroke.points.map(::norm)
+            // Line-like tools only need the endpoints
+            else -> listOf(norm(stroke.points.first()), norm(stroke.points.last()))
+        }
+        DrawingElement(
+            type = when (stroke.tool) {
+                DrawTool.FREEHAND -> DrawingType.FREEHAND
+                DrawTool.LINE -> DrawingType.LINE
+                DrawTool.ARROW -> DrawingType.ARROW
+                DrawTool.CIRCLE -> DrawingType.CIRCLE
+            },
+            points = points,
+            color = colorHex(stroke.color),
+            strokeWidth = stroke.strokeWidth
+        )
+    }
+}
 
 data class DrawingStroke(
     val points: List<Offset>,
@@ -73,9 +110,22 @@ fun AnnotationScreen(
     var selectedColor by remember { mutableStateOf(Color.Red) }
     var strokeWidth by remember { mutableStateOf(4f) }
     var isRecordingVoice by remember { mutableStateOf(false) }
+    var canvasSize by remember { mutableStateOf(androidx.compose.ui.unit.IntSize.Zero) }
+    var saveMessage by remember { mutableStateOf<String?>(null) }
 
     val strokes = remember { mutableStateListOf<DrawingStroke>() }
     val currentPoints = remember { mutableStateListOf<Offset>() }
+
+    // Voice-over needs the mic — ask only when the coach actually uses it
+    val micPermission = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            isRecordingVoice = true
+            viewModel.startVoiceRecording()
+        }
+    }
+    val context = androidx.compose.ui.platform.LocalContext.current
 
     Column(
         modifier = modifier
@@ -92,6 +142,13 @@ fun AnnotationScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text("Annotate", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+            saveMessage?.let { msg ->
+                androidx.compose.runtime.LaunchedEffect(msg) {
+                    kotlinx.coroutines.delay(2500)
+                    saveMessage = null
+                }
+                Text(msg, color = MaterialTheme.colorScheme.primary, fontSize = 12.sp)
+            }
             Row {
                 IconButton(onClick = { if (strokes.isNotEmpty()) strokes.removeLast() }) {
                     Icon(Icons.Filled.Undo, "Undo", tint = Color.White)
@@ -99,7 +156,16 @@ fun AnnotationScreen(
                 IconButton(onClick = { strokes.clear() }) {
                     Icon(Icons.Filled.Delete, "Clear all", tint = Color(0xFFEF5350))
                 }
-                IconButton(onClick = { viewModel.onSaveAnnotatedFrame() }) {
+                IconButton(onClick = {
+                    val elements = strokesToElements(
+                        strokes.toList(),
+                        canvasSize.width.toFloat(),
+                        canvasSize.height.toFloat()
+                    )
+                    viewModel.onSaveAnnotatedFrame(elements) { savedPath ->
+                        saveMessage = if (savedPath != null) "Frame saved" else "Save failed"
+                    }
+                }) {
                     Icon(Icons.Filled.Save, "Save", tint = MaterialTheme.colorScheme.primary)
                 }
             }
@@ -111,6 +177,7 @@ fun AnnotationScreen(
                 .fillMaxWidth()
                 .weight(1f)
                 .background(Color(0xFF111111))
+                .onSizeChanged { canvasSize = it }
                 .pointerInput(selectedTool, selectedColor) {
                     detectDragGestures(
                         onDragStart = { offset ->
@@ -239,11 +306,19 @@ fun AnnotationScreen(
         ) {
             Surface(
                 onClick = {
-                    isRecordingVoice = !isRecordingVoice
                     if (isRecordingVoice) {
-                        viewModel.startVoiceRecording()
-                    } else {
+                        isRecordingVoice = false
                         viewModel.stopVoiceRecording()
+                    } else {
+                        val granted = androidx.core.content.ContextCompat.checkSelfPermission(
+                            context, android.Manifest.permission.RECORD_AUDIO
+                        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                        if (granted) {
+                            isRecordingVoice = true
+                            viewModel.startVoiceRecording()
+                        } else {
+                            micPermission.launch(android.Manifest.permission.RECORD_AUDIO)
+                        }
                     }
                 },
                 shape = RoundedCornerShape(24.dp),

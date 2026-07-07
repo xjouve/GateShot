@@ -4,6 +4,7 @@ import android.net.Uri
 import android.view.ViewGroup
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -26,8 +27,10 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.ContentCut
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.FastRewind
+import androidx.compose.material.icons.filled.Flag
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Panorama
 import androidx.compose.material.icons.filled.Pause
@@ -120,6 +123,17 @@ fun ReplayScreen(
                     ?.filter { it.extension == "mp4" }
                     ?.maxByOrNull { it.lastModified() }
             }
+    }
+
+    // Manually tagged gate timestamps for this clip (sidecar-backed)
+    var gateTimestamps by remember { mutableStateOf<List<Long>>(emptyList()) }
+    var showGateList by remember { mutableStateOf(false) }
+    LaunchedEffect(videoFile) {
+        if (videoFile != null) {
+            viewModel.listGates(videoFile.absolutePath) { gateTimestamps = it }
+        } else {
+            gateTimestamps = emptyList()
+        }
     }
 
     // Create ExoPlayer instance for the reference (main) video
@@ -257,6 +271,28 @@ fun ReplayScreen(
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Icon(Icons.Filled.Timer, "Record split", tint = Color.White, modifier = Modifier.size(20.dp))
+                    }
+                }
+                // Mark gate at the current position
+                Surface(
+                    onClick = {
+                        if (videoFile != null) {
+                            viewModel.markGate(videoFile.absolutePath, currentPosition) {
+                                gateTimestamps = it
+                            }
+                        }
+                    },
+                    shape = RoundedCornerShape(8.dp),
+                    color = if (gateTimestamps.isNotEmpty()) MaterialTheme.colorScheme.primary else Color(0xFF444444),
+                    modifier = Modifier.size(40.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            Icons.Filled.Flag,
+                            "Mark gate",
+                            tint = if (gateTimestamps.isNotEmpty()) Color.Black else Color.White,
+                            modifier = Modifier.size(20.dp)
+                        )
                     }
                 }
                 // Autoclip button
@@ -670,6 +706,24 @@ fun ReplayScreen(
                 .padding(horizontal = 16.dp)
         ) {
             val maxDuration = if (totalDuration > 0) totalDuration.toFloat() else 1f
+            // Gate tick marks aligned with the scrubber
+            if (gateTimestamps.isNotEmpty() && totalDuration > 0) {
+                Canvas(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(6.dp)
+                ) {
+                    gateTimestamps.forEach { ts ->
+                        val x = (ts.toFloat() / maxDuration).coerceIn(0f, 1f) * size.width
+                        drawLine(
+                            color = Color(0xFFFFAB40),
+                            start = androidx.compose.ui.geometry.Offset(x, 0f),
+                            end = androidx.compose.ui.geometry.Offset(x, size.height),
+                            strokeWidth = 3f
+                        )
+                    }
+                }
+            }
             Slider(
                 value = currentPosition.toFloat().coerceIn(0f, maxDuration),
                 onValueChange = {
@@ -696,8 +750,62 @@ fun ReplayScreen(
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Text(formatTime(currentPosition), color = Color.Gray, fontSize = 11.sp)
+                if (gateTimestamps.isNotEmpty()) {
+                    Text(
+                        "⚑ ${gateTimestamps.size} gates",
+                        color = Color(0xFFFFAB40),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.clickable { showGateList = true }
+                    )
+                }
                 Text(formatTime(totalDuration), color = Color.Gray, fontSize = 11.sp)
             }
+        }
+
+        // Gate list dialog — tap to seek, delete to remove
+        if (showGateList && videoFile != null) {
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { showGateList = false },
+                title = { Text("Gates (${gateTimestamps.size})") },
+                text = {
+                    Column {
+                        gateTimestamps.forEachIndexed { index, ts ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 2.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    "Gate ${index + 1} — ${formatTime(ts)}",
+                                    fontSize = 14.sp,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clickable {
+                                            exoPlayer.seekTo(ts)
+                                            currentPosition = ts
+                                            showGateList = false
+                                        }
+                                )
+                                IconButton(onClick = {
+                                    viewModel.deleteGate(videoFile.absolutePath, ts) {
+                                        gateTimestamps = it
+                                    }
+                                }) {
+                                    Icon(Icons.Filled.Delete, "Delete gate", tint = Color(0xFFEF5350))
+                                }
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    androidx.compose.material3.TextButton(onClick = { showGateList = false }) {
+                        Text("Close")
+                    }
+                }
+            )
         }
 
         // Transport controls

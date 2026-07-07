@@ -187,7 +187,11 @@ class AnnotationFeatureModule @Inject constructor(
         override val requiredMode = AppMode.COACH
 
         override suspend fun handle(request: SaveFrameRequest): ApiResponse<String> {
-            val outputFile = File(context.cacheDir, "annotated_${System.currentTimeMillis()}.png")
+            // GateShot/photos is the annotated-frames browser directory
+            // (CoachingToolsScreen); cacheDir would make saves invisible.
+            val outputDir = File(context.getExternalFilesDir(null), "GateShot/photos")
+                .apply { mkdirs() }
+            val outputFile = File(outputDir, "annotated_${System.currentTimeMillis()}.png")
 
             // Compose the annotated frame: base frame + drawing overlays
             // The UI provides the base frame as pixel data and the drawing

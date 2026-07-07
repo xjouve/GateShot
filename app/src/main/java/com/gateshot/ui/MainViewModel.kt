@@ -125,12 +125,23 @@ class MainViewModel @Inject constructor(
         }
     }
 
+    // Timing runs are keyed by clip: marking splits on a new clip starts a
+    // fresh timing run named after the video file.
+    private var activeTimingRunId: String? = null
+
     fun onRecordSplit(positionMs: Long) {
         viewModelScope.launch {
             try {
-                endpointRegistry.call<Map<String, Long>, Any>(
-                    "timing/split/record",
-                    mapOf("timestamp" to positionMs)
+                val runId = _selectedVideoPath.value
+                    ?.let { java.io.File(it).nameWithoutExtension }
+                    ?: "manual"
+                if (activeTimingRunId != runId) {
+                    endpointRegistry.call<String, Boolean>("coach/timing/run/start", runId)
+                    activeTimingRunId = runId
+                }
+                endpointRegistry.call<com.gateshot.coaching.timing.RecordSplitRequest, com.gateshot.coaching.timing.Split>(
+                    "coach/timing/split/record",
+                    com.gateshot.coaching.timing.RecordSplitRequest(videoPositionMs = positionMs)
                 )
             } catch (_: Exception) { }
         }
@@ -139,9 +150,12 @@ class MainViewModel @Inject constructor(
     fun startVoiceRecording() {
         viewModelScope.launch {
             try {
-                endpointRegistry.call<Map<String, String>, Any>(
-                    "coach/annotate/voice/start",
-                    mapOf("clipId" to "current")
+                endpointRegistry.call<com.gateshot.coaching.annotation.VoiceOverStartRequest, Boolean>(
+                    "coach/annotate/voiceover/start",
+                    com.gateshot.coaching.annotation.VoiceOverStartRequest(
+                        clipId = annotationClipId ?: "current",
+                        videoPositionMs = annotationPositionMs
+                    )
                 )
             } catch (_: Exception) { }
         }
@@ -150,22 +164,66 @@ class MainViewModel @Inject constructor(
     fun stopVoiceRecording() {
         viewModelScope.launch {
             try {
-                endpointRegistry.call<Map<String, String>, Any>(
-                    "coach/annotate/voice/stop",
-                    mapOf("clipId" to "current")
+                endpointRegistry.call<Unit, com.gateshot.coaching.annotation.VoiceAnnotation>(
+                    "coach/annotate/voiceover/stop", Unit
                 )
             } catch (_: Exception) { }
         }
     }
 
-    fun onSaveAnnotatedFrame() {
-        viewModelScope.launch {
+    /**
+     * Persist the frame currently on the annotation canvas: store the drawn
+     * strokes (normalized coords) with the annotation module, then have it
+     * render them onto the frame and save the PNG.
+     */
+    fun onSaveAnnotatedFrame(
+        strokes: List<com.gateshot.coaching.annotation.DrawingElement> = emptyList(),
+        onSaved: (String?) -> Unit = {}
+    ) {
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             try {
-                endpointRegistry.call<Map<String, String>, Any>(
+                val clipId = annotationClipId ?: "current"
+                val positionMs = annotationPositionMs
+
+                if (strokes.isNotEmpty()) {
+                    endpointRegistry.call<com.gateshot.coaching.annotation.DrawingAnnotation, Boolean>(
+                        "coach/annotate/draw/save",
+                        com.gateshot.coaching.annotation.DrawingAnnotation(
+                            clipId = clipId,
+                            framePositionMs = positionMs,
+                            elements = strokes
+                        )
+                    )
+                }
+
+                val framePath = _annotationFramePath.value
+                val bitmap = framePath?.let { android.graphics.BitmapFactory.decodeFile(it) }
+                if (bitmap == null) {
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) { onSaved(null) }
+                    return@launch
+                }
+                val w = bitmap.width
+                val h = bitmap.height
+                val pixels = IntArray(w * h)
+                bitmap.getPixels(pixels, 0, w, 0, 0, w, h)
+                bitmap.recycle()
+
+                val response = endpointRegistry.call<com.gateshot.coaching.annotation.SaveFrameRequest, String>(
                     "coach/annotate/frame/save",
-                    mapOf("clipId" to "current", "framePositionMs" to "0")
+                    com.gateshot.coaching.annotation.SaveFrameRequest(
+                        clipId = clipId,
+                        framePositionMs = positionMs,
+                        framePixels = pixels,
+                        frameWidth = w,
+                        frameHeight = h
+                    )
                 )
-            } catch (_: Exception) { }
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    onSaved(response.dataOrNull())
+                }
+            } catch (_: Exception) {
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) { onSaved(null) }
+            }
         }
     }
 
@@ -215,11 +273,45 @@ class MainViewModel @Inject constructor(
         }
     }
 
+    // --- Manual gate tagging ---
+
+    fun markGate(videoPath: String, positionMs: Long, onResult: (List<Long>) -> Unit = {}) {
+        viewModelScope.launch {
+            val response = endpointRegistry.call<com.gateshot.coaching.replay.GateMarkRequest, List<Long>>(
+                "coach/gates/mark",
+                com.gateshot.coaching.replay.GateMarkRequest(videoPath, positionMs)
+            )
+            response.dataOrNull()?.let { onResult(it) }
+        }
+    }
+
+    fun listGates(videoPath: String, onResult: (List<Long>) -> Unit) {
+        viewModelScope.launch {
+            val response = endpointRegistry.call<String, List<Long>>("coach/gates/list", videoPath)
+            onResult(response.dataOrNull() ?: emptyList())
+        }
+    }
+
+    fun deleteGate(videoPath: String, positionMs: Long, onResult: (List<Long>) -> Unit = {}) {
+        viewModelScope.launch {
+            val response = endpointRegistry.call<com.gateshot.coaching.replay.GateDeleteRequest, List<Long>>(
+                "coach/gates/delete",
+                com.gateshot.coaching.replay.GateDeleteRequest(videoPath, positionMs)
+            )
+            onResult(response.dataOrNull() ?: emptyList())
+        }
+    }
+
     // --- Annotation frame capture ---
 
     /** Path to the captured video frame for annotation. Set by ReplayScreen. */
     private val _annotationFramePath = MutableStateFlow<String?>(null)
     val annotationFramePath: StateFlow<String?> = _annotationFramePath.asStateFlow()
+
+    // Which clip/position the annotation canvas is showing — voice-overs and
+    // saved frames are attributed to this context.
+    private var annotationClipId: String? = null
+    private var annotationPositionMs: Long = 0L
 
     fun setAnnotationFrame(path: String) {
         _annotationFramePath.value = path
@@ -230,6 +322,8 @@ class MainViewModel @Inject constructor(
      * Uses MediaMetadataRetriever to extract the frame and saves it to a temp file.
      */
     fun captureFrameForAnnotation(videoPath: String, positionMs: Long) {
+        annotationClipId = java.io.File(videoPath).nameWithoutExtension
+        annotationPositionMs = positionMs
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             try {
                 val retriever = android.media.MediaMetadataRetriever()
@@ -361,9 +455,14 @@ class MainViewModel @Inject constructor(
 
     fun onCreateAthlete(name: String, bibNumbers: String, ageGroup: String, team: String) {
         viewModelScope.launch {
-            endpointRegistry.call<Map<String, String>, Any>(
+            endpointRegistry.call<com.gateshot.coaching.athlete.data.AthleteEntity, Long>(
                 "coach/athlete/create",
-                mapOf("name" to name, "bibNumbers" to bibNumbers, "ageGroup" to ageGroup, "team" to team)
+                com.gateshot.coaching.athlete.data.AthleteEntity(
+                    name = name,
+                    bibNumbers = bibNumbers,
+                    ageGroup = ageGroup,
+                    team = team
+                )
             )
         }
     }
@@ -371,10 +470,19 @@ class MainViewModel @Inject constructor(
     fun getAthletes(onResult: (List<Map<String, String>>) -> Unit) {
         viewModelScope.launch {
             try {
-                val response = endpointRegistry.call<Unit, List<Map<String, String>>>(
+                val response = endpointRegistry.call<Unit, List<com.gateshot.coaching.athlete.data.AthleteEntity>>(
                     "coach/athlete/list", Unit
                 )
-                response.dataOrNull()?.let { onResult(it) }
+                val athletes = response.dataOrNull()?.map { athlete ->
+                    mapOf(
+                        "id" to athlete.id.toString(),
+                        "name" to athlete.name,
+                        "bibNumbers" to athlete.bibNumbers,
+                        "ageGroup" to athlete.ageGroup,
+                        "team" to athlete.team
+                    )
+                } ?: emptyList()
+                onResult(athletes)
             } catch (_: Exception) { }
         }
     }
@@ -398,17 +506,26 @@ class MainViewModel @Inject constructor(
                     bitmap.getPixels(pixels, 0, w, 0, 0, w, h)
                     bitmap.recycle()
 
-                    val poseResponse = endpointRegistry.call<Map<String, Any>, Map<String, Any>>(
-                        "coach/pose/estimate",
-                        mapOf("pixels" to pixels, "width" to w, "height" to h)
+                    val poseResponse = endpointRegistry.call<com.gateshot.coaching.pose.PoseRequest, com.gateshot.coaching.pose.PoseResult>(
+                        "coach/analysis/pose/run",
+                        com.gateshot.coaching.pose.PoseRequest(
+                            frameWidth = w,
+                            frameHeight = h,
+                            framePixels = pixels
+                        )
                     )
                     val poseData = poseResponse.dataOrNull()
                     if (poseData != null) {
-                        @Suppress("UNCHECKED_CAST")
-                        val keypoints = (poseData["keypoints"] as? List<Map<String, Float>>)
-                            ?.map { (it["x"] ?: 0f) to (it["y"] ?: 0f) } ?: emptyList()
-                        @Suppress("UNCHECKED_CAST")
-                        val angles = (poseData["angles"] as? Map<String, Float>) ?: emptyMap()
+                        val keypoints = poseData.skeleton.keypoints.map { it.x to it.y }
+                        val a = poseData.angles
+                        val angles = mapOf(
+                            "leftKnee" to a.leftKneeAngle,
+                            "rightKnee" to a.rightKneeAngle,
+                            "leftHip" to a.leftHipAngle,
+                            "rightHip" to a.rightHipAngle,
+                            "torsoLean" to a.torsoLean,
+                            "shoulderRotation" to a.shoulderRotation
+                        )
                         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
                             onResult(keypoints, angles)
                         }
@@ -484,10 +601,26 @@ class MainViewModel @Inject constructor(
     fun getErrorPatterns(onResult: (List<Map<String, String>>) -> Unit) {
         viewModelScope.launch {
             try {
-                val response = endpointRegistry.call<Unit, List<Map<String, String>>>(
-                    "coach/athlete/errors", Unit
-                )
-                response.dataOrNull()?.let { onResult(it) } ?: onResult(emptyList())
+                // Aggregate across all athletes (the endpoint is per-athlete)
+                val athletes = endpointRegistry
+                    .call<Unit, List<com.gateshot.coaching.athlete.data.AthleteEntity>>("coach/athlete/list", Unit)
+                    .dataOrNull() ?: emptyList()
+                val errors = athletes.flatMap { athlete ->
+                    endpointRegistry
+                        .call<Long, List<com.gateshot.coaching.athlete.data.AthleteErrorEntity>>(
+                            "coach/athlete/errors", athlete.id
+                        )
+                        .dataOrNull()
+                        ?.map { error ->
+                            mapOf(
+                                "pattern" to "${athlete.name}: ${error.patternType}",
+                                "severity" to error.severity,
+                                "trend" to error.trend,
+                                "count" to error.occurrenceCount.toString()
+                            )
+                        } ?: emptyList()
+                }
+                onResult(errors)
             } catch (_: Exception) { onResult(emptyList()) }
         }
     }
@@ -586,10 +719,25 @@ class MainViewModel @Inject constructor(
     fun getProgressTimeline(onResult: (List<Map<String, String>>) -> Unit) {
         viewModelScope.launch {
             try {
-                val response = endpointRegistry.call<Unit, List<Map<String, String>>>(
-                    "coach/athlete/progress/timeline", Unit
-                )
-                response.dataOrNull()?.let { onResult(it) } ?: onResult(emptyList())
+                // Aggregate across all athletes (the endpoint is per-athlete)
+                val athletes = endpointRegistry
+                    .call<Unit, List<com.gateshot.coaching.athlete.data.AthleteEntity>>("coach/athlete/list", Unit)
+                    .dataOrNull() ?: emptyList()
+                val entries = athletes.flatMap { athlete ->
+                    endpointRegistry
+                        .call<Long, List<com.gateshot.coaching.athlete.data.AthleteProgressEntity>>(
+                            "coach/athlete/progress", athlete.id
+                        )
+                        .dataOrNull()
+                        ?.map { progress ->
+                            mapOf(
+                                "date" to progress.date,
+                                "metric" to "${athlete.name}: ${progress.metric}",
+                                "value" to progress.value.toString()
+                            )
+                        } ?: emptyList()
+                }.sortedByDescending { it["date"] }
+                onResult(entries)
             } catch (_: Exception) { onResult(emptyList()) }
         }
     }

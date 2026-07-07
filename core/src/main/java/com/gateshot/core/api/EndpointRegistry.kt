@@ -33,17 +33,38 @@ class EndpointRegistry @Inject constructor(
 
     @Suppress("UNCHECKED_CAST")
     override suspend fun <Req, Res> call(path: String, request: Req): ApiResponse<Res> {
+        // Failures here are returned, not thrown, and most callers ignore the
+        // response — a wrong path or request type makes a feature silently
+        // dead. Log loudly so the mistake is visible on first run.
         val endpoint = endpoints[path]
-            ?: return ApiResponse.notFound(path)
+        if (endpoint == null) {
+            android.util.Log.e(
+                TAG,
+                "notFound: '$path' — registered paths: ${endpoints.keys.sorted()}"
+            )
+            return ApiResponse.notFound(path)
+        }
 
         if (!modeManager.isFeatureAvailable(endpoint.requiredMode)) {
+            android.util.Log.e(
+                TAG,
+                "modeNotActive: '$path' requires ${endpoint.requiredMode}, current ${modeManager.currentMode.value}"
+            )
             return ApiResponse.modeNotActive()
         }
 
         return try {
             val typed = endpoint as ApiEndpoint<Req, Res>
             typed.handle(request)
+        } catch (e: ClassCastException) {
+            android.util.Log.e(
+                TAG,
+                "Request type mismatch on '$path' (module ${endpoint.module}): " +
+                    "passed ${request?.let { it::class.qualifiedName } ?: "null"} — ${e.message}"
+            )
+            ApiResponse.moduleError(endpoint.module, "Request type mismatch: ${e.message}")
         } catch (e: Exception) {
+            android.util.Log.e(TAG, "Handler error on '$path' (module ${endpoint.module}): ${e.message}")
             ApiResponse.moduleError(endpoint.module, e.message ?: "Unknown error")
         }
     }
@@ -57,5 +78,9 @@ class EndpointRegistry @Inject constructor(
     override fun isAvailable(path: String): Boolean {
         val endpoint = endpoints[path] ?: return false
         return modeManager.isFeatureAvailable(endpoint.requiredMode)
+    }
+
+    companion object {
+        private const val TAG = "EndpointRegistry"
     }
 }

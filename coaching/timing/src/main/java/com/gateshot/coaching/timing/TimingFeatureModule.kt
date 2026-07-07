@@ -93,22 +93,25 @@ class TimingFeatureModule @Inject constructor(
     }
 
     // --- coach/timing/split/record ---
-    inner class RecordSplit : ApiEndpoint<Unit, Split> {
+    // Splits are marked while REVIEWING a clip, so the reference clock is the
+    // video position, not wall time (which would measure the coach's tapping
+    // pace, not the athlete's run).
+    inner class RecordSplit : ApiEndpoint<RecordSplitRequest, Split> {
         override val path = "coach/timing/split/record"
         override val module = "timing"
         override val requiredMode = AppMode.COACH
 
-        override suspend fun handle(request: Unit): ApiResponse<Split> {
+        override suspend fun handle(request: RecordSplitRequest): ApiResponse<Split> {
             val runId = activeRunId
                 ?: return ApiResponse.error(404, "No active timing run")
             val splits = splitsByRun.getOrPut(runId) { mutableListOf() }
             val split = Split(
                 gateNumber = nextGateNumber++,
-                timestamp = System.currentTimeMillis(),
+                timestamp = request.videoPositionMs,
                 elapsedMs = if (splits.isEmpty()) 0L
-                    else System.currentTimeMillis() - splits.first().timestamp,
+                    else request.videoPositionMs - splits.first().timestamp,
                 splitMs = if (splits.isEmpty()) 0L
-                    else System.currentTimeMillis() - splits.last().timestamp
+                    else request.videoPositionMs - splits.last().timestamp
             )
             splits.add(split)
             eventBus.publish(AppEvent.SplitRecorded(split.gateNumber, split.timestamp))
@@ -254,6 +257,7 @@ data class Split(
     val splitMs: Long       // Time since previous split
 )
 
+data class RecordSplitRequest(val videoPositionMs: Long)
 data class DeleteSplitRequest(val runId: String, val gateNumber: Int)
 data class CompareRequest(val runIdA: String, val runIdB: String)
 data class SplitDelta(val gateNumber: Int, val timeA: Long, val timeB: Long, val deltaMs: Long)

@@ -62,6 +62,11 @@ class ReplayFeatureModule @Inject constructor(
         // Course reference capture
         StartReferenceCapture(),
         StopReferenceCapture(),
+        // Manual gate tagging
+        MarkGate(),
+        ListGates(),
+        DeleteGate(),
+        ClearGates(),
         // Overlay endpoints
         AddOverlayLayer(),
         RemoveOverlayLayer(),
@@ -311,6 +316,13 @@ class ReplayFeatureModule @Inject constructor(
 
     // --- Gate Timestamp Sidecar Files ---
 
+    private fun gatesFileFor(videoUri: String): File? {
+        val path = if (videoUri.startsWith("file://")) android.net.Uri.parse(videoUri).path
+                   else videoUri
+        val videoFile = File(path ?: return null)
+        return File(videoFile.parent, videoFile.nameWithoutExtension + ".gates")
+    }
+
     /**
      * Save gate crossing timestamps alongside the video file.
      * Format: <video_name>.gates (one timestamp per line in ms).
@@ -318,12 +330,80 @@ class ReplayFeatureModule @Inject constructor(
     private fun saveGateTimestamps(videoUri: String, timestamps: List<Long>) {
         scope.launch(Dispatchers.IO) {
             try {
-                val videoFile = File(android.net.Uri.parse(videoUri).path ?: return@launch)
-                val gatesFile = File(videoFile.parent, videoFile.nameWithoutExtension + ".gates")
+                val gatesFile = gatesFileFor(videoUri) ?: return@launch
                 gatesFile.writeText(timestamps.joinToString("\n"))
                 android.util.Log.i("Replay", "Saved ${timestamps.size} gate timestamps to ${gatesFile.name}")
             } catch (e: Exception) {
                 android.util.Log.e("Replay", "Failed to save gate timestamps: ${e.message}")
+            }
+        }
+    }
+
+    // --- Manual gate tagging (video position → sidecar) ---
+    // With in-app capture gone, gate timestamps are marked by the coach while
+    // reviewing the clip. Same one-timestamp-per-line sidecar format the
+    // analysis features already read; timestamps kept sorted so line order ==
+    // gate order.
+
+    // --- coach/gates/mark ---
+    inner class MarkGate : ApiEndpoint<GateMarkRequest, List<Long>> {
+        override val path = "coach/gates/mark"
+        override val module = "replay"
+        override val requiredMode = AppMode.COACH
+
+        override suspend fun handle(request: GateMarkRequest): ApiResponse<List<Long>> {
+            return kotlinx.coroutines.withContext(Dispatchers.IO) {
+                val gatesFile = gatesFileFor(request.videoPath)
+                    ?: return@withContext ApiResponse.error(400, "Invalid video path")
+                val updated = (loadGateTimestamps(request.videoPath) + request.positionMs)
+                    .distinct()
+                    .sorted()
+                gatesFile.writeText(updated.joinToString("\n"))
+                ApiResponse.success(updated)
+            }
+        }
+    }
+
+    // --- coach/gates/list ---
+    inner class ListGates : ApiEndpoint<String, List<Long>> {
+        override val path = "coach/gates/list"
+        override val module = "replay"
+        override val requiredMode = AppMode.COACH
+
+        override suspend fun handle(request: String): ApiResponse<List<Long>> {
+            return ApiResponse.success(loadGateTimestamps(request))
+        }
+    }
+
+    // --- coach/gates/delete ---
+    inner class DeleteGate : ApiEndpoint<GateDeleteRequest, List<Long>> {
+        override val path = "coach/gates/delete"
+        override val module = "replay"
+        override val requiredMode = AppMode.COACH
+
+        override suspend fun handle(request: GateDeleteRequest): ApiResponse<List<Long>> {
+            return kotlinx.coroutines.withContext(Dispatchers.IO) {
+                val gatesFile = gatesFileFor(request.videoPath)
+                    ?: return@withContext ApiResponse.error(400, "Invalid video path")
+                val updated = loadGateTimestamps(request.videoPath)
+                    .filter { it != request.positionMs }
+                if (updated.isEmpty()) gatesFile.delete()
+                else gatesFile.writeText(updated.joinToString("\n"))
+                ApiResponse.success(updated)
+            }
+        }
+    }
+
+    // --- coach/gates/clear ---
+    inner class ClearGates : ApiEndpoint<String, Boolean> {
+        override val path = "coach/gates/clear"
+        override val module = "replay"
+        override val requiredMode = AppMode.COACH
+
+        override suspend fun handle(request: String): ApiResponse<Boolean> {
+            return kotlinx.coroutines.withContext(Dispatchers.IO) {
+                gatesFileFor(request)?.delete()
+                ApiResponse.success(true)
             }
         }
     }
@@ -630,6 +710,9 @@ class ReplayFeatureModule @Inject constructor(
         }
     }
 }
+
+data class GateMarkRequest(val videoPath: String, val positionMs: Long)
+data class GateDeleteRequest(val videoPath: String, val positionMs: Long)
 
 data class AddLayerRequest(
     val clipUri: String,
