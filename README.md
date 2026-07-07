@@ -24,6 +24,7 @@ Ski racing **video analysis** for coaches and athletes, built for the Oppo Find 
 - ExoPlayer dual-player review: variable speed 0.25x–2x, frame stepping (33ms), ±5s skip
 - **Supplementary stabilization** — one-tap toggle: phase-correlation motion analysis, Gaussian path smoothing, playback-time warp with a modest 1.15× crop; the correction sign is verified closed-loop against re-measured jitter
 - **Auto color correction** — one-tap toggle: gray-world white balance + snow-aware exposure lift + gentle contrast/saturation, applied as a playback render effect (files never modified)
+- **Enhanced export** — bake the active enhancements into a shareable `<name>_enhanced.mp4` (hardware decode → GL warp/grade → encode, audio kept); every export self-checks by re-measuring jitter and reports the result
 - **Manual gate tagging** — flag button marks the current position; tick marks on the scrubber; editable gate list (tap-to-seek, delete). Stored as `.gates` sidecar files that power the analysis features
 - **Run comparison overlays** — Ghost (adjustable opacity), Wipe (draggable split), Difference (divergence glows), gate-synced playback
 - **Pose estimation** — MoveNet Lightning skeleton overlay with ski-specific angles (knee, hip, torso lean)
@@ -125,7 +126,6 @@ No upfront permissions. The microphone permission is requested only when recordi
 
 - **Course reference from imported video** — rebuild the perspective-correction reference from clip frames (live panning capture was removed with the camera)
 - **Electronic timing** — BLE protocol integration with ALGE/Microgate/Tag Heuer units
-- **Stabilized/color-corrected export** — bake the playback enhancements into a shareable MP4 (decode → GL warp → encode pipeline recoverable from commit `5903127`)
 
 ## History
 
