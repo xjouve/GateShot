@@ -83,11 +83,21 @@ class ReplaySession {
  */
 class CoachSession {
     var selectedTab: Int = 0
+    // Telestration
     var annotationFramePath: String? = null
     var annotationStrokes: List<com.gateshot.ui.annotation.DrawingStroke> = emptyList()
     var annotationTool: com.gateshot.ui.annotation.DrawTool = com.gateshot.ui.annotation.DrawTool.FREEHAND
     var annotationColor: androidx.compose.ui.graphics.Color = androidx.compose.ui.graphics.Color.Red
     var annotationStrokeWidth: Float = 4f
+    // Athlete "Add" form in progress
+    var athleteFormOpen: Boolean = false
+    var athleteName: String = ""
+    var athleteBibs: String = ""
+    var athleteAgeGroup: String = "U16"
+    var athleteTeam: String = ""
+    // Coaching Tools — ideal line
+    var toolsExpandedSection: String? = null
+    var idealLinePoints: List<androidx.compose.ui.geometry.Offset> = emptyList()
 }
 
 @HiltViewModel

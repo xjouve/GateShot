@@ -60,7 +60,8 @@ fun CoachingToolsScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    var expandedSection by remember { mutableStateOf<String?>(null) }
+    val session = viewModel.coachSession
+    var expandedSection by remember { mutableStateOf(session.toolsExpandedSection) }
 
     Column(
         modifier = modifier
@@ -82,7 +83,10 @@ fun CoachingToolsScreen(
             subtitle = "Draw the ideal racing line on a course overview photo",
             icon = Icons.Filled.Route,
             expanded = expandedSection == "line",
-            onClick = { expandedSection = if (expandedSection == "line") null else "line" }
+            onClick = {
+                expandedSection = if (expandedSection == "line") null else "line"
+                session.toolsExpandedSection = expandedSection
+            }
         ) {
             IdealLineContent(viewModel, context)
         }
@@ -130,7 +134,12 @@ private fun ToolCard(
 // --- Ideal Line Drawing ---
 @Composable
 private fun IdealLineContent(viewModel: MainViewModel, context: android.content.Context) {
-    val linePoints = remember { mutableStateListOf<Offset>() }
+    // The drawn line survives navigation via the VM
+    val session = viewModel.coachSession
+    val linePoints = remember { mutableStateListOf<Offset>().also { it.addAll(session.idealLinePoints) } }
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        onDispose { session.idealLinePoints = linePoints.toList() }
+    }
     var courseImage by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {

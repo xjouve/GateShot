@@ -41,12 +41,25 @@ fun AthleteScreen(
     viewModel: MainViewModel,
     modifier: Modifier = Modifier
 ) {
-    var showAddForm by remember { mutableStateOf(false) }
-    var name by remember { mutableStateOf("") }
-    var bibNumbers by remember { mutableStateOf("") }
-    var ageGroup by remember { mutableStateOf("U16") }
-    var team by remember { mutableStateOf("") }
+    // In-progress "Add" form survives navigation via the VM (this screen is
+    // disposed on sub-tab / tab switches)
+    val session = viewModel.coachSession
+    var showAddForm by remember { mutableStateOf(session.athleteFormOpen) }
+    var name by remember { mutableStateOf(session.athleteName) }
+    var bibNumbers by remember { mutableStateOf(session.athleteBibs) }
+    var ageGroup by remember { mutableStateOf(session.athleteAgeGroup) }
+    var team by remember { mutableStateOf(session.athleteTeam) }
     var athletes by remember { mutableStateOf<List<Map<String, String>>>(emptyList()) }
+
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        onDispose {
+            session.athleteFormOpen = showAddForm
+            session.athleteName = name
+            session.athleteBibs = bibNumbers
+            session.athleteAgeGroup = ageGroup
+            session.athleteTeam = team
+        }
+    }
 
     // Load athletes on first render
     androidx.compose.runtime.LaunchedEffect(Unit) {
