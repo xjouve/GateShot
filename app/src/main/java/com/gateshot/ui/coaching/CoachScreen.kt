@@ -44,14 +44,12 @@ fun CoachScreen(
             .fillMaxSize()
             .background(Color.Black)
     ) {
-        // Tab row — neutral like the Replay controls: no selected highlight
-        // or indicator; the sub-screen's own header says where you are
+        // Tab row
         ScrollableTabRow(
             selectedTabIndex = selectedTab,
             containerColor = Color(0xFF1A1A1A),
             contentColor = Color.White,
             edgePadding = 8.dp,
-            indicator = { },
             modifier = Modifier.fillMaxWidth()
         ) {
             tabs.forEachIndexed { index, title ->
@@ -62,7 +60,7 @@ fun CoachScreen(
                         Text(
                             title,
                             fontSize = 13.sp,
-                            color = Color.White
+                            color = if (selectedTab == index) MaterialTheme.colorScheme.primary else Color.Gray
                         )
                     }
                 )

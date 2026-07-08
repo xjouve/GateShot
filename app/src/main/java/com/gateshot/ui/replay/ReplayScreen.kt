@@ -91,6 +91,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
 
+/** How close the playhead must be to a marked gate for the flag button to
+ *  treat them as the same gate (so a second tap un-marks it). */
+private const val GATE_TOGGLE_TOLERANCE_MS = 300L
+
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 @Composable
 fun ReplayScreen(
@@ -293,29 +297,43 @@ fun ReplayScreen(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f)
             )
+            // The gate nearest the playhead (within tap tolerance) — the flag
+            // button reflects and toggles this, so a gate can be un-marked.
+            val gateAtPlayhead = gateTimestamps
+                .minByOrNull { kotlin.math.abs(it - currentPosition) }
+                ?.takeIf { kotlin.math.abs(it - currentPosition) <= GATE_TOGGLE_TOLERANCE_MS }
+
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                // Overlay layers toggle (top-bar buttons keep a constant
-                // neutral look — no persistent selected state)
+                // Overlay layers toggle
                 Surface(
                     onClick = { showOverlayPanel = !showOverlayPanel },
                     shape = RoundedCornerShape(8.dp),
-                    color = Color(0xFF444444),
+                    color = if (showOverlayPanel) MaterialTheme.colorScheme.primary else Color(0xFF444444),
                     modifier = Modifier.size(40.dp)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
-                        Icon(Icons.Filled.Layers, "Overlay", tint = Color.White, modifier = Modifier.size(20.dp))
+                        Icon(
+                            Icons.Filled.Layers, "Overlay",
+                            tint = if (showOverlayPanel) Color.Black else Color.White,
+                            modifier = Modifier.size(20.dp)
+                        )
                     }
                 }
                 Surface(
                     onClick = { showSplitScreen = !showSplitScreen },
                     shape = RoundedCornerShape(8.dp),
-                    color = Color(0xFF444444),
+                    color = if (showSplitScreen) MaterialTheme.colorScheme.primary else Color(0xFF444444),
                     modifier = Modifier.size(40.dp)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
-                        Icon(Icons.Filled.ViewColumn, "Split screen", tint = Color.White, modifier = Modifier.size(20.dp))
+                        Icon(
+                            Icons.Filled.ViewColumn, "Split screen",
+                            tint = if (showSplitScreen) Color.Black else Color.White,
+                            modifier = Modifier.size(20.dp)
+                        )
                     }
                 }
+                // Record split — one-shot action, no persistent state
                 Surface(
                     onClick = { viewModel.onRecordSplit(currentPosition) },
                     shape = RoundedCornerShape(8.dp),
@@ -326,43 +344,51 @@ fun ReplayScreen(
                         Icon(Icons.Filled.Timer, "Record split", tint = Color.White, modifier = Modifier.size(20.dp))
                     }
                 }
-                // Mark gate at the current position
+                // Toggle a gate at the current position: lit when the playhead
+                // is on a marked gate; tap adds one, tap again removes it.
                 Surface(
                     onClick = {
-                        if (videoFile != null) {
-                            viewModel.markGate(videoFile.absolutePath, currentPosition) {
-                                gateTimestamps = it
-                            }
+                        val path = videoFile?.absolutePath ?: return@Surface
+                        if (gateAtPlayhead != null) {
+                            viewModel.deleteGate(path, gateAtPlayhead) { gateTimestamps = it }
+                        } else {
+                            viewModel.markGate(path, currentPosition) { gateTimestamps = it }
                         }
                     },
                     shape = RoundedCornerShape(8.dp),
-                    color = Color(0xFF444444),
+                    color = if (gateAtPlayhead != null) MaterialTheme.colorScheme.primary else Color(0xFF444444),
                     modifier = Modifier.size(40.dp)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Icon(
                             Icons.Filled.Flag,
                             "Mark gate",
-                            tint = Color.White,
+                            tint = if (gateAtPlayhead != null) Color.Black else Color.White,
                             modifier = Modifier.size(20.dp)
                         )
                     }
                 }
-                // Autoclip button
+                // Autoclip toggle: lit while segments are shown; tap again hides them
                 Surface(
                     onClick = {
-                        if (videoFile != null) {
+                        if (clipSegments.isNotEmpty()) {
+                            clipSegments = emptyList()
+                        } else if (videoFile != null) {
                             viewModel.onRunAutoclip(videoFile.absolutePath) { segments ->
                                 clipSegments = segments
                             }
                         }
                     },
                     shape = RoundedCornerShape(8.dp),
-                    color = Color(0xFF444444),
+                    color = if (clipSegments.isNotEmpty()) MaterialTheme.colorScheme.primary else Color(0xFF444444),
                     modifier = Modifier.size(40.dp)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
-                        Icon(Icons.Filled.ContentCut, "Autoclip", tint = Color.White, modifier = Modifier.size(20.dp))
+                        Icon(
+                            Icons.Filled.ContentCut, "Autoclip",
+                            tint = if (clipSegments.isNotEmpty()) Color.Black else Color.White,
+                            modifier = Modifier.size(20.dp)
+                        )
                     }
                 }
                 // Pose toggle
@@ -377,11 +403,15 @@ fun ReplayScreen(
                         }
                     },
                     shape = RoundedCornerShape(8.dp),
-                    color = Color(0xFF444444),
+                    color = if (showPose) MaterialTheme.colorScheme.primary else Color(0xFF444444),
                     modifier = Modifier.size(40.dp)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
-                        Icon(Icons.Filled.Accessibility, "Pose", tint = Color.White, modifier = Modifier.size(20.dp))
+                        Icon(
+                            Icons.Filled.Accessibility, "Pose",
+                            tint = if (showPose) Color.Black else Color.White,
+                            modifier = Modifier.size(20.dp)
+                        )
                     }
                 }
             }
@@ -849,13 +879,17 @@ fun ReplayScreen(
                         }
                     },
                     shape = RoundedCornerShape(8.dp),
-                    color = Color(0xFF333333),
+                    color = when {
+                        stabAnalyzing -> Color(0xFF666633)
+                        stabEnabled -> MaterialTheme.colorScheme.primary
+                        else -> Color(0xFF333333)
+                    },
                     modifier = Modifier.size(width = 48.dp, height = 32.dp)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Icon(
                             Icons.Filled.Vibration, "Stabilize",
-                            tint = Color.White,
+                            tint = if (stabEnabled) Color.Black else Color.White,
                             modifier = Modifier.size(18.dp)
                         )
                     }
@@ -880,13 +914,17 @@ fun ReplayScreen(
                         }
                     },
                     shape = RoundedCornerShape(8.dp),
-                    color = Color(0xFF333333),
+                    color = when {
+                        colorAnalyzing -> Color(0xFF666633)
+                        colorEnabled -> MaterialTheme.colorScheme.primary
+                        else -> Color(0xFF333333)
+                    },
                     modifier = Modifier.size(width = 48.dp, height = 32.dp)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Icon(
                             Icons.Filled.AutoFixHigh, "Auto color",
-                            tint = Color.White,
+                            tint = if (colorEnabled) Color.Black else Color.White,
                             modifier = Modifier.size(18.dp)
                         )
                     }
@@ -901,13 +939,13 @@ fun ReplayScreen(
                             overlayPlayer.setPlaybackSpeed(speed)
                         },
                         shape = RoundedCornerShape(8.dp),
-                        color = Color(0xFF333333),
+                        color = if (playbackSpeed == speed) MaterialTheme.colorScheme.primary else Color(0xFF333333),
                         modifier = Modifier.size(width = 48.dp, height = 32.dp)
                     ) {
                         Box(contentAlignment = Alignment.Center) {
                             Text(
                                 "${speed}x",
-                                color = Color.White,
+                                color = if (playbackSpeed == speed) Color.Black else Color.White,
                                 fontSize = 11.sp
                             )
                         }
