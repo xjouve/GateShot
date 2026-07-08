@@ -105,26 +105,6 @@ fun ReplayScreen(
     val replayState by viewModel.replayState.collectAsState()
     val context = LocalContext.current
 
-    var isPlaying by remember { mutableStateOf(false) }
-    var currentPosition by remember { mutableLongStateOf(0L) }
-    var playbackSpeed by remember { mutableFloatStateOf(1.0f) }
-    var showSplitScreen by remember { mutableStateOf(false) }
-    var showOverlayPanel by remember { mutableStateOf(false) }
-    var totalDuration by remember { mutableLongStateOf(0L) }
-    var isSeeking by remember { mutableStateOf(false) }
-    // Autoclip segments
-    var clipSegments by remember { mutableStateOf<List<Pair<Long, Long>>>(emptyList()) }
-    // Pose skeleton overlay
-    var showPose by remember { mutableStateOf(false) }
-    var poseKeypoints by remember { mutableStateOf<List<Pair<Float, Float>>>(emptyList()) }
-    var poseAngles by remember { mutableStateOf<Map<String, Float>>(emptyMap()) }
-    // Session dialog
-    var showSessionDialog by remember { mutableStateOf(false) }
-    var selectedVideoIndex by remember { mutableIntStateOf(-1) }
-    var overlayClipUri by remember { mutableStateOf<String?>(null) }
-    var overlayOpacity by remember { mutableFloatStateOf(0.5f) }
-    var wipePosition by remember { mutableFloatStateOf(0.5f) }
-
     // Load the clip chosen in the Library, falling back to the most recent one
     val selectedVideoPath by viewModel.selectedVideoPath.collectAsState()
     val videoFile = remember(selectedVideoPath) {
@@ -136,6 +116,42 @@ fun ReplayScreen(
                     ?.maxByOrNull { it.lastModified() }
             }
     }
+    val videoPath = videoFile?.absolutePath
+
+    // Replay state that must survive Replay ↔ Coach navigation lives on the VM
+    // (this composable is disposed on tab switch). Reset it only when a
+    // DIFFERENT clip loads; otherwise the state initializers below restore the
+    // saved values. Keyed on videoPath so it runs before them and re-runs when
+    // the clip changes.
+    val session = viewModel.replaySession
+    remember(videoPath) {
+        if (session.videoPath != videoPath) session.resetFor(videoPath)
+    }
+
+    // Persistent per-clip state — restores from the session on return, resets
+    // (via resetFor above) when the clip changes.
+    var currentPosition by remember(videoPath) { mutableLongStateOf(session.positionMs) }
+    var playbackSpeed by remember(videoPath) { mutableFloatStateOf(session.playbackSpeed) }
+    var showSplitScreen by remember(videoPath) { mutableStateOf(session.showSplitScreen) }
+    var showOverlayPanel by remember(videoPath) { mutableStateOf(session.showOverlayPanel) }
+    var showPose by remember(videoPath) { mutableStateOf(session.showPose) }
+    var clipSegments by remember(videoPath) { mutableStateOf(session.clipSegments) }
+    var overlayClipUri by remember(videoPath) { mutableStateOf(session.overlayClipUri) }
+    var overlayOpacity by remember(videoPath) { mutableFloatStateOf(session.overlayOpacity) }
+    var wipePosition by remember(videoPath) { mutableFloatStateOf(session.wipePosition) }
+    var stabEnabled by remember(videoPath) { mutableStateOf(session.stabEnabled) }
+    var stabTrack by remember(videoPath) { mutableStateOf(session.stabTrack) }
+    var colorEnabled by remember(videoPath) { mutableStateOf(session.colorEnabled) }
+    var colorMatrix by remember(videoPath) { mutableStateOf(session.colorMatrix) }
+
+    // Transient UI state — fine to reset when the screen is re-entered
+    var isPlaying by remember { mutableStateOf(false) }
+    var totalDuration by remember { mutableLongStateOf(0L) }
+    var isSeeking by remember { mutableStateOf(false) }
+    var poseKeypoints by remember { mutableStateOf<List<Pair<Float, Float>>>(emptyList()) }
+    var poseAngles by remember { mutableStateOf<Map<String, Float>>(emptyMap()) }
+    var showSessionDialog by remember { mutableStateOf(false) }
+    var selectedVideoIndex by remember { mutableIntStateOf(-1) }
 
     // Manually tagged gate timestamps for this clip (sidecar-backed)
     var gateTimestamps by remember { mutableStateOf<List<Long>>(emptyList()) }
@@ -148,32 +164,18 @@ fun ReplayScreen(
         }
     }
 
-    // Supplementary stabilization (per-clip, analyzed once, warped at playback)
+    // Enhancement analysis progress (transient — the results live in the session)
     val enhanceScope = rememberCoroutineScope()
-    var stabEnabled by remember { mutableStateOf(false) }
     var stabAnalyzing by remember { mutableStateOf(false) }
     var stabProgress by remember { mutableFloatStateOf(0f) }
-    var stabTrack by remember { mutableStateOf<PlaybackStabilizer.Track?>(null) }
     var stabDx by remember { mutableFloatStateOf(0f) }
     var stabDy by remember { mutableFloatStateOf(0f) }
-
-    // Automatic color correction (per-clip ColorMatrix, applied at playback)
-    var colorEnabled by remember { mutableStateOf(false) }
     var colorAnalyzing by remember { mutableStateOf(false) }
-    var colorMatrix by remember { mutableStateOf<android.graphics.ColorMatrix?>(null) }
 
     // Export of the enhanced clip (stabilization/color baked into a new MP4)
     var exporting by remember { mutableStateOf(false) }
     var exportProgress by remember { mutableFloatStateOf(0f) }
     var exportMessage by remember { mutableStateOf<String?>(null) }
-
-    // Both are per-clip — reset when the loaded video changes
-    LaunchedEffect(videoFile) {
-        stabEnabled = false; stabTrack = null; stabAnalyzing = false
-        colorEnabled = false; colorMatrix = null; colorAnalyzing = false
-        stabDx = 0f; stabDy = 0f
-        exportMessage = null
-    }
 
     // Create ExoPlayer instance for the reference (main) video
     val exoPlayer = remember {
@@ -209,12 +211,21 @@ fun ReplayScreen(
         }
     }
 
-    // Load video when available
+    // Load video when available; restore the saved position/speed and, if the
+    // pose overlay was left on, re-run the estimate (keypoints aren't persisted).
     LaunchedEffect(videoFile) {
         if (videoFile != null && videoFile.exists()) {
             val mediaItem = MediaItem.fromUri(Uri.fromFile(videoFile))
             exoPlayer.setMediaItem(mediaItem)
             exoPlayer.prepare()
+            exoPlayer.setPlaybackSpeed(playbackSpeed)
+            if (currentPosition > 0) exoPlayer.seekTo(currentPosition)
+            if (showPose) {
+                viewModel.estimatePose(videoFile.absolutePath, currentPosition) { kp, angles ->
+                    poseKeypoints = kp
+                    poseAngles = angles
+                }
+            }
         }
     }
 
@@ -246,6 +257,21 @@ fun ReplayScreen(
         }
         exoPlayer.addListener(listener)
         onDispose {
+            // Snapshot the current state so returning to Replay restores it
+            session.videoPath = videoPath
+            session.positionMs = exoPlayer.currentPosition.coerceAtLeast(0L)
+            session.playbackSpeed = playbackSpeed
+            session.showOverlayPanel = showOverlayPanel
+            session.showSplitScreen = showSplitScreen
+            session.showPose = showPose
+            session.overlayClipUri = overlayClipUri
+            session.overlayOpacity = overlayOpacity
+            session.wipePosition = wipePosition
+            session.clipSegments = clipSegments
+            session.stabEnabled = stabEnabled
+            session.stabTrack = stabTrack
+            session.colorEnabled = colorEnabled
+            session.colorMatrix = colorMatrix
             exoPlayer.removeListener(listener)
             exoPlayer.release()
             overlayPlayer.release()

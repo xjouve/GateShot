@@ -32,6 +32,49 @@ data class MainUiState(
     val moduleStatuses: Map<String, String> = emptyMap()
 )
 
+/**
+ * Scratch state for the Replay screen that must survive tab switches. Replay's
+ * composable is disposed when navigating to another tab, so its local
+ * `remember {}` state (playback position, toggles, the expensive stabilization
+ * track and color matrix, overlay selection) would be lost. This holder lives
+ * on the VM, which outlives the navigation, so returning to Replay restores it.
+ * All fields are keyed to [videoPath]; [resetFor] clears them when a different
+ * clip loads.
+ */
+class ReplaySession {
+    var videoPath: String? = null
+    var positionMs: Long = 0L
+    var playbackSpeed: Float = 1f
+    var showOverlayPanel: Boolean = false
+    var showSplitScreen: Boolean = false
+    var showPose: Boolean = false
+    var overlayClipUri: String? = null
+    var overlayOpacity: Float = 0.5f
+    var wipePosition: Float = 0.5f
+    var clipSegments: List<Pair<Long, Long>> = emptyList()
+    var stabEnabled: Boolean = false
+    var stabTrack: com.gateshot.processing.stabilize.PlaybackStabilizer.Track? = null
+    var colorEnabled: Boolean = false
+    var colorMatrix: android.graphics.ColorMatrix? = null
+
+    fun resetFor(path: String?) {
+        videoPath = path
+        positionMs = 0L
+        playbackSpeed = 1f
+        showOverlayPanel = false
+        showSplitScreen = false
+        showPose = false
+        overlayClipUri = null
+        overlayOpacity = 0.5f
+        wipePosition = 0.5f
+        clipSegments = emptyList()
+        stabEnabled = false
+        stabTrack = null
+        colorEnabled = false
+        colorMatrix = null
+    }
+}
+
 @HiltViewModel
 class MainViewModel @Inject constructor(
     @ApplicationContext private val appContext: android.content.Context,
@@ -350,6 +393,9 @@ class MainViewModel @Inject constructor(
     // --- Course Reference & Perspective Correction ---
 
     val replayState: StateFlow<ReplayState> = replayModule.replayState
+
+    /** Survives Replay ↔ Coach navigation (see [ReplaySession]). */
+    val replaySession = ReplaySession()
 
     /**
      * Build the course reference from an imported clip (a slow pan across the
