@@ -294,11 +294,12 @@ fun ReplayScreen(
                 modifier = Modifier.weight(1f)
             )
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                // Overlay layers toggle
+                // Overlay layers toggle (top-bar buttons keep a constant
+                // neutral look — no persistent selected state)
                 Surface(
                     onClick = { showOverlayPanel = !showOverlayPanel },
                     shape = RoundedCornerShape(8.dp),
-                    color = if (showOverlayPanel) MaterialTheme.colorScheme.primary else Color(0xFF444444),
+                    color = Color(0xFF444444),
                     modifier = Modifier.size(40.dp)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
@@ -308,7 +309,7 @@ fun ReplayScreen(
                 Surface(
                     onClick = { showSplitScreen = !showSplitScreen },
                     shape = RoundedCornerShape(8.dp),
-                    color = if (showSplitScreen) MaterialTheme.colorScheme.primary else Color(0xFF444444),
+                    color = Color(0xFF444444),
                     modifier = Modifier.size(40.dp)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
@@ -335,14 +336,14 @@ fun ReplayScreen(
                         }
                     },
                     shape = RoundedCornerShape(8.dp),
-                    color = if (gateTimestamps.isNotEmpty()) MaterialTheme.colorScheme.primary else Color(0xFF444444),
+                    color = Color(0xFF444444),
                     modifier = Modifier.size(40.dp)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Icon(
                             Icons.Filled.Flag,
                             "Mark gate",
-                            tint = if (gateTimestamps.isNotEmpty()) Color.Black else Color.White,
+                            tint = Color.White,
                             modifier = Modifier.size(20.dp)
                         )
                     }
@@ -357,7 +358,7 @@ fun ReplayScreen(
                         }
                     },
                     shape = RoundedCornerShape(8.dp),
-                    color = if (clipSegments.isNotEmpty()) MaterialTheme.colorScheme.primary else Color(0xFF444444),
+                    color = Color(0xFF444444),
                     modifier = Modifier.size(40.dp)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
@@ -376,7 +377,7 @@ fun ReplayScreen(
                         }
                     },
                     shape = RoundedCornerShape(8.dp),
-                    color = if (showPose) MaterialTheme.colorScheme.primary else Color(0xFF444444),
+                    color = Color(0xFF444444),
                     modifier = Modifier.size(40.dp)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
