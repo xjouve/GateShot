@@ -36,7 +36,8 @@ fun CoachScreen(
     viewModel: MainViewModel,
     modifier: Modifier = Modifier
 ) {
-    var selectedTab by remember { mutableIntStateOf(0) }
+    // Restore the sub-tab the coach was last on; it's disposed on navigation
+    var selectedTab by remember { mutableIntStateOf(viewModel.coachSession.selectedTab) }
     val tabs = listOf("Annotate", "Athletes", "Analysis", "Tools")
 
     Column(
@@ -55,7 +56,7 @@ fun CoachScreen(
             tabs.forEachIndexed { index, title ->
                 Tab(
                     selected = selectedTab == index,
-                    onClick = { selectedTab = index },
+                    onClick = { selectedTab = index; viewModel.coachSession.selectedTab = index },
                     text = {
                         Text(
                             title,

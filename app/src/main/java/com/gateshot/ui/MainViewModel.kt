@@ -75,6 +75,21 @@ class ReplaySession {
     }
 }
 
+/**
+ * Scratch state for the Coach screen — the selected sub-tab and the in-progress
+ * telestration on the current frame — that must survive navigation, mirroring
+ * [ReplaySession]. The annotation strokes are tied to [annotationFramePath] and
+ * reset when a different frame is captured.
+ */
+class CoachSession {
+    var selectedTab: Int = 0
+    var annotationFramePath: String? = null
+    var annotationStrokes: List<com.gateshot.ui.annotation.DrawingStroke> = emptyList()
+    var annotationTool: com.gateshot.ui.annotation.DrawTool = com.gateshot.ui.annotation.DrawTool.FREEHAND
+    var annotationColor: androidx.compose.ui.graphics.Color = androidx.compose.ui.graphics.Color.Red
+    var annotationStrokeWidth: Float = 4f
+}
+
 @HiltViewModel
 class MainViewModel @Inject constructor(
     @ApplicationContext private val appContext: android.content.Context,
@@ -396,6 +411,9 @@ class MainViewModel @Inject constructor(
 
     /** Survives Replay ↔ Coach navigation (see [ReplaySession]). */
     val replaySession = ReplaySession()
+
+    /** Survives navigation away from the Coach screen (see [CoachSession]). */
+    val coachSession = CoachSession()
 
     /**
      * Build the course reference from an imported clip (a slow pan across the

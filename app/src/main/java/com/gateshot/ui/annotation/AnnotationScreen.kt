@@ -106,15 +106,40 @@ fun AnnotationScreen(
     viewModel: MainViewModel,
     modifier: Modifier = Modifier
 ) {
-    var selectedTool by remember { mutableStateOf(DrawTool.FREEHAND) }
-    var selectedColor by remember { mutableStateOf(Color.Red) }
-    var strokeWidth by remember { mutableStateOf(4f) }
+    // In-progress telestration survives navigation via the VM (this screen is
+    // disposed on sub-tab / tab switches). Strokes are tied to the captured
+    // frame; a new frame starts a fresh canvas.
+    val session = viewModel.coachSession
+    val framePath by viewModel.annotationFramePath.collectAsState()
+    remember(framePath) {
+        if (session.annotationFramePath != framePath) {
+            session.annotationFramePath = framePath
+            session.annotationStrokes = emptyList()
+        }
+    }
+
+    var selectedTool by remember { mutableStateOf(session.annotationTool) }
+    var selectedColor by remember { mutableStateOf(session.annotationColor) }
+    var strokeWidth by remember { mutableStateOf(session.annotationStrokeWidth) }
     var isRecordingVoice by remember { mutableStateOf(false) }
     var canvasSize by remember { mutableStateOf(androidx.compose.ui.unit.IntSize.Zero) }
     var saveMessage by remember { mutableStateOf<String?>(null) }
 
-    val strokes = remember { mutableStateListOf<DrawingStroke>() }
+    val strokes = remember(framePath) {
+        mutableStateListOf<DrawingStroke>().also { it.addAll(session.annotationStrokes) }
+    }
     val currentPoints = remember { mutableStateListOf<Offset>() }
+
+    // Snapshot back to the session when leaving composition
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        onDispose {
+            session.annotationTool = selectedTool
+            session.annotationColor = selectedColor
+            session.annotationStrokeWidth = strokeWidth
+            session.annotationStrokes = strokes.toList()
+            session.annotationFramePath = framePath
+        }
+    }
 
     // Voice-over needs the mic — ask only when the coach actually uses it
     val micPermission = androidx.activity.compose.rememberLauncherForActivityResult(
@@ -204,7 +229,6 @@ fun AnnotationScreen(
                 }
         ) {
             // Video frame — loaded from the captured frame file
-            val framePath by viewModel.annotationFramePath.collectAsState()
             val frameBitmap = remember(framePath) {
                 framePath?.let { path ->
                     try {
