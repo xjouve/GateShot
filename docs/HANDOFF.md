@@ -24,7 +24,7 @@ correction, enhanced export, course references.
   `5903127`.
 - **Device:** Oppo Find X9 Pro, serial `3B15C6001PS00000`, adb at
   `%LOCALAPPDATA%\Android\Sdk\platform-tools\adb.exe`. The installed APK
-  matches `main` HEAD (`2744ba3`).
+  matches `main` HEAD (`679e3a6`).
 - **Build:** `.\gradlew :app:assembleDebug` (JAVA_HOME → `K:\android\jbr`).
   All JVM tests green (`.\gradlew test`).
 
@@ -40,6 +40,9 @@ correction, enhanced export, course references.
 | `df84209` | Phase 4: playback stabilizer + auto color toggles |
 | `6b67e87` | Enhanced export (decode → GL warp/grade → encode) with jitter self-check |
 | `2744ba3` | Course reference built from an imported clip |
+| `556361b`, `d7c93f4`, `2860132`, `f87e5a8` | Replay/Coach control styling: selected-blue toggles; gate + autoclip made deselectable |
+| `7c2fb43` | Persist Replay state across navigation (`ReplaySession`) |
+| `0692e59`, `679e3a6` | Persist Coach state across navigation (`CoachSession`) |
 
 ## Load-bearing technical facts (hard-won — don't re-derive)
 
@@ -79,6 +82,20 @@ correction, enhanced export, course references.
    on from-below footage, poles are desaturated slivers — zero pixels with
    r > max(g,b)+25; pole blues match sky. The reference panel states this
    honestly; overlays work unregistered.
+9. **Navigation loses composable state.** The bottom-nav destinations
+   (Replay, Coach, …) are disposed on tab switch, so their local `remember{}`
+   state — playback position, expensive analysis results, in-progress
+   drawings — is lost on return. Fix pattern (used by `ReplaySession` and
+   `CoachSession` on `MainViewModel`, which outlives navigation): a plain
+   VM-scoped holder; the composable initializes its `remember` state from the
+   holder and snapshots it back in `DisposableEffect`'s `onDispose`. Per-item
+   state that must reset when its subject changes is keyed on that subject
+   (Replay state on the clip path; annotation strokes on the frame path) via
+   `remember(key)`, with a `remember(key){ if (changed) reset }` running
+   first. Do NOT reset in a plain `LaunchedEffect(key)` — it re-fires on every
+   fresh entry and would wipe the restored state. Read-only data (athlete
+   roster, Analysis cards) is intentionally NOT persisted; it re-queries so it
+   stays current.
 
 ## Open items (in rough priority order)
 
