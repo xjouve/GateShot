@@ -849,17 +849,13 @@ fun ReplayScreen(
                         }
                     },
                     shape = RoundedCornerShape(8.dp),
-                    color = when {
-                        stabAnalyzing -> Color(0xFF666633)
-                        stabEnabled -> MaterialTheme.colorScheme.primary
-                        else -> Color(0xFF333333)
-                    },
+                    color = Color(0xFF333333),
                     modifier = Modifier.size(width = 48.dp, height = 32.dp)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Icon(
                             Icons.Filled.Vibration, "Stabilize",
-                            tint = if (stabEnabled) Color.Black else Color.White,
+                            tint = Color.White,
                             modifier = Modifier.size(18.dp)
                         )
                     }
@@ -884,17 +880,13 @@ fun ReplayScreen(
                         }
                     },
                     shape = RoundedCornerShape(8.dp),
-                    color = when {
-                        colorAnalyzing -> Color(0xFF666633)
-                        colorEnabled -> MaterialTheme.colorScheme.primary
-                        else -> Color(0xFF333333)
-                    },
+                    color = Color(0xFF333333),
                     modifier = Modifier.size(width = 48.dp, height = 32.dp)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Icon(
                             Icons.Filled.AutoFixHigh, "Auto color",
-                            tint = if (colorEnabled) Color.Black else Color.White,
+                            tint = Color.White,
                             modifier = Modifier.size(18.dp)
                         )
                     }
@@ -909,13 +901,13 @@ fun ReplayScreen(
                             overlayPlayer.setPlaybackSpeed(speed)
                         },
                         shape = RoundedCornerShape(8.dp),
-                        color = if (playbackSpeed == speed) MaterialTheme.colorScheme.primary else Color(0xFF333333),
+                        color = Color(0xFF333333),
                         modifier = Modifier.size(width = 48.dp, height = 32.dp)
                     ) {
                         Box(contentAlignment = Alignment.Center) {
                             Text(
                                 "${speed}x",
-                                color = if (playbackSpeed == speed) Color.Black else Color.White,
+                                color = Color.White,
                                 fontSize = 11.sp
                             )
                         }
