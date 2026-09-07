@@ -41,6 +41,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.res.stringResource
+import com.gateshot.R
 import com.gateshot.ui.MainViewModel
 
 /**
@@ -69,7 +71,7 @@ fun AnalysisScreen(
     ) {
         // Header
         Text(
-            "Analysis",
+            stringResource(R.string.analysis_title),
             color = Color.White,
             fontSize = 24.sp,
             fontWeight = FontWeight.Bold,
@@ -84,13 +86,13 @@ fun AnalysisScreen(
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Icon(Icons.Filled.Assessment, null, tint = Color(0xFF444444), modifier = Modifier.size(48.dp))
                     Spacer(modifier = Modifier.height(8.dp))
-                    Text("Start a training session first", color = Color.Gray, fontSize = 14.sp)
-                    Text("Analysis requires recorded runs with gate timestamps", color = Color(0xFF666666), fontSize = 12.sp)
+                    Text(stringResource(R.string.analysis_no_session_title), color = Color.Gray, fontSize = 14.sp)
+                    Text(stringResource(R.string.analysis_no_session_body), color = Color(0xFF666666), fontSize = 12.sp)
                 }
             }
         } else {
             Text(
-                "Session: ${uiState.sessionName} (${uiState.sessionDiscipline})",
+                stringResource(R.string.analysis_session_label, uiState.sessionName ?: "", uiState.sessionDiscipline ?: ""),
                 color = Color(0xFF4FC3F7),
                 fontSize = 14.sp,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
@@ -98,8 +100,8 @@ fun AnalysisScreen(
 
             // --- Consistency Tracker ---
             AnalysisCard(
-                title = "Consistency Tracker",
-                subtitle = "Per-gate variability across all runs in this session",
+                title = stringResource(R.string.analysis_consistency_title),
+                subtitle = stringResource(R.string.analysis_consistency_subtitle),
                 icon = Icons.Filled.ShowChart,
                 expanded = expandedSection == "consistency",
                 onClick = { expandedSection = if (expandedSection == "consistency") null else "consistency" }
@@ -109,8 +111,8 @@ fun AnalysisScreen(
 
             // --- Turn Analysis ---
             AnalysisCard(
-                title = "Turn Analysis",
-                subtitle = "Entry speed, apex position, line choice per gate",
+                title = stringResource(R.string.analysis_turn_title),
+                subtitle = stringResource(R.string.analysis_turn_subtitle),
                 icon = Icons.Filled.Timeline,
                 expanded = expandedSection == "turn",
                 onClick = { expandedSection = if (expandedSection == "turn") null else "turn" }
@@ -120,8 +122,8 @@ fun AnalysisScreen(
 
             // --- Error Patterns ---
             AnalysisCard(
-                title = "Error Patterns",
-                subtitle = "Recurring technique issues detected across runs",
+                title = stringResource(R.string.analysis_errors_title),
+                subtitle = stringResource(R.string.analysis_errors_subtitle),
                 icon = Icons.Filled.BugReport,
                 expanded = expandedSection == "errors",
                 onClick = { expandedSection = if (expandedSection == "errors") null else "errors" }
@@ -131,8 +133,8 @@ fun AnalysisScreen(
 
             // --- Time-to-Technique ---
             AnalysisCard(
-                title = "Time-to-Technique",
-                subtitle = "Where time was gained or lost, linked to video",
+                title = stringResource(R.string.analysis_time_title),
+                subtitle = stringResource(R.string.analysis_time_subtitle),
                 icon = Icons.Filled.CompareArrows,
                 expanded = expandedSection == "time",
                 onClick = { expandedSection = if (expandedSection == "time") null else "time" }
@@ -142,8 +144,8 @@ fun AnalysisScreen(
 
             // --- Session Report ---
             AnalysisCard(
-                title = "Session Report",
-                subtitle = "Generate PDF summary of today's training",
+                title = stringResource(R.string.analysis_report_title),
+                subtitle = stringResource(R.string.analysis_report_subtitle),
                 icon = Icons.Filled.PictureAsPdf,
                 expanded = expandedSection == "report",
                 onClick = { expandedSection = if (expandedSection == "report") null else "report" }
@@ -153,8 +155,8 @@ fun AnalysisScreen(
 
             // --- Before/After Progress ---
             AnalysisCard(
-                title = "Progress View",
-                subtitle = "Compare technique across sessions over time",
+                title = stringResource(R.string.analysis_progress_title),
+                subtitle = stringResource(R.string.analysis_progress_subtitle),
                 icon = Icons.Filled.Assessment,
                 expanded = expandedSection == "progress",
                 onClick = { expandedSection = if (expandedSection == "progress") null else "progress" }
@@ -215,22 +217,24 @@ private fun ConsistencyContent(viewModel: MainViewModel) {
     }
 
     if (results.isEmpty()) {
-        Text("Need 3+ runs with gate timestamps for analysis", color = Color.Gray, fontSize = 13.sp)
+        Text(stringResource(R.string.analysis_consistency_empty), color = Color.Gray, fontSize = 13.sp)
     } else {
         results.forEach { (gate, variability, assessment) ->
             Row(
                 modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Text("Gate $gate", color = Color.White, fontSize = 13.sp)
+                Text(stringResource(R.string.analysis_gate_label, gate), color = Color.White, fontSize = 13.sp)
                 Text(
-                    "${"%.0f".format(variability)}ms spread — $assessment",
+                    stringResource(R.string.analysis_variability_label, "%.0f".format(variability), assessment),
                     color = when (assessment) {
                         "consistent" -> Color(0xFF66BB6A)
                         "variable" -> Color(0xFFFFAB40)
                         else -> Color(0xFFEF5350)
                     },
-                    fontSize = 13.sp
+                    fontSize = 13.sp,
+                    modifier = Modifier.weight(1f, fill = false),
+                    textAlign = TextAlign.End
                 )
             }
         }
@@ -247,11 +251,16 @@ private fun TurnAnalysisContent(viewModel: MainViewModel) {
     }
 
     if (metrics.isEmpty()) {
-        Text("Need runs with gate timestamps and pose data", color = Color.Gray, fontSize = 13.sp)
+        Text(stringResource(R.string.analysis_turn_empty), color = Color.Gray, fontSize = 13.sp)
     } else {
         // Header
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            listOf("Gate", "Split", "Line", "Knee").forEach {
+            listOf(
+                stringResource(R.string.analysis_turn_col_gate),
+                stringResource(R.string.analysis_turn_col_split),
+                stringResource(R.string.analysis_turn_col_line),
+                stringResource(R.string.analysis_turn_col_knee)
+            ).forEach {
                 Text(it, color = Color(0xFF8899AA), fontSize = 11.sp, fontWeight = FontWeight.Bold,
                     modifier = Modifier.weight(1f), textAlign = TextAlign.Center)
             }
@@ -278,8 +287,8 @@ private fun ErrorPatternContent(viewModel: MainViewModel) {
     }
 
     if (errors.isEmpty()) {
-        Text("No recurring error patterns detected yet", color = Color.Gray, fontSize = 13.sp)
-        Text("Record more runs to build pattern data", color = Color(0xFF666666), fontSize = 12.sp)
+        Text(stringResource(R.string.analysis_errors_empty_title), color = Color.Gray, fontSize = 13.sp)
+        Text(stringResource(R.string.analysis_errors_empty_body), color = Color(0xFF666666), fontSize = 12.sp)
     } else {
         errors.forEach { error ->
             Surface(
@@ -289,19 +298,19 @@ private fun ErrorPatternContent(viewModel: MainViewModel) {
             ) {
                 Column(modifier = Modifier.padding(10.dp)) {
                     Text(
-                        error["pattern"] ?: "Unknown pattern",
+                        error["pattern"] ?: stringResource(R.string.analysis_errors_unknown_pattern),
                         color = Color(0xFFEF9A9A),
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Medium
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Text("Severity: ${error["severity"]}", color = Color.Gray, fontSize = 11.sp)
-                        Text("Trend: ${error["trend"]}", color = when(error["trend"]) {
+                        Text(stringResource(R.string.analysis_errors_severity, error["severity"] ?: ""), color = Color.Gray, fontSize = 11.sp)
+                        Text(stringResource(R.string.analysis_errors_trend, error["trend"] ?: ""), color = when(error["trend"]) {
                             "improving" -> Color(0xFF66BB6A)
                             "regressing" -> Color(0xFFEF5350)
                             else -> Color(0xFFFFAB40)
                         }, fontSize = 11.sp)
-                        Text("Count: ${error["count"]}", color = Color.Gray, fontSize = 11.sp)
+                        Text(stringResource(R.string.analysis_errors_count, error["count"] ?: ""), color = Color.Gray, fontSize = 11.sp)
                     }
                 }
             }
@@ -319,7 +328,7 @@ private fun TimeToTechniqueContent(viewModel: MainViewModel) {
     }
 
     if (deltas.isEmpty()) {
-        Text("Need 2+ runs with gate timestamps for comparison", color = Color.Gray, fontSize = 13.sp)
+        Text(stringResource(R.string.analysis_time_empty), color = Color.Gray, fontSize = 13.sp)
     } else {
         deltas.forEach { delta ->
             val deltaMs = delta["deltaMs"]?.toIntOrNull() ?: 0
@@ -328,14 +337,20 @@ private fun TimeToTechniqueContent(viewModel: MainViewModel) {
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("Gate ${delta["gate"]}", color = Color.White, fontSize = 13.sp)
+                Text(stringResource(R.string.analysis_gate_label, delta["gate"]?.toIntOrNull() ?: 0), color = Color.White, fontSize = 13.sp)
                 Text(
-                    "${if (deltaMs > 0) "+" else ""}${deltaMs}ms",
+                    stringResource(R.string.analysis_time_delta_ms, if (deltaMs > 0) "+" else "", deltaMs),
                     color = if (deltaMs > 0) Color(0xFFEF5350) else Color(0xFF66BB6A),
                     fontSize = 14.sp,
                     fontWeight = FontWeight.Bold
                 )
-                Text(delta["reason"] ?: "", color = Color.Gray, fontSize = 11.sp)
+                Text(
+                    delta["reason"] ?: "",
+                    color = Color.Gray,
+                    fontSize = 11.sp,
+                    modifier = Modifier.weight(1f, fill = false),
+                    textAlign = TextAlign.End
+                )
             }
         }
     }
@@ -348,15 +363,15 @@ private fun SessionReportContent(viewModel: MainViewModel, context: android.cont
     var reportPath by remember { mutableStateOf("") }
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("Generate a PDF summary including:", color = Color.Gray, fontSize = 13.sp)
+        Text(stringResource(R.string.analysis_report_intro), color = Color.Gray, fontSize = 13.sp)
         listOf(
-            "Run count and timing splits",
-            "Best/worst runs by gate timing",
-            "Flagged moments and annotations",
-            "Detected error patterns",
-            "Key frames from starred media"
+            stringResource(R.string.analysis_report_item_1),
+            stringResource(R.string.analysis_report_item_2),
+            stringResource(R.string.analysis_report_item_3),
+            stringResource(R.string.analysis_report_item_4),
+            stringResource(R.string.analysis_report_item_5)
         ).forEach {
-            Text("  - $it", color = Color(0xFFAABBCC), fontSize = 12.sp)
+            Text(stringResource(R.string.analysis_report_bullet, it), color = Color(0xFFAABBCC), fontSize = 12.sp)
         }
 
         Surface(
@@ -368,16 +383,17 @@ private fun SessionReportContent(viewModel: MainViewModel, context: android.cont
             },
             shape = RoundedCornerShape(8.dp),
             color = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier.fillMaxWidth().height(56.dp)
         ) {
-            Text(
-                if (reportGenerated) "Report saved: ${reportPath.substringAfterLast("/")}" else "Generate PDF Report",
-                color = Color.Black,
-                fontWeight = FontWeight.Bold,
-                fontSize = 14.sp,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.padding(vertical = 10.dp)
-            )
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text(
+                    if (reportGenerated) stringResource(R.string.analysis_report_saved, reportPath.substringAfterLast("/")) else stringResource(R.string.analysis_report_generate),
+                    color = Color.Black,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.sp,
+                    textAlign = TextAlign.Center
+                )
+            }
         }
     }
 }
@@ -392,8 +408,8 @@ private fun ProgressContent(viewModel: MainViewModel) {
     }
 
     if (progressData.isEmpty()) {
-        Text("Progress tracking builds over multiple sessions", color = Color.Gray, fontSize = 13.sp)
-        Text("Come back after a few training days to see trends", color = Color(0xFF666666), fontSize = 12.sp)
+        Text(stringResource(R.string.analysis_progress_empty_title), color = Color.Gray, fontSize = 13.sp)
+        Text(stringResource(R.string.analysis_progress_empty_body), color = Color(0xFF666666), fontSize = 12.sp)
     } else {
         progressData.forEach { entry ->
             Row(

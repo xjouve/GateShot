@@ -10,19 +10,25 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -31,9 +37,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.gateshot.R
 import com.gateshot.ui.MainViewModel
 
 @Composable
@@ -50,6 +58,8 @@ fun AthleteScreen(
     var ageGroup by remember { mutableStateOf(session.athleteAgeGroup) }
     var team by remember { mutableStateOf(session.athleteTeam) }
     var athletes by remember { mutableStateOf<List<Map<String, String>>>(emptyList()) }
+    var isLoading by remember { mutableStateOf(true) }
+    var athleteToDelete by remember { mutableStateOf<Map<String, String>?>(null) }
 
     androidx.compose.runtime.DisposableEffect(Unit) {
         onDispose {
@@ -63,7 +73,13 @@ fun AthleteScreen(
 
     // Load athletes on first render
     androidx.compose.runtime.LaunchedEffect(Unit) {
-        viewModel.getAthletes { athletes = it }
+        viewModel.getAthletes {
+            // getAthletes swallows failures into an empty list and reports
+            // the error via the global snackbar (MainViewModel.uiMessages),
+            // so a failed load and a genuinely empty roster both land here.
+            athletes = it
+            isLoading = false
+        }
     }
 
     val textFieldColors = OutlinedTextFieldDefaults.colors(
@@ -91,19 +107,20 @@ fun AthleteScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("Athletes", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+            Text(stringResource(R.string.athlete_title), color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
             Surface(
                 onClick = { showAddForm = !showAddForm },
                 shape = RoundedCornerShape(8.dp),
-                color = MaterialTheme.colorScheme.primary
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.height(48.dp)
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    modifier = Modifier.padding(horizontal = 16.dp).fillMaxSize(),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    Icon(Icons.Filled.Add, null, tint = Color.Black, modifier = Modifier.height(16.dp))
-                    Text("Add", color = Color.Black, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    Icon(Icons.Filled.Add, contentDescription = null, tint = Color.Black, modifier = Modifier.height(16.dp))
+                    Text(stringResource(R.string.athlete_add_button), color = Color.Black, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                 }
             }
         }
@@ -117,41 +134,50 @@ fun AthleteScreen(
                     .padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Text("NEW ATHLETE", color = Color(0xFF8899AA), fontSize = 10.sp,
+                Text(stringResource(R.string.athlete_form_header), color = Color(0xFF8899AA), fontSize = 10.sp,
                     fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
 
                 OutlinedTextField(
                     value = name, onValueChange = { name = it },
-                    label = { Text("Name") },
+                    label = { Text(stringResource(R.string.athlete_label_name)) },
                     modifier = Modifier.fillMaxWidth(),
                     colors = textFieldColors, singleLine = true
                 )
                 OutlinedTextField(
                     value = bibNumbers, onValueChange = { bibNumbers = it },
-                    label = { Text("Bib numbers (comma-separated)") },
+                    label = { Text(stringResource(R.string.athlete_label_bibs)) },
                     modifier = Modifier.fillMaxWidth(),
                     colors = textFieldColors, singleLine = true
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     // Age group chips
-                    listOf("U14", "U16", "U18", "Senior").forEach { group ->
+                    val ageGroups = listOf(
+                        stringResource(R.string.athlete_age_u14),
+                        stringResource(R.string.athlete_age_u16),
+                        stringResource(R.string.athlete_age_u18),
+                        stringResource(R.string.athlete_age_senior)
+                    )
+                    ageGroups.forEach { group ->
                         Surface(
                             onClick = { ageGroup = group },
                             shape = RoundedCornerShape(8.dp),
-                            color = if (ageGroup == group) MaterialTheme.colorScheme.primary else Color(0xFF333333)
+                            color = if (ageGroup == group) MaterialTheme.colorScheme.primary else Color(0xFF333333),
+                            modifier = Modifier.height(40.dp)
                         ) {
-                            Text(
-                                group,
-                                color = if (ageGroup == group) Color.Black else Color.White,
-                                fontSize = 12.sp,
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
-                            )
+                            Box(contentAlignment = Alignment.Center) {
+                                Text(
+                                    group,
+                                    color = if (ageGroup == group) Color.Black else Color.White,
+                                    fontSize = 12.sp,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                                )
+                            }
                         }
                     }
                 }
                 OutlinedTextField(
                     value = team, onValueChange = { team = it },
-                    label = { Text("Team / Club") },
+                    label = { Text(stringResource(R.string.athlete_label_team)) },
                     modifier = Modifier.fillMaxWidth(),
                     colors = textFieldColors, singleLine = true
                 )
@@ -167,16 +193,17 @@ fun AthleteScreen(
                     },
                     shape = RoundedCornerShape(8.dp),
                     color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth().height(56.dp)
                 ) {
-                    Text(
-                        "Save Athlete",
-                        color = Color.Black,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 14.sp,
-                        modifier = Modifier.padding(vertical = 10.dp).fillMaxWidth(),
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                    )
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text(
+                            stringResource(R.string.athlete_save),
+                            color = Color.Black,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                        )
+                    }
                 }
             }
         }
@@ -184,7 +211,18 @@ fun AthleteScreen(
         Spacer(modifier = Modifier.height(8.dp))
 
         // Athlete list
-        if (athletes.isEmpty()) {
+        if (isLoading) {
+            Box(
+                modifier = Modifier.fillMaxWidth().padding(32.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(stringResource(R.string.athlete_loading), color = Color.Gray, fontSize = 14.sp)
+                }
+            }
+        } else if (athletes.isEmpty()) {
             Box(
                 modifier = Modifier.fillMaxWidth().padding(32.dp),
                 contentAlignment = Alignment.Center
@@ -193,8 +231,8 @@ fun AthleteScreen(
                     Icon(Icons.Filled.Person, null, tint = Color(0xFF444444),
                         modifier = Modifier.height(48.dp).width(48.dp))
                     Spacer(modifier = Modifier.height(8.dp))
-                    Text("No athletes yet", color = Color.Gray, fontSize = 14.sp)
-                    Text("Add athletes to track their progress", color = Color(0xFF666666), fontSize = 12.sp)
+                    Text(stringResource(R.string.athlete_empty_title), color = Color.Gray, fontSize = 14.sp)
+                    Text(stringResource(R.string.athlete_empty_body), color = Color(0xFF666666), fontSize = 12.sp)
                 }
             }
         } else {
@@ -228,7 +266,7 @@ fun AthleteScreen(
                         }
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                athlete["name"] ?: "Unknown",
+                                athlete["name"] ?: stringResource(R.string.athlete_unknown_name),
                                 color = Color.White,
                                 fontSize = 15.sp,
                                 fontWeight = FontWeight.Medium
@@ -236,7 +274,7 @@ fun AthleteScreen(
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 val bibs = athlete["bibNumbers"]
                                 if (!bibs.isNullOrBlank()) {
-                                    Text("Bibs: $bibs", color = Color(0xFF4FC3F7), fontSize = 12.sp)
+                                    Text(stringResource(R.string.athlete_bibs_label, bibs), color = Color(0xFF4FC3F7), fontSize = 12.sp)
                                 }
                                 val group = athlete["ageGroup"]
                                 if (!group.isNullOrBlank()) {
@@ -248,11 +286,45 @@ fun AthleteScreen(
                                 }
                             }
                         }
+                        IconButton(
+                            onClick = { athleteToDelete = athlete },
+                            modifier = Modifier.size(48.dp)
+                        ) {
+                            Icon(
+                                Icons.Filled.Delete,
+                                contentDescription = stringResource(R.string.athlete_cd_delete),
+                                tint = Color(0xFFEF5350)
+                            )
+                        }
                     }
                 }
             }
         }
 
         Spacer(modifier = Modifier.height(32.dp))
+    }
+
+    val pendingDelete = athleteToDelete
+    if (pendingDelete != null) {
+        val deleteName = pendingDelete["name"] ?: stringResource(R.string.athlete_unknown_name)
+        AlertDialog(
+            onDismissRequest = { athleteToDelete = null },
+            title = { Text(stringResource(R.string.athlete_confirm_delete_title)) },
+            text = { Text(stringResource(R.string.athlete_confirm_delete_text, deleteName)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    val id = pendingDelete["id"]?.toLongOrNull()
+                    athleteToDelete = null
+                    if (id != null) {
+                        viewModel.onDeleteAthlete(id) {
+                            viewModel.getAthletes { athletes = it }
+                        }
+                    }
+                }) { Text(stringResource(R.string.athlete_delete), color = Color(0xFFEF5350)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { athleteToDelete = null }) { Text(stringResource(R.string.athlete_cancel)) }
+            }
+        )
     }
 }

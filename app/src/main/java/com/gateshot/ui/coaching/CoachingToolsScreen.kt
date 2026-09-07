@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
@@ -42,9 +43,11 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.gateshot.R
 import com.gateshot.ui.MainViewModel
 
 /**
@@ -143,8 +146,8 @@ private fun IdealLineContent(viewModel: MainViewModel, context: android.content.
     var courseImage by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("1. Take a photo of the course from the side", color = Color.Gray, fontSize = 13.sp)
-        Text("2. Draw the ideal racing line below", color = Color.Gray, fontSize = 13.sp)
+        Text(stringResource(R.string.coachtools_line_step1), color = Color.Gray, fontSize = 13.sp)
+        Text(stringResource(R.string.coachtools_line_step2), color = Color.Gray, fontSize = 13.sp)
 
         // Load latest photo as course overview
         val latestPhoto = remember {
@@ -176,7 +179,7 @@ private fun IdealLineContent(viewModel: MainViewModel, context: android.content.
             courseImage?.let { bmp ->
                 androidx.compose.foundation.Image(
                     bitmap = bmp.asImageBitmap(),
-                    contentDescription = "Course",
+                    contentDescription = stringResource(R.string.coachtools_course_cd),
                     contentScale = ContentScale.Fit,
                     modifier = Modifier.fillMaxSize()
                 )
@@ -201,7 +204,7 @@ private fun IdealLineContent(viewModel: MainViewModel, context: android.content.
 
             if (linePoints.isEmpty() && courseImage == null) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("No course photo available", color = Color(0xFF444444), fontSize = 13.sp)
+                    Text(stringResource(R.string.coachtools_no_photo), color = Color(0xFF444444), fontSize = 13.sp)
                 }
             }
         }
@@ -210,9 +213,10 @@ private fun IdealLineContent(viewModel: MainViewModel, context: android.content.
             Surface(
                 onClick = { linePoints.clear() },
                 shape = RoundedCornerShape(8.dp),
-                color = Color(0xFF333333)
+                color = Color(0xFF333333),
+                modifier = Modifier.heightIn(min = 48.dp)
             ) {
-                Text("Clear", color = Color.White, fontSize = 13.sp,
+                Text(stringResource(R.string.coachtools_clear), color = Color.White, fontSize = 13.sp,
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp))
             }
             Surface(
@@ -220,9 +224,10 @@ private fun IdealLineContent(viewModel: MainViewModel, context: android.content.
                     viewModel.saveIdealLine(linePoints.map { it.x to it.y })
                 },
                 shape = RoundedCornerShape(8.dp),
-                color = MaterialTheme.colorScheme.primary
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.heightIn(min = 48.dp)
             ) {
-                Text("Save Line", color = Color.Black, fontSize = 13.sp, fontWeight = FontWeight.Bold,
+                Text(stringResource(R.string.coachtools_save_line), color = Color.Black, fontSize = 13.sp, fontWeight = FontWeight.Bold,
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp))
             }
         }

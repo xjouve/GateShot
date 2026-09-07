@@ -15,6 +15,8 @@ import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -67,6 +69,15 @@ fun GateShotNavHost(
                 popUpTo(Screen.Gallery.route) { saveState = true }
                 launchSingleTop = true
             }
+        }
+    }
+
+    // App-wide error/message channel (see MainViewModel.uiMessages) — surfaced
+    // as a Snackbar regardless of which tab is currently showing.
+    val snackbarHostState = remember { SnackbarHostState() }
+    LaunchedEffect(Unit) {
+        viewModel.uiMessages.collect { msg ->
+            snackbarHostState.showSnackbar(msg.text)
         }
     }
 
@@ -147,6 +158,7 @@ fun GateShotNavHost(
                 screens = allScreens
             )
         },
+        snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
         containerColor = Color.Black
     ) { padding ->
         NavHost(
