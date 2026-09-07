@@ -1,6 +1,8 @@
 package com.gateshot.ui.navigation
 
 import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.res.stringResource
+import com.gateshot.R
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.School
@@ -104,7 +106,7 @@ fun GateShotNavHost(
     if (showSessionDialog) {
         AlertDialog(
             onDismissRequest = { showSessionDialog = false },
-            title = { Text("Start Training Session") },
+            title = { Text(stringResource(R.string.session_dialog_title)) },
             text = {
                 androidx.compose.foundation.layout.Column(
                     verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp)
@@ -112,8 +114,8 @@ fun GateShotNavHost(
                     OutlinedTextField(
                         value = sessionEventName,
                         onValueChange = { sessionEventName = it },
-                        label = { Text("Event name") },
-                        placeholder = { Text("e.g. Courchevel Training") },
+                        label = { Text(stringResource(R.string.session_dialog_event_name)) },
+                        placeholder = { Text(stringResource(R.string.session_dialog_event_hint)) },
                         singleLine = true,
                         colors = OutlinedTextFieldDefaults.colors()
                     )
@@ -143,10 +145,10 @@ fun GateShotNavHost(
                     val name = sessionEventName.ifBlank { "Training" }
                     viewModel.onCreateSession(name, sessionDiscipline)
                     showSessionDialog = false
-                }) { Text("Start") }
+                }) { Text(stringResource(R.string.session_dialog_start)) }
             },
             dismissButton = {
-                TextButton(onClick = { showSessionDialog = false }) { Text("Skip") }
+                TextButton(onClick = { showSessionDialog = false }) { Text(stringResource(R.string.session_dialog_skip)) }
             }
         )
     }

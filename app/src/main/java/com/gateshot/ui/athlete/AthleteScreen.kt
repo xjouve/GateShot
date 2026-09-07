@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -107,7 +108,10 @@ fun AthleteScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(stringResource(R.string.athlete_title), color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+            Text(
+                stringResource(R.string.athlete_title), color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f)
+            )
             Surface(
                 onClick = { showAddForm = !showAddForm },
                 shape = RoundedCornerShape(8.dp),
@@ -115,7 +119,7 @@ fun AthleteScreen(
                 modifier = Modifier.height(48.dp)
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 16.dp).fillMaxSize(),
+                    modifier = Modifier.padding(horizontal = 16.dp).fillMaxHeight(),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {

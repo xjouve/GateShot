@@ -255,4 +255,11 @@
     <string name="onboarding_page4_desc">Draw on frames, record voice-over feedback, track athletes across sessions, and generate session reports.\n\nGlove-friendly controls, built for the slope.</string>
     <string name="onboarding_page5_title">Ready to Analyze</string>
     <string name="onboarding_page5_desc">Start a session, import today\'s runs, and dive in.\n\nGood luck out there! 🏁</string>
+
+    <!-- Session start dialog -->
+    <string name="session_dialog_title">Start Training Session</string>
+    <string name="session_dialog_event_name">Event name</string>
+    <string name="session_dialog_event_hint">e.g. Courchevel Training</string>
+    <string name="session_dialog_start">Start</string>
+    <string name="session_dialog_skip">Skip</string>
 </resources>

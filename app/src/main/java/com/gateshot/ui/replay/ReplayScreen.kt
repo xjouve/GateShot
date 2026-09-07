@@ -329,22 +329,23 @@ fun ReplayScreen(
             .background(Color.Black)
     ) {
         // Header
-        Row(
+        // Header: clip title on its own line, then a full-width strip of
+        // >=48dp glove-sized actions. On a 360dp-wide phone the six targets
+        // (one of them 56dp) do not leave room for a readable title beside them.
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(Color(0xFF1A1A1A))
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+                .padding(horizontal = 8.dp, vertical = 4.dp)
         ) {
             Text(
                 text = videoFile?.name ?: stringResource(R.string.replay_title_fallback),
                 color = Color.White,
-                fontSize = 18.sp,
+                fontSize = 15.sp,
                 fontWeight = FontWeight.Bold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.fillMaxWidth().padding(start = 4.dp, bottom = 2.dp)
             )
             // The gate nearest the playhead (within tap tolerance) — the flag
             // button reflects and toggles this, so a gate can be un-marked.
@@ -360,7 +361,11 @@ fun ReplayScreen(
             val cdAutoclip = stringResource(R.string.replay_cd_autoclip_toggle)
             val cdPose = stringResource(R.string.replay_cd_pose_toggle)
 
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 // Overlay layers toggle — Box adds an invisible >=48dp touch
                 // target around the (visually unchanged) 40dp Surface.
                 Box(modifier = Modifier.size(48.dp), contentAlignment = Alignment.Center) {
