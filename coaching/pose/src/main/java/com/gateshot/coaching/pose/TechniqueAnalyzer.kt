@@ -22,8 +22,16 @@ import kotlin.math.max
 import kotlin.math.min
 
 private const val TAG = "TechniqueAnalyzer"
-private const val SEARCH_FRAME_BOX = 960
+private const val FULL_DECODE_BOX = 1920
 private const val KEYFRAME_DECODE_BOX = 1920
+private const val SALIENCY_WIDTH = 240
+private const val PAN_MAX_SHIFT = 40
+private const val SEED_CROP_MULTIPLIER = 3f
+private const val SEED_CROP_MIN = 160f
+private const val SEED_CROP_MAX = 640f
+private const val FALLBACK_EVERY_N_UNTRACKED = 5
+private val FALLBACK_CROP_SIDES = floatArrayOf(192f, 320f)
+private const val DEFAULT_HEIGHT_ESTIMATE_PX = 120f
 
 // ─────────────────────────────────────────────────────────────────────────
 // Public data model
@@ -35,16 +43,17 @@ data class NormalizedRect(val x: Float, val y: Float, val width: Float, val heig
 @Serializable
 data class PoseSample(
     val timestampMs: Long,
-    val kneeAngleL: Float,
-    val kneeAngleR: Float,
-    val hipAngle: Float,
-    val torsoLeanDeg: Float,
-    val shoulderTiltDeg: Float,
-    val stanceWidthRatio: Float,
-    val handsForward: Float,
-    val personHeightPx: Float,
+    val kneeAngleL: Float? = null,
+    val kneeAngleR: Float? = null,
+    val hipAngle: Float? = null,
+    val torsoLeanDeg: Float? = null,
+    val shoulderTiltDeg: Float? = null,
+    val stanceWidthRatio: Float? = null,
+    val handsForward: Float? = null,
+    val personHeightPx: Float? = null,
     val confidence: Float,
-    val cropRect: NormalizedRect
+    val cropRect: NormalizedRect?,
+    val tracked: Boolean
 )
 
 @Serializable
@@ -83,6 +92,14 @@ data class KeyFrame(
     override fun hashCode() = jpegBytes.contentHashCode()
 }
 
+/** Small debug summary of a run; defaulted fields so old sidecars still load with `ignoreUnknownKeys`. */
+@Serializable
+data class TrackingDebug(
+    val searchFallbacks: Int = 0,
+    val meanConfidence: Float = 0f,
+    val medianPersonHeightPx: Float? = null
+)
+
 @Serializable
 data class TechniqueReport(
     val clipPath: String,
@@ -93,7 +110,8 @@ data class TechniqueReport(
     val metricStats: Map<String, MetricStats>,
     val gateSegments: List<GateSegment>,
     val flags: List<TechniqueFlag>,
-    val keyFrames: List<KeyFrameRef>
+    val keyFrames: List<KeyFrameRef>,
+    val debug: TrackingDebug = TrackingDebug()
 ) {
     companion object {
         fun load(file: File): TechniqueReport =
@@ -179,7 +197,7 @@ fun TechniqueReport.toPromptJson(): String {
 // Aggregation helpers (pure, no Android calls — directly unit-testable)
 // ─────────────────────────────────────────────────────────────────────────
 
-val METRIC_EXTRACTORS: Map<String, (PoseSample) -> Float> = mapOf(
+val METRIC_EXTRACTORS: Map<String, (PoseSample) -> Float?> = mapOf(
     "kneeAngleL" to { s: PoseSample -> s.kneeAngleL },
     "kneeAngleR" to { s: PoseSample -> s.kneeAngleR },
     "hipAngle" to { s: PoseSample -> s.hipAngle },
@@ -189,9 +207,12 @@ val METRIC_EXTRACTORS: Map<String, (PoseSample) -> Float> = mapOf(
     "handsForward" to { s: PoseSample -> s.handsForward }
 )
 
+/** A metric is included only when it has >= 5 non-null values among [samples]. */
 fun computeAllMetricStats(samples: List<PoseSample>): Map<String, MetricStats> =
     METRIC_EXTRACTORS.mapNotNull { (name, extractor) ->
-        val raw = computeStats(samples.map(extractor)) ?: return@mapNotNull null
+        val values = samples.mapNotNull(extractor)
+        if (values.size < 5) return@mapNotNull null
+        val raw = computeStats(values) ?: return@mapNotNull null
         name to MetricStats(raw.min, raw.max, raw.mean, raw.p10, raw.p90)
     }.toMap()
 
@@ -218,12 +239,15 @@ fun buildFlags(
     if (trackedFraction < 0.5f) {
         flags += TechniqueFlag(
             "LOW_TRACKING", 3,
-            "Pose tracking held on only ${(trackedFraction * 100).toInt()}% of sampled frames — results unreliable.",
+            "Racer too small or unclear to measure reliably — try footage filmed closer or at higher zoom"
         )
     }
 
-    if (confident.isNotEmpty()) {
-        val meanKnee = confident.map { (it.kneeAngleL + it.kneeAngleR) / 2f }.average().toFloat()
+    val kneeMeans = confident.mapNotNull { s ->
+        if (s.kneeAngleL != null && s.kneeAngleR != null) (s.kneeAngleL + s.kneeAngleR) / 2f else null
+    }
+    if (kneeMeans.isNotEmpty()) {
+        val meanKnee = kneeMeans.average().toFloat()
         if (meanKnee > 150f) {
             flags += TechniqueFlag(
                 "UPRIGHT", 2,
@@ -234,7 +258,9 @@ fun buildFlags(
 
     for (gate in gateTimestampsMs) {
         val near = confident.filter { abs(it.timestampMs - gate) <= 150 }
-        val straight = near.firstOrNull { it.kneeAngleL > 155f || it.kneeAngleR > 155f }
+        val straight = near.firstOrNull {
+            (it.kneeAngleL != null && it.kneeAngleL > 155f) || (it.kneeAngleR != null && it.kneeAngleR > 155f)
+        }
         if (straight != null) {
             flags += TechniqueFlag(
                 "STRAIGHT_LEGS_AT_GATE", 2,
@@ -244,8 +270,9 @@ fun buildFlags(
         }
     }
 
-    if (confident.isNotEmpty()) {
-        val backFraction = confident.count { it.handsForward < 0f }.toFloat() / confident.size
+    val handsValues = confident.mapNotNull { it.handsForward }
+    if (handsValues.isNotEmpty()) {
+        val backFraction = handsValues.count { it < 0f }.toFloat() / handsValues.size
         if (backFraction > 0.4f) {
             flags += TechniqueFlag(
                 "HANDS_BACK", 2,
@@ -275,10 +302,24 @@ fun buildFlags(
     return flags
 }
 
-/** Picks 6-8 key frames: gate passages, notable poses, plus evenly-spaced fallbacks; sorted by time. */
+/**
+ * Picks 6-8 key frames from tracked samples: gate passages, notable poses,
+ * plus evenly-spaced fallbacks; sorted by time. When no sample is tracked,
+ * falls back to evenly-spaced full frames (no crop) from all samples.
+ */
 fun selectKeyFrames(samples: List<PoseSample>, gateTimestampsMs: List<Long>, minCount: Int = 6, maxCount: Int = 8): List<KeyFrameRef> {
-    val confident = samples.filter { it.confidence >= MIN_TRACK_CONFIDENCE }
-    if (confident.isEmpty()) return emptyList()
+    val confident = samples.filter { it.tracked }
+    if (confident.isEmpty()) {
+        if (samples.isEmpty()) return emptyList()
+        val step = max(1, samples.size / minCount)
+        val picked = mutableListOf<KeyFrameRef>()
+        var i = 0
+        while (i < samples.size && picked.size < maxCount) {
+            picked += KeyFrameRef(samples[i].timestampMs, "Sampled frame (untracked)", null)
+            i += step
+        }
+        return picked
+    }
 
     val picked = LinkedHashMap<Long, KeyFrameRef>()
     fun add(sample: PoseSample, reason: String) {
@@ -290,9 +331,10 @@ fun selectKeyFrames(samples: List<PoseSample>, gateTimestampsMs: List<Long>, min
         add(nearest, "Gate passage near ${gate}ms")
     }
 
-    confident.minByOrNull { (it.kneeAngleL + it.kneeAngleR) / 2f }?.let { add(it, "Deepest knee flexion") }
-    confident.maxByOrNull { (it.kneeAngleL + it.kneeAngleR) / 2f }?.let { add(it, "Most upright") }
-    confident.maxByOrNull { abs(it.torsoLeanDeg) }?.let { add(it, "Max torso lean") }
+    val kneeSamples = confident.filter { it.kneeAngleL != null && it.kneeAngleR != null }
+    kneeSamples.minByOrNull { (it.kneeAngleL!! + it.kneeAngleR!!) / 2f }?.let { add(it, "Deepest knee flexion") }
+    kneeSamples.maxByOrNull { (it.kneeAngleL!! + it.kneeAngleR!!) / 2f }?.let { add(it, "Most upright") }
+    confident.filter { it.torsoLeanDeg != null }.maxByOrNull { abs(it.torsoLeanDeg!!) }?.let { add(it, "Max torso lean") }
 
     if (picked.size < minCount) {
         val step = max(1, confident.size / (minCount - picked.size + 1))
@@ -332,7 +374,9 @@ private data class TrackResult(
     val hipCenterXNorm: Float
 )
 
-private data class PersonCheck(val plausible: Boolean, val heightFraction: Float)
+private data class PersonBBox(val minX: Float, val minY: Float, val maxX: Float, val maxY: Float)
+
+private data class LumaFrame(val data: FloatArray, val lw: Int, val lh: Int)
 
 @Singleton
 class TechniqueAnalyzer @Inject constructor(
@@ -343,6 +387,7 @@ class TechniqueAnalyzer @Inject constructor(
         clipPath: String,
         gateTimestampsMs: List<Long>,
         sampleIntervalMs: Long = 200,
+        initialHint: NormalizedRect? = null,
         onProgress: (Float) -> Unit = {}
     ): TechniqueReport = withContext(Dispatchers.Default) {
         val health = pose.healthCheck()
@@ -358,47 +403,126 @@ class TechniqueAnalyzer @Inject constructor(
                 ?.toLongOrNull()
                 ?: throw IllegalStateException("TechniqueAnalyzer: could not read duration for $clipPath")
 
+            val timestamps = mutableListOf<Long>()
+            var t = 0L
+            while (t < durationMs) { timestamps += t; t += sampleIntervalMs }
+            val totalSteps = max(1, timestamps.size)
+
             val samples = mutableListOf<PoseSample>()
             val xHistory = mutableListOf<Float>()
             var track: TrackState? = null
-            val totalSteps = max(1, (durationMs / sampleIntervalMs).toInt())
-            var step = 0
-            var tMs = 0L
+            var prevLuma: LumaFrame? = null
+            var consecutiveUntracked = 0
+            var searchFallbacks = 0
+            val allConfidences = mutableListOf<Float>()
+            val trackedHeights = mutableListOf<Float>()
 
-            while (tMs < durationMs) {
+            for ((i, tMs) in timestamps.withIndex()) {
                 coroutineContext.ensureActive()
                 val bitmap = retriever.getScaledFrameAtTime(
-                    tMs * 1000, MediaMetadataRetriever.OPTION_CLOSEST, SEARCH_FRAME_BOX, SEARCH_FRAME_BOX
+                    tMs * 1000, MediaMetadataRetriever.OPTION_CLOSEST, FULL_DECODE_BOX, FULL_DECODE_BOX
                 )
-                if (bitmap != null) {
-                    val result = (track?.let { trackFrame(bitmap, it) }) ?: searchFrame(bitmap)
-                    if (result != null) {
-                        xHistory += result.hipCenterXNorm
-                        if (xHistory.size > 8) xHistory.removeAt(0)
-                        val dirSign = travelDirectionSign(xHistory)
-                        samples += buildSample(tMs, result, dirSign)
-                        track = if (result.skeleton.confidence >= MIN_TRACK_CONFIDENCE) {
-                            TrackState(result.bboxCenterXNorm, result.bboxCenterYNorm, result.personHeightPx)
-                        } else null
-                    } else {
-                        track = null
-                    }
-                    bitmap.recycle()
-                } else {
+                if (bitmap == null) {
                     Log.w(TAG, "No frame decoded at ${tMs}ms for $clipPath")
+                    samples += untrackedSample(tMs, 0f)
+                    allConfidences += 0f
+                    track = null
+                    consecutiveUntracked++
+                    onProgress(((i + 1).toFloat() / totalSteps).coerceIn(0f, 1f))
+                    continue
                 }
-                step++
-                onProgress((step.toFloat() / totalSteps).coerceIn(0f, 1f))
-                tMs += sampleIntervalMs
+
+                val w = bitmap.width; val h = bitmap.height
+                val luma = downscaleLuma(bitmap, SALIENCY_WIDTH)
+
+                val diffFrame = prevLuma ?: if (i + 1 < timestamps.size) decodeLumaOnly(retriever, timestamps[i + 1]) else null
+
+                val candidates: List<SalientCandidate> = if (diffFrame != null && diffFrame.lw == luma.lw && diffFrame.lh == luma.lh) {
+                    val (a, b) = if (prevLuma != null) diffFrame to luma else luma to diffFrame
+                    val (dx, dy) = estimatePan(a.data, b.data, luma.lw, luma.lh, PAN_MAX_SHIFT)
+                    val diff = alignedAbsDiff(a.data, b.data, luma.lw, luma.lh, dx, dy)
+                    val blurred = boxBlur(diff, luma.lw, luma.lh, 2)
+                    val energy = thresholdEnergyMap(blurred, 2f)
+                    val prevXScaled = track?.let { it.centerXNorm * luma.lw }
+                    val prevYScaled = track?.let { it.centerYNorm * luma.lh }
+                    findSalientCandidates(energy, luma.lw, luma.lh, prevXScaled, prevYScaled)
+                } else emptyList()
+
+                val scaleX = w.toFloat() / luma.lw
+                val scaleY = h.toFloat() / luma.lh
+
+                var result: TrackResult? = null
+
+                if (i == 0 && initialHint != null) {
+                    val seedX = (initialHint.x + initialHint.width / 2f) * w
+                    val seedY = (initialHint.y + initialHint.height / 2f) * h
+                    val heightEstimate = (initialHint.height * h).coerceAtLeast(DEFAULT_HEIGHT_ESTIMATE_PX)
+                    result = runPoseAtSeed(bitmap, seedX, seedY, heightEstimate, w, h)
+                }
+
+                if (result == null && candidates.isNotEmpty()) {
+                    val top = candidates.first()
+                    val seedX = top.centerX * scaleX
+                    val seedY = top.centerY * scaleY
+                    val heightEstimate = (top.height * scaleY).coerceAtLeast(24f)
+                    result = runPoseAtSeed(bitmap, seedX, seedY, heightEstimate, w, h)
+                } else if (result == null && candidates.isEmpty() && track != null) {
+                    val seedX = track.centerXNorm * w
+                    val seedY = track.centerYNorm * h
+                    result = runPoseAtSeed(bitmap, seedX, seedY, track.personHeightPx, w, h)
+                }
+
+                if (result == null) {
+                    consecutiveUntracked++
+                    if (consecutiveUntracked % FALLBACK_EVERY_N_UNTRACKED == 0 && candidates.isNotEmpty()) {
+                        searchFallbacks++
+                        result = searchAroundCandidates(bitmap, candidates, scaleX, scaleY, w, h)
+                    }
+                }
+
+                if (result != null) {
+                    consecutiveUntracked = 0
+                    xHistory += result.hipCenterXNorm
+                    if (xHistory.size > 8) xHistory.removeAt(0)
+                    val dirSign = travelDirectionSign(xHistory)
+                    val sample = buildSample(tMs, result, dirSign)
+                    samples += sample
+                    allConfidences += sample.confidence
+                    sample.personHeightPx?.let { trackedHeights += it }
+                    track = TrackState(result.bboxCenterXNorm, result.bboxCenterYNorm, result.personHeightPx)
+                    Log.d(
+                        TAG,
+                        "t=${tMs}ms seed=(${(result.bboxCenterXNorm * w).toInt()},${(result.bboxCenterYNorm * h).toInt()}) " +
+                            "height=${result.personHeightPx.toInt()} conf=${sample.confidence} tracked=true"
+                    )
+                } else {
+                    samples += untrackedSample(tMs, 0f)
+                    allConfidences += 0f
+                    track = null
+                    Log.d(TAG, "t=${tMs}ms seed=none height=none conf=0.0 tracked=false")
+                }
+
+                prevLuma = luma
+                bitmap.recycle()
+                onProgress(((i + 1).toFloat() / totalSteps).coerceIn(0f, 1f))
             }
             onProgress(1f)
 
-            val confident = samples.filter { it.confidence >= MIN_TRACK_CONFIDENCE }
-            val trackedFraction = if (samples.isNotEmpty()) confident.size.toFloat() / samples.size else 0f
-            val metricStats = computeAllMetricStats(confident)
-            val segments = buildGateSegments(confident, gateTimestampsMs)
-            val flags = buildFlags(confident, samples, gateTimestampsMs, trackedFraction, metricStats)
+            val tracked = samples.filter { it.tracked }
+            val trackedFraction = if (samples.isNotEmpty()) tracked.size.toFloat() / samples.size else 0f
+            val metricStats = computeAllMetricStats(tracked)
+            val segments = buildGateSegments(tracked, gateTimestampsMs)
+            val flags = buildFlags(tracked, samples, gateTimestampsMs, trackedFraction, metricStats)
             val keyFrames = selectKeyFrames(samples, gateTimestampsMs)
+            val meanConfidence = if (allConfidences.isNotEmpty()) allConfidences.average().toFloat() else 0f
+            val medianHeight = if (trackedHeights.isNotEmpty()) percentile(trackedHeights.sorted(), 50f) else null
+            val debug = TrackingDebug(searchFallbacks, meanConfidence, medianHeight)
+
+            Log.i(
+                TAG,
+                "TechniqueAnalyzer run: $clipPath samples=${samples.size} tracked=${tracked.size} " +
+                    "trackedFraction=$trackedFraction searchFallbacks=$searchFallbacks meanConfidence=$meanConfidence medianHeightPx=$medianHeight"
+            )
 
             TechniqueReport(
                 clipPath = clipPath,
@@ -409,89 +533,83 @@ class TechniqueAnalyzer @Inject constructor(
                 metricStats = metricStats,
                 gateSegments = segments,
                 flags = flags,
-                keyFrames = keyFrames
+                keyFrames = keyFrames,
+                debug = debug
             )
         } finally {
             retriever.release()
         }
     }
 
-    private fun searchFrame(bitmap: Bitmap): TrackResult? {
+    // ─────────────────────────────────────────────────────────────────────
+    // Motion-saliency racer localization
+    // ─────────────────────────────────────────────────────────────────────
+
+    private fun downscaleLuma(bitmap: Bitmap, targetWidth: Int): LumaFrame {
         val w = bitmap.width; val h = bitmap.height
-        val crops = mutableListOf(CropRect(0f, 0f, w.toFloat(), h.toFloat()))
-        for (divisor in intArrayOf(2, 3)) {
-            val side = h.toFloat() / divisor
-            if (side < 32f) continue
-            val stride = side / 2f
-            var y = 0f
-            while (y + side <= h) {
-                var x = 0f
-                while (x + side <= w) {
-                    crops += CropRect(x, y, side, side)
-                    x += stride
-                }
-                y += stride
-            }
+        val lw = min(targetWidth, w)
+        val lh = max(1, Math.round(h.toFloat() * lw / w))
+        val scaled = Bitmap.createScaledBitmap(bitmap, lw, lh, true)
+        val pixels = IntArray(lw * lh)
+        scaled.getPixels(pixels, 0, lw, 0, 0, lw, lh)
+        if (scaled !== bitmap) scaled.recycle()
+        val data = FloatArray(lw * lh)
+        for (i in pixels.indices) {
+            val p = pixels[i]
+            val r = (p shr 16) and 0xFF; val g = (p shr 8) and 0xFF; val b = p and 0xFF
+            data[i] = 0.299f * r + 0.587f * g + 0.114f * b
         }
-
-        var bestSkeleton: SkeletonData? = null
-        var bestCrop: CropRect? = null
-        for (crop in crops) {
-            val isFull = crop.x == 0f && crop.y == 0f && crop.width == w.toFloat() && crop.height == h.toFloat()
-            val cropBitmap = if (isFull) bitmap else
-                Bitmap.createBitmap(bitmap, crop.x.toInt(), crop.y.toInt(), crop.width.toInt(), crop.height.toInt())
-            val skeleton = pose.estimatePoseFromBitmap(cropBitmap)
-            if (!isFull) cropBitmap.recycle()
-
-            val check = personPlausibility(skeleton)
-            if (check.plausible && (bestSkeleton == null || skeleton.confidence > bestSkeleton!!.confidence)) {
-                bestSkeleton = skeleton
-                bestCrop = crop
-            }
-        }
-        val skeleton = bestSkeleton ?: return null
-        val crop = bestCrop ?: return null
-        return toTrackResult(skeleton, crop, w, h)
+        return LumaFrame(data, lw, lh)
     }
 
-    private fun trackFrame(bitmap: Bitmap, state: TrackState): TrackResult? {
-        val w = bitmap.width; val h = bitmap.height
-        val cx = state.centerXNorm * w
-        val cy = state.centerYNorm * h
-        val side = max(2.5f * state.personHeightPx, 160f)
-        val minSide = min(160f, min(w, h).toFloat())
-        val crop = clampSquareCrop(cx, cy, side, w.toFloat(), h.toFloat(), minSide)
-
-        val cropBitmap = Bitmap.createBitmap(bitmap, crop.x.toInt(), crop.y.toInt(), crop.width.toInt(), crop.height.toInt())
-        val skeleton = pose.estimatePoseFromBitmap(cropBitmap)
-        cropBitmap.recycle()
-
-        val check = personPlausibility(skeleton)
-        if (skeleton.confidence < MIN_TRACK_CONFIDENCE || !check.plausible) return null
-        return toTrackResult(skeleton, crop, w, h)
+    private fun decodeLumaOnly(retriever: MediaMetadataRetriever, tMs: Long): LumaFrame? {
+        val bitmap = retriever.getScaledFrameAtTime(
+            tMs * 1000, MediaMetadataRetriever.OPTION_CLOSEST, FULL_DECODE_BOX, FULL_DECODE_BOX
+        ) ?: return null
+        val frame = downscaleLuma(bitmap, SALIENCY_WIDTH)
+        bitmap.recycle()
+        return frame
     }
 
-    private fun personPlausibility(skeleton: SkeletonData): PersonCheck {
+    // ─────────────────────────────────────────────────────────────────────
+    // Pose on a seed, with retries and strict validity
+    // ─────────────────────────────────────────────────────────────────────
+
+    private fun buildValidityInput(skeleton: SkeletonData, crop: CropRect): Pair<ValidityInput, PersonBBox>? {
         val kp = skeleton.keypoints.associateBy { it.id }
         fun conf(id: Int) = kp[id]?.confidence ?: 0f
-        val hipDetected = conf(PoseEstimationModule.LEFT_HIP) >= MIN_KEYPOINT_CONFIDENCE ||
-            conf(PoseEstimationModule.RIGHT_HIP) >= MIN_KEYPOINT_CONFIDENCE
-        val kneeOrAnkleDetected = conf(PoseEstimationModule.LEFT_KNEE) >= MIN_KEYPOINT_CONFIDENCE ||
-            conf(PoseEstimationModule.RIGHT_KNEE) >= MIN_KEYPOINT_CONFIDENCE ||
-            conf(PoseEstimationModule.LEFT_ANKLE) >= MIN_KEYPOINT_CONFIDENCE ||
-            conf(PoseEstimationModule.RIGHT_ANKLE) >= MIN_KEYPOINT_CONFIDENCE
-        val ys = listOfNotNull(
+        val ids = intArrayOf(
             PoseEstimationModule.LEFT_SHOULDER, PoseEstimationModule.RIGHT_SHOULDER,
             PoseEstimationModule.LEFT_HIP, PoseEstimationModule.RIGHT_HIP,
             PoseEstimationModule.LEFT_KNEE, PoseEstimationModule.RIGHT_KNEE,
             PoseEstimationModule.LEFT_ANKLE, PoseEstimationModule.RIGHT_ANKLE
-        ).mapNotNull { id -> kp[id]?.takeIf { it.confidence >= MIN_KEYPOINT_CONFIDENCE }?.y }
-        val heightFraction = if (ys.size >= 2) (ys.max() - ys.min()) else 0f
-        return PersonCheck(isPlausiblePerson(hipDetected, kneeOrAnkleDetected, heightFraction), heightFraction)
+        )
+        val xs = mutableListOf<Float>(); val ys = mutableListOf<Float>()
+        for (id in ids) {
+            val k = kp[id]
+            if (k != null && k.confidence >= MIN_TRACK_CONFIDENCE) {
+                xs += crop.x + k.x * crop.width
+                ys += crop.y + k.y * crop.height
+            }
+        }
+        if (xs.isEmpty()) return null
+        val heightPx = ys.max() - ys.min()
+        val widthPx = (xs.max() - xs.min()).let { if (it <= 0f) 1f else it }
+        val v = ValidityInput(
+            overallConfidence = skeleton.confidence,
+            leftHipConf = conf(PoseEstimationModule.LEFT_HIP),
+            rightHipConf = conf(PoseEstimationModule.RIGHT_HIP),
+            leftKneeConf = conf(PoseEstimationModule.LEFT_KNEE),
+            rightKneeConf = conf(PoseEstimationModule.RIGHT_KNEE),
+            leftAnkleConf = conf(PoseEstimationModule.LEFT_ANKLE),
+            rightAnkleConf = conf(PoseEstimationModule.RIGHT_ANKLE),
+            heightPx = heightPx,
+            widthPx = widthPx
+        )
+        return v to PersonBBox(xs.min(), ys.min(), xs.max(), ys.max())
     }
 
-    private fun toTrackResult(skeleton: SkeletonData, crop: CropRect, frameW: Int, frameH: Int): TrackResult {
-        val check = personPlausibility(skeleton)
+    private fun toTrackResult(skeleton: SkeletonData, crop: CropRect, frameW: Int, frameH: Int, bbox: PersonBBox): TrackResult {
         val mappedKeypoints = skeleton.keypoints.map { kp ->
             kp.copy(
                 x = (crop.x + kp.x * crop.width) / frameW,
@@ -502,20 +620,61 @@ class TechniqueAnalyzer @Inject constructor(
         val kp = mapped.keypoints.associateBy { it.id }
         val hipXs = listOfNotNull(kp[PoseEstimationModule.LEFT_HIP]?.x, kp[PoseEstimationModule.RIGHT_HIP]?.x)
         val hipCenterX = if (hipXs.isNotEmpty()) hipXs.average().toFloat() else 0.5f
-        val detected = mapped.keypoints.filter { it.confidence >= MIN_KEYPOINT_CONFIDENCE }
-        val bboxCx = if (detected.isNotEmpty()) (detected.minOf { it.x } + detected.maxOf { it.x }) / 2f else hipCenterX
-        val bboxCy = if (detected.isNotEmpty()) (detected.minOf { it.y } + detected.maxOf { it.y }) / 2f else 0.5f
-        val personHeightPx = check.heightFraction * crop.height
+        val personHeightPx = bbox.maxY - bbox.minY
+        val bboxCx = ((bbox.minX + bbox.maxX) / 2f) / frameW
+        val bboxCy = ((bbox.minY + bbox.maxY) / 2f) / frameH
         return TrackResult(mapped, crop, frameW, frameH, personHeightPx, bboxCx, bboxCy, hipCenterX)
     }
+
+    private fun runPoseAtSeed(bitmap: Bitmap, seedX: Float, seedY: Float, heightEstimate: Float, w: Int, h: Int): TrackResult? {
+        val baseSide = (SEED_CROP_MULTIPLIER * heightEstimate).coerceIn(SEED_CROP_MIN, SEED_CROP_MAX)
+        val sides = floatArrayOf(baseSide, baseSide * 1.5f, baseSide * 0.7f)
+        for (side in sides) {
+            val minSide = min(side, min(w, h).toFloat())
+            val crop = clampSquareCrop(seedX, seedY, side, w.toFloat(), h.toFloat(), minSide)
+            val cropBitmap = Bitmap.createBitmap(bitmap, crop.x.toInt(), crop.y.toInt(), crop.width.toInt(), crop.height.toInt())
+            val skeleton = pose.estimatePoseFromBitmap(cropBitmap)
+            cropBitmap.recycle()
+            val vp = buildValidityInput(skeleton, crop) ?: continue
+            if (isValidTrack(vp.first)) return toTrackResult(skeleton, crop, w, h, vp.second)
+        }
+        return null
+    }
+
+    /** Fallback: full-res crops of 192/320px around the saliency's top-3 candidates — not a blind grid. */
+    private fun searchAroundCandidates(
+        bitmap: Bitmap, candidates: List<SalientCandidate>, scaleX: Float, scaleY: Float, w: Int, h: Int
+    ): TrackResult? {
+        for (c in candidates) {
+            val cx = c.centerX * scaleX
+            val cy = c.centerY * scaleY
+            for (side in FALLBACK_CROP_SIDES) {
+                val minSide = min(side, min(w, h).toFloat())
+                val crop = clampSquareCrop(cx, cy, side, w.toFloat(), h.toFloat(), minSide)
+                val cropBitmap = Bitmap.createBitmap(bitmap, crop.x.toInt(), crop.y.toInt(), crop.width.toInt(), crop.height.toInt())
+                val skeleton = pose.estimatePoseFromBitmap(cropBitmap)
+                cropBitmap.recycle()
+                val vp = buildValidityInput(skeleton, crop) ?: continue
+                if (isValidTrack(vp.first)) return toTrackResult(skeleton, crop, w, h, vp.second)
+            }
+        }
+        return null
+    }
+
+    private fun untrackedSample(tMs: Long, confidence: Float): PoseSample = PoseSample(
+        timestampMs = tMs,
+        kneeAngleL = null, kneeAngleR = null, hipAngle = null,
+        torsoLeanDeg = null, shoulderTiltDeg = null, stanceWidthRatio = null, handsForward = null,
+        personHeightPx = null, confidence = confidence, cropRect = null, tracked = false
+    )
 
     private fun buildSample(tMs: Long, r: TrackResult, dirSign: Float): PoseSample {
         val kp = r.skeleton.keypoints.associateBy { it.id }
         // Keypoints are normalized [0,1] to the full frame; angle/distance math must run in
         // PIXEL space (x*frameW, y*frameH) — on a non-square (9:16 or 16:9) frame, normalized
         // coordinates are anisotropically scaled and distort angles (a 90° knee can read as
-        // 60° or 120°).
-        fun pt(id: Int): Point? = kp[id]?.takeIf { it.confidence >= MIN_KEYPOINT_CONFIDENCE }
+        // 60° or 120°). Only keypoints at or above MIN_TRACK_CONFIDENCE feed any metric.
+        fun pt(id: Int): Point? = kp[id]?.takeIf { it.confidence >= MIN_TRACK_CONFIDENCE }
             ?.let { Point(it.x * r.frameW, it.y * r.frameH) }
 
         val lHip = pt(PoseEstimationModule.LEFT_HIP); val rHip = pt(PoseEstimationModule.RIGHT_HIP)
@@ -524,37 +683,19 @@ class TechniqueAnalyzer @Inject constructor(
         val lShoulder = pt(PoseEstimationModule.LEFT_SHOULDER); val rShoulder = pt(PoseEstimationModule.RIGHT_SHOULDER)
         val lWrist = pt(PoseEstimationModule.LEFT_WRIST); val rWrist = pt(PoseEstimationModule.RIGHT_WRIST)
 
-        val kneeL = if (lHip != null && lKnee != null && lAnkle != null) angleAt(lHip, lKnee, lAnkle) else 0f
-        val kneeR = if (rHip != null && rKnee != null && rAnkle != null) angleAt(rHip, rKnee, rAnkle) else 0f
-
-        val hipAngle = when {
-            lShoulder != null && lHip != null && lKnee != null -> angleAt(lShoulder, lHip, lKnee)
-            rShoulder != null && rHip != null && rKnee != null -> angleAt(rShoulder, rHip, rKnee)
-            else -> 0f
-        }
+        val kneeL = angleOrNull(lHip, lKnee, lAnkle)
+        val kneeR = angleOrNull(rHip, rKnee, rAnkle)
+        val hipAngle = angleOrNull(lShoulder, lHip, lKnee) ?: angleOrNull(rShoulder, rHip, rKnee)
 
         val torsoLean = if (lShoulder != null && rShoulder != null && lHip != null && rHip != null) {
             val smX = (lShoulder.x + rShoulder.x) / 2f; val smY = (lShoulder.y + rShoulder.y) / 2f
             val hmX = (lHip.x + rHip.x) / 2f; val hmY = (lHip.y + rHip.y) / 2f
             leanAngleDeg(smX, smY, hmX, hmY)
-        } else 0f
+        } else null
 
-        val shoulderTilt = if (lShoulder != null && rShoulder != null)
-            tiltAngleDeg(lShoulder.x, lShoulder.y, rShoulder.x, rShoulder.y) else 0f
-
-        val stanceRatio = if (lAnkle != null && rAnkle != null && lHip != null && rHip != null) {
-            val ankleDist = distance(lAnkle.x, lAnkle.y, rAnkle.x, rAnkle.y)
-            val hipDist = distance(lHip.x, lHip.y, rHip.x, rHip.y)
-            if (hipDist > 0f) ankleDist / hipDist else 0f
-        } else 0f
-
-        val handsForward = if ((lWrist != null || rWrist != null) && lHip != null && rHip != null && r.personHeightPx > 0f) {
-            // lWrist/rWrist/lHip/rHip are already pixel-space here, so no extra frameW scaling needed.
-            val meanWristX = listOfNotNull(lWrist?.x, rWrist?.x).average().toFloat()
-            val hipCenterX = (lHip.x + rHip.x) / 2f
-            val diffPx = meanWristX - hipCenterX
-            (diffPx / r.personHeightPx) * dirSign
-        } else 0f
+        val shoulderTilt = shoulderTiltOrNull(lShoulder, rShoulder, lHip, rHip)
+        val stanceRatio = stanceRatioOrNull(lAnkle, rAnkle, lHip, rHip)
+        val handsForward = handsForwardOrNull(lWrist, rWrist, lHip, rHip, r.personHeightPx, dirSign)
 
         return PoseSample(
             timestampMs = tMs,
@@ -569,7 +710,8 @@ class TechniqueAnalyzer @Inject constructor(
             confidence = r.skeleton.confidence,
             cropRect = NormalizedRect(
                 r.crop.x / r.frameW, r.crop.y / r.frameH, r.crop.width / r.frameW, r.crop.height / r.frameH
-            )
+            ),
+            tracked = true
         )
     }
 
