@@ -123,6 +123,18 @@ No upfront permissions. The microphone permission is requested only when recordi
 | Coach | Annotate / Athletes / Analysis / Tools sub-tabs |
 | Settings | Export, storage, about |
 
+## AI racer analysis
+
+On the Coach → Analysis tab, **Analyze racer** tracks the skier through the clip
+on-device (motion-saliency localization + MoveNet pose) and reports knee/hip
+angles, torso lean, shoulder tilt, stance width and hands position per run and
+per gate section, with honest tracking coverage and heuristic flags. **Get AI
+coaching report** then sends cropped key frames and the metrics to Claude
+(`claude-opus-5`, your own Anthropic API key from Settings) and returns a
+structured coaching report: score, strengths, prioritized corrections with
+timestamps, drills, and a confidence note. Reports are cached next to the clip
+and can be shared as text.
+
 ## Release build
 
 `.\gradlew :app:assembleRelease` produces a minified, resource-shrunk APK

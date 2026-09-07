@@ -1,4 +1,4 @@
-# GateShot — Session Handoff (2026-09-07)
+# GateShot — Session Handoff (2026-09-08)
 
 Read this first when resuming work. It captures where the project stands after
 the video-analysis pivot and everything shipped on top of it.
@@ -143,6 +143,64 @@ New load-bearing facts:
 12. Leftover worktrees from this pass live at `K:\TEMP\claude\wt-{release,ui,robust}`
     (branches `tier1-*`, fully merged) — safe to `git worktree remove`.
 
+## AI racer analysis (2026-09-08)
+
+Two-stage feature on the Coach → Analysis tab ("AI Coach" card), device-verified
+on the slalom clip `4601.mp4`:
+
+1. **On-device technique tracking** (`coaching/pose/TechniqueAnalyzer`, free,
+   ~60 s for a 20 s clip): decodes frames at 1920 px every 200 ms, localizes
+   the racer by pan-compensated motion saliency (global pan from row/column
+   luma-projection correlation, aligned |diff|, blur, mean+2σ threshold,
+   integral-image window search with a distance penalty to the previous
+   position), crops 3× the racer height around the seed and runs MoveNet on
+   the crop (retries ×1.5 / ×0.7; targeted 192/320 px fallback search every 5th
+   untracked sample). Strict validity (overall conf ≥ 0.45, hips+knees ≥ 0.3,
+   an ankle ≥ 0.3, height ≥ 24 px, person-like aspect). Metrics are nullable
+   and computed in PIXEL space only from confident joints: knee/hip angles,
+   torso lean, shoulder tilt (side-swap corrected, wrapped to ±90°), stance
+   ratio, hands-forward. Aggregates, per-gate segments (from the `.gates`
+   sidecar), heuristic flags (UPRIGHT, STRAIGHT_LEGS_AT_GATE, HANDS_BACK,
+   SHOULDER_TILT, NARROW_STANCE, LOW_TRACKING) and 6–8 key frames. Sidecar:
+   `<clip>.technique.json`. Pure math lives in `TechniqueMath.kt` (63 tests).
+2. **Claude coaching report** (`coaching/aicoach/AiCoachClient`, Anthropic
+   Java SDK 2.61.0, model `claude-opus-5`, ~4 K output tokens, cost shown on
+   the button, typically < $0.15): sends the cropped key frames + one
+   full-frame context image + the compact technique JSON + run context and
+   requests a JSON-schema structured report (summary, 1–10 score,
+   strengths/corrections with priority and optional timestamp/gate, drills,
+   confidence note). Sidecar `<clip>.aicoach.json`; share as text. API key in
+   Settings → AI Coach (`ApiKeyStore`, `gateshot_config` prefs).
+
+Measured on `4601.mp4` (racer filmed from below, 20–140 px tall): 39 % of
+samples tracked, all in the second half where the racer is ≥ ~80 px; the card
+shows the LOW_TRACKING warning prominently. Realistic expectation: tracking
+works when the racer is roughly ≥ 80 px tall at 1920 px decode; for distant
+racers the vision report on cropped key frames is the useful part. A
+`initialHint` parameter exists on `analyze()` for a future tap-to-select-racer
+UI.
+
+New load-bearing facts:
+
+13. **The SDK typed structured-output path crashes on Android.**
+    `outputConfig(Class)` builds the schema with jsonschema-generator, which
+    calls `Method.getAnnotatedReturnType()` — absent on ART →
+    `NoSuchMethodError`. Use the manual path
+    (`OutputConfig.builder().format(JsonOutputFormat.builder().schema(...))`
+    with `Schema.builder().putAdditionalProperty(key, JsonValue.from(map))`)
+    and parse the text block with kotlinx. The client wraps every `Throwable`
+    into `AiCoachException`.
+14. R8 needs keep/dontwarn rules for `com.anthropic.**`, Jackson, OkHttp/Okio,
+    `com.github.victools.**` and `java.lang.reflect.AnnotatedType` (see
+    `app/proguard-rules.pro`). The SDK adds ~23 MB to the release APK
+    (30 → 53 MB).
+15. Compose: a `Row` of chips carrying full sentences squeezes the 2nd+ chip to
+    zero width (letter-wrapped, enormous height) — stack them in a `Column`.
+16. Testing the AI path without a real key: enter any string in Settings; the
+    request goes out and comes back as the AUTH error state (verified). A
+    dummy key `sk-ant-dummy-key-for-auth-test` is currently stored on the dev
+    phone — replace it with a real key to get a report.
+
 ## Open items (in rough priority order)
 
 1. **Field test on real training footage** — everything is device-verified
@@ -154,7 +212,10 @@ New load-bearing facts:
    would need shape/line detection or ML. Roadmap.
 3. **BLE electronic timing** (ALGE/Microgate/Tag Heuer) — backend endpoints
    are stubs (`ConnectTimingSystem` fakes success); needs physical units.
-4. Cosmetics/cleanup: optional `MainViewModel` → `AnalysisViewModel` rename;
+4. **AI analysis follow-ups:** tap-to-select-racer seed (wire `initialHint`),
+   a skeleton overlay of tracked samples in Replay, and a real-key end-to-end
+   run to tune the coaching prompt on actual reports.
+5. Cosmetics/cleanup: optional `MainViewModel` → `AnalysisViewModel` rename;
    Library still lists old camera-era test clips on the device (user can
    delete in-app); TRAIL overlay mode is still a ghost fallback.
 
