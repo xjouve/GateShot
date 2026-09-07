@@ -53,3 +53,20 @@
 -keepclassmembers class <1>$Companion {
     kotlinx.serialization.KSerializer serializer(...);
 }
+
+# Claude vision coaching client (Anthropic Java SDK)
+-keep class com.anthropic.** { *; }
+-dontwarn com.anthropic.**
+-keep class com.fasterxml.jackson.** { *; }
+-dontwarn com.fasterxml.jackson.**
+-dontwarn okhttp3.**
+-dontwarn okio.**
+-dontwarn org.slf4j.**
+-keep class com.gateshot.coaching.aicoach.** { *; }
+-keepattributes Signature,*Annotation*,EnclosingMethod,InnerClasses
+
+# jsonschema-generator (pulled in by the Anthropic SDK typed outputConfig path)
+-keep class com.github.victools.** { *; }
+-dontwarn com.github.victools.**
+-dontwarn java.lang.reflect.AnnotatedType
+-dontwarn java.lang.reflect.AnnotatedParameterizedType

@@ -1,4 +1,5 @@
 [versions]
+anthropic = "2.61.0"
 agp = "8.7.3"
 kotlin = "2.1.0"
 ksp = "2.1.0-1.0.29"
@@ -91,6 +92,8 @@ junit5 = { group = "org.junit.jupiter", name = "junit-jupiter", version.ref = "j
 mockk = { group = "io.mockk", name = "mockk", version.ref = "mockk" }
 turbine = { group = "app.cash.turbine", name = "turbine", version.ref = "turbine" }
 coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "coroutines" }
+
+anthropic-java = { group = "com.anthropic", name = "anthropic-java", version.ref = "anthropic" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
