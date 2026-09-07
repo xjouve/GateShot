@@ -61,12 +61,6 @@ android {
     }
 
     buildTypes {
-        debug {
-            // Safe to suffix: nothing in the codebase hardcodes "com.gateshot"
-            // (FileProvider authority and all internal refs use ${applicationId}),
-            // so a debug build can install side-by-side with a release build.
-            applicationIdSuffix = ".debug"
-        }
         release {
             isMinifyEnabled = true
             isShrinkResources = true
