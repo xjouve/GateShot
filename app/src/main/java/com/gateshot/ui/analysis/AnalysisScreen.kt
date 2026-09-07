@@ -563,7 +563,9 @@ private fun AiCoachTechniqueContent(viewModel: MainViewModel, report: TechniqueR
         }
 
         if (report.flags.isNotEmpty()) {
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            // Stack vertically: chips carry full sentences, and a Row would
+            // squeeze the 2nd+ chip to zero width (letter-wrapped sliver).
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 report.flags.forEach { SeverityChip(it) }
             }
         }
