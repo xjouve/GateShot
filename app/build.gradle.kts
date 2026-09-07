@@ -110,6 +110,7 @@ dependencies {
     implementation(project(":coaching:annotation"))
     implementation(project(":coaching:athlete"))
     implementation(project(":coaching:pose"))
+    implementation(project(":coaching:aicoach"))
 
     // Compose
     implementation(platform(libs.compose.bom))
