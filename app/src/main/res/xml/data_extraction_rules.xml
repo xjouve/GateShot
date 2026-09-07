@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 12+ (targetSdk 35) backup/transfer rules. Same exclusions as
+  backup_rules.xml: skip the large video/photo media directories, keep the
+  athlete/session databases and SharedPreferences/DataStore.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="external" path="GateShot/videos" />
+        <exclude domain="external" path="GateShot/photos" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="external" path="GateShot/videos" />
+        <exclude domain="external" path="GateShot/photos" />
+    </device-transfer>
+</data-extraction-rules>
