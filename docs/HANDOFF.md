@@ -1,4 +1,4 @@
-# GateShot — Session Handoff (2026-07-08)
+# GateShot — Session Handoff (2026-09-07)
 
 Read this first when resuming work. It captures where the project stands after
 the video-analysis pivot and everything shipped on top of it.
@@ -96,6 +96,52 @@ correction, enhanced export, course references.
    fresh entry and would wipe the restored state. Read-only data (athlete
    roster, Analysis cards) is intentionally NOT persisted; it re-queries so it
    stays current.
+
+## Tier-1 hardening pass (2026-09-07)
+
+Three parallel tracks, merged on `main`, built, tested and verified on the
+phone (release build included):
+
+- **Release engineering** — `versionName 1.0.0`, `versionCode` = git commit
+  count, `isShrinkResources`, release signing from env / `local.properties`
+  (`GATESHOT_KEYSTORE`, `GATESHOT_KEYSTORE_PASSWORD`, `GATESHOT_KEY_ALIAS`,
+  `GATESHOT_KEY_PASSWORD`; falls back to the debug keystore so
+  `assembleRelease` always installs). ProGuard rules rewritten for the real
+  code (dead capture-era keeps removed; TFLite + kotlinx.serialization kept;
+  the endpoint registry keys on a string field, not class names, so no
+  blanket keep). Adaptive launcher icon (mipmap-anydpi-v26 + monochrome),
+  backup / data-extraction rules that exclude `GateShot/videos`, permissions
+  trimmed to RECORD_AUDIO + BLUETOOTH(≤30)/BLUETOOTH_CONNECT, predictive back
+  enabled, edge-to-edge with dark system bars (`SystemBarStyle.dark` in
+  `MainActivity`), `lint {}` block. **The R8-minified release APK was
+  installed and exercised on the device: Library, Replay playback, Coach —
+  no crashes, no `EndpointRegistry` failures.** No debug applicationId
+  suffix on purpose: it would orphan the clips stored under `com.gateshot`.
+- **Robustness** — silent `catch {}` sites in timing/annotation/pose/exporter
+  now log or propagate; long analyses check cancellation and release codecs
+  in `finally`; import checks free space and cleans partial copies; `.gates`
+  parsing tolerates malformed lines (`GateSidecar`); a failed muxer stop marks
+  the export failed. JVM tests 24 → 64 (`EndpointRegistryTest`,
+  `SessionFeatureModuleTest`, `TimingFeatureModuleTest`, `GateSidecarTest`,
+  `EnhancedExporterMathTest`).
+- **UI/UX** — all user-facing strings in `strings.xml` (4 → 250 entries;
+  the only literals left are the generated PDF report text in
+  `MainViewModel`), contentDescriptions on meaningful icons and toggle
+  semantics on toggles, ≥48dp touch targets on primary controls, explicit
+  loading / empty / error states, an app-wide snackbar channel on
+  `MainViewModel` for failures that used to be swallowed, confirmation
+  dialogs before deletes.
+
+New load-bearing facts:
+
+10. **The Find X9 Pro is 360dp wide** (1080px at 3.0×), not 411dp. A header
+    row of six ≥48dp targets cannot share a line with a title; the Replay
+    header stacks the title above the strip for that reason.
+11. `git` on `K:\TEMP` needs `safe.directory` (no ownership on that
+    filesystem); Git Bash mangles `/sdcard/...` paths unless
+    `MSYS_NO_PATHCONV=1` is set before `adb shell screencap`.
+12. Leftover worktrees from this pass live at `K:\TEMP\claude\wt-{release,ui,robust}`
+    (branches `tier1-*`, fully merged) — safe to `git worktree remove`.
 
 ## Open items (in rough priority order)
 

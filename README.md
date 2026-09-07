@@ -123,6 +123,14 @@ No upfront permissions. The microphone permission is requested only when recordi
 | Coach | Annotate / Athletes / Analysis / Tools sub-tabs |
 | Settings | Export, storage, about |
 
+## Release build
+
+`.\gradlew :app:assembleRelease` produces a minified, resource-shrunk APK
+(version 1.0.0). Set `GATESHOT_KEYSTORE`, `GATESHOT_KEYSTORE_PASSWORD`,
+`GATESHOT_KEY_ALIAS` and `GATESHOT_KEY_PASSWORD` (environment or
+`local.properties`) to sign with a production key; without them the debug
+keystore is used so the APK still installs for testing.
+
 ## Roadmap
 
 - **Electronic timing** — BLE protocol integration with ALGE/Microgate/Tag Heuer units
