@@ -235,7 +235,7 @@
     <string name="settings_total_used">Total: %1$d MB used by GateShot</string>
     <string name="settings_storage_hint">Imported videos are copied into GateShot\'s storage; delete clips from the Library to free space.</string>
     <string name="settings_section_about">About</string>
-    <string name="settings_about_version">GateShot v0.1.0</string>
+    <string name="settings_about_version">GateShot v%1$s</string>
     <string name="settings_about_tagline">Ski Racing Video Analysis</string>
     <string name="settings_about_body">Record with your phone\'s camera app, analyze in GateShot</string>
 

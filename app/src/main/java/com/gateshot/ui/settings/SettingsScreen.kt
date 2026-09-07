@@ -208,7 +208,7 @@ fun SettingsScreen(
         // --- About ---
         SettingsSection(stringResource(R.string.settings_section_about)) {
             Text(
-                text = stringResource(R.string.settings_about_version),
+                text = stringResource(R.string.settings_about_version, com.gateshot.BuildConfig.VERSION_NAME),
                 color = Color.White,
                 fontSize = 14.sp,
                 modifier = Modifier.padding(horizontal = 16.dp)
