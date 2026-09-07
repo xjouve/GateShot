@@ -262,4 +262,52 @@
     <string name="session_dialog_event_hint">e.g. Courchevel Training</string>
     <string name="session_dialog_start">Start</string>
     <string name="session_dialog_skip">Skip</string>
+
+    <!-- AI Coach (racer analysis) -->
+    <string name="ai_coach_card_title">AI Coach</string>
+    <string name="ai_coach_no_clip">Open a clip in Replay to analyze racer technique.</string>
+    <string name="ai_coach_idle_explanation">Tracks the skier and measures stance, knee, torso and shoulder angles across the run. Runs on-device — free.</string>
+    <string name="ai_coach_analyze_button">Analyze racer</string>
+    <string name="ai_coach_tracking_progress">Tracking racer… %1$d%%</string>
+    <string name="ai_coach_cancel">Cancel</string>
+    <string name="ai_coach_asking_claude">Asking Claude…</string>
+    <string name="ai_coach_metric_tracked">Tracked</string>
+    <string name="ai_coach_metric_knee_mean">Mean knee angle</string>
+    <string name="ai_coach_metric_knee_min">Min knee angle</string>
+    <string name="ai_coach_metric_torso_lean">Mean torso lean</string>
+    <string name="ai_coach_metric_stance_ratio">Stance ratio</string>
+    <string name="ai_coach_metric_shoulder_tilt">Shoulder tilt (p90)</string>
+    <string name="ai_coach_unreliable_note">Racer too small or unclear in this clip — results may be unreliable.</string>
+    <string name="ai_coach_get_report_button">Get AI coaching report (~$%1$s)</string>
+    <string name="ai_coach_no_key_hint">Add your Anthropic API key in Settings</string>
+    <string name="ai_coach_rerun_tracking">Re-run tracking</string>
+    <string name="ai_coach_score_format">%1$d/10</string>
+    <string name="ai_coach_corrections_title">Corrections</string>
+    <string name="ai_coach_strengths_title">Strengths</string>
+    <string name="ai_coach_drills_title">Drills</string>
+    <string name="ai_coach_at_time">at %1$.1fs</string>
+    <string name="ai_coach_at_gate">gate %1$d</string>
+    <string name="ai_coach_footer_format">%1$s · %2$s</string>
+    <string name="ai_coach_share">Share</string>
+    <string name="ai_coach_reanalyze">Re-analyze</string>
+    <string name="ai_coach_retry">Retry</string>
+    <string name="ai_coach_error_tracking_failed">Technique tracking failed. Try again.</string>
+    <string name="ai_coach_error_no_key">Add your Anthropic API key in Settings to get an AI coaching report.</string>
+    <string name="ai_coach_error_auth">Anthropic rejected the API key. Check it in Settings.</string>
+    <string name="ai_coach_error_rate_limit">Rate limited by Anthropic. Wait a moment and retry.</string>
+    <string name="ai_coach_error_network">Network error reaching Anthropic. Check your connection.</string>
+    <string name="ai_coach_error_refused">Claude declined to produce a report for this clip.</string>
+    <string name="ai_coach_error_invalid_response">Received an unexpected response from Claude.</string>
+    <string name="ai_coach_error_other">AI coaching report failed.</string>
+
+    <!-- Settings: AI Coach section -->
+    <string name="settings_section_ai_coach">AI Coach</string>
+    <string name="settings_ai_key_label">Anthropic API key</string>
+    <string name="settings_ai_key_save">Save</string>
+    <string name="settings_ai_key_clear">Clear</string>
+    <string name="settings_ai_key_status_set">Key set · sk-ant-…%1$s</string>
+    <string name="settings_ai_key_status_unset">No key</string>
+    <string name="settings_ai_key_privacy_note">Key frames and pose metrics are sent to Anthropic\'s API when you request a report; typical cost per run is a few cents.</string>
+    <string name="cd_show_api_key">Show API key</string>
+    <string name="cd_hide_api_key">Hide API key</string>
 </resources>

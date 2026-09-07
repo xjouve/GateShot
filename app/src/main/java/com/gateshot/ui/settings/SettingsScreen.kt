@@ -11,8 +11,16 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
@@ -30,9 +38,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.gateshot.R
+import com.gateshot.coaching.aicoach.ApiKeyStore
 import com.gateshot.ui.MainViewModel
 
 @Composable
@@ -114,6 +127,78 @@ fun SettingsScreen(
             )
             Text(
                 text = stringResource(R.string.settings_storage_hint),
+                color = Color(0xFF666666),
+                fontSize = 11.sp,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+            )
+        }
+
+        // --- AI Coach ---
+        SettingsSection(stringResource(R.string.settings_section_ai_coach)) {
+            val context = LocalContext.current
+            var keyText by remember { mutableStateOf("") }
+            var keyVisible by remember { mutableStateOf(false) }
+            var keySet by remember { mutableStateOf(ApiKeyStore.isSet(context)) }
+            var savedKey by remember { mutableStateOf(ApiKeyStore.get(context) ?: "") }
+
+            Text(
+                text = if (keySet) {
+                    stringResource(R.string.settings_ai_key_status_set, savedKey.takeLast(4))
+                } else stringResource(R.string.settings_ai_key_status_unset),
+                color = if (keySet) Color(0xFF66BB6A) else Color.Gray,
+                fontSize = 13.sp,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+            )
+
+            OutlinedTextField(
+                value = keyText,
+                onValueChange = { keyText = it },
+                label = { Text(stringResource(R.string.settings_ai_key_label)) },
+                singleLine = true,
+                visualTransformation = if (keyVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                trailingIcon = {
+                    IconButton(onClick = { keyVisible = !keyVisible }) {
+                        Icon(
+                            if (keyVisible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                            contentDescription = stringResource(
+                                if (keyVisible) R.string.cd_hide_api_key else R.string.cd_show_api_key
+                            )
+                        )
+                    }
+                },
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Button(
+                    onClick = {
+                        if (keyText.isNotBlank()) {
+                            ApiKeyStore.set(context, keyText.trim())
+                            savedKey = keyText.trim()
+                            keySet = true
+                            keyText = ""
+                        }
+                    },
+                    modifier = Modifier.height(48.dp)
+                ) { Text(stringResource(R.string.settings_ai_key_save)) }
+
+                OutlinedButton(
+                    onClick = {
+                        ApiKeyStore.set(context, "")
+                        keySet = false
+                        savedKey = ""
+                        keyText = ""
+                    },
+                    modifier = Modifier.height(48.dp)
+                ) { Text(stringResource(R.string.settings_ai_key_clear)) }
+            }
+
+            Text(
+                text = stringResource(R.string.settings_ai_key_privacy_note),
                 color = Color(0xFF666666),
                 fontSize = 11.sp,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)

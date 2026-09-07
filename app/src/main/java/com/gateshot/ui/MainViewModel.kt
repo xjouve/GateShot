@@ -11,6 +11,15 @@ import com.gateshot.core.mode.AppMode
 import com.gateshot.core.mode.ModeManager
 import com.gateshot.coaching.replay.ReplayFeatureModule
 import com.gateshot.coaching.replay.ReplayState
+import com.gateshot.coaching.pose.TechniqueAnalyzer
+import com.gateshot.coaching.pose.TechniqueReport
+import com.gateshot.coaching.pose.save
+import com.gateshot.coaching.pose.techniqueSidecarFile
+import com.gateshot.coaching.pose.toPromptJson
+import com.gateshot.coaching.aicoach.AiCoachClient
+import com.gateshot.coaching.aicoach.AiCoachException
+import com.gateshot.coaching.aicoach.AiCoachReport
+import com.gateshot.coaching.aicoach.ApiKeyStore
 import com.gateshot.videoimport.VideoImportManager
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -35,6 +44,23 @@ data class MainUiState(
 
 /** A one-shot, user-visible message (error or info) surfaced via a Snackbar. */
 data class UiMessage(val text: String, val isError: Boolean = true)
+
+/**
+ * State of the on-device technique-tracking + Claude coaching-report flow for the clip
+ * currently open in Replay. Exposed as a `StateFlow` directly on [MainViewModel], which
+ * outlives tab navigation the same way [ReplaySession]/[CoachSession] do — so, like those
+ * holders, switching tabs and back to Analysis does not lose in-progress or completed
+ * results. Keyed to the clip path; [MainViewModel.loadCachedAiAnalysis] resets it when the
+ * clip changes.
+ */
+sealed class AiAnalysisState {
+    object Idle : AiAnalysisState()
+    data class Tracking(val progress: Float) : AiAnalysisState()
+    data class TechniqueReady(val report: TechniqueReport) : AiAnalysisState()
+    data class AskingClaude(val report: TechniqueReport) : AiAnalysisState()
+    data class Done(val report: TechniqueReport, val aiReport: AiCoachReport) : AiAnalysisState()
+    data class Error(val message: String, val technique: TechniqueReport? = null) : AiAnalysisState()
+}
 
 /**
  * Scratch state for the Replay screen that must survive tab switches. Replay's
@@ -112,7 +138,9 @@ class MainViewModel @Inject constructor(
     val endpointRegistry: EndpointRegistry,
     private val configStore: ConfigStore,
     private val replayModule: ReplayFeatureModule,
-    private val videoImportManager: VideoImportManager
+    private val videoImportManager: VideoImportManager,
+    private val techniqueAnalyzer: TechniqueAnalyzer,
+    private val aiCoachClient: AiCoachClient
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(MainUiState())
@@ -884,6 +912,143 @@ class MainViewModel @Inject constructor(
             if (!dir.exists()) dir.mkdirs()
             val file = java.io.File(dir, "ideal_line.csv")
             file.writeText(points.joinToString("\n") { "${it.first},${it.second}" })
+        }
+    }
+
+    // =============================================
+    // AI racer analysis (technique tracking + Claude coaching report)
+    // =============================================
+
+    private var aiAnalysisJob: kotlinx.coroutines.Job? = null
+    private var aiAnalysisClipPath: String? = null
+
+    private val _aiAnalysisState = MutableStateFlow<AiAnalysisState>(AiAnalysisState.Idle)
+    val aiAnalysisState: StateFlow<AiAnalysisState> = _aiAnalysisState.asStateFlow()
+
+    /** Same `<clip>.gates` sidecar convention used by the Gallery/Analysis cards. */
+    private fun gateTimestampsFor(clipPath: String): List<Long> {
+        val clipFile = java.io.File(clipPath)
+        val gatesFile = java.io.File(clipFile.parent, clipFile.nameWithoutExtension + ".gates")
+        return if (gatesFile.exists()) {
+            gatesFile.readLines().mapNotNull { it.trim().toLongOrNull() }
+        } else emptyList()
+    }
+
+    /** Runs on-device pose tracking over the clip currently open in Replay. */
+    fun startTechniqueAnalysis() {
+        val clip = replaySession.videoPath ?: return
+        aiAnalysisJob?.cancel()
+        aiAnalysisClipPath = clip
+        _aiAnalysisState.value = AiAnalysisState.Tracking(0f)
+        aiAnalysisJob = viewModelScope.launch {
+            try {
+                val gates = gateTimestampsFor(clip)
+                val report = techniqueAnalyzer.analyze(clip, gates) { progress ->
+                    if (aiAnalysisClipPath == clip) _aiAnalysisState.value = AiAnalysisState.Tracking(progress)
+                }
+                report.save(techniqueSidecarFile(clip))
+                if (aiAnalysisClipPath == clip) _aiAnalysisState.value = AiAnalysisState.TechniqueReady(report)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                android.util.Log.e("MainViewModel", "Technique analysis failed", e)
+                if (aiAnalysisClipPath == clip) {
+                    _aiAnalysisState.value =
+                        AiAnalysisState.Error(appContext.getString(R.string.ai_coach_error_tracking_failed))
+                }
+            }
+        }
+    }
+
+    /** Sends the tracked technique report's key frames to Claude for a coaching report. */
+    fun requestAiReport() {
+        val clip = aiAnalysisClipPath ?: return
+        val report = when (val state = _aiAnalysisState.value) {
+            is AiAnalysisState.TechniqueReady -> state.report
+            is AiAnalysisState.Error -> state.technique
+            is AiAnalysisState.Done -> state.report
+            else -> null
+        } ?: return
+
+        val apiKey = ApiKeyStore.get(appContext)
+        if (apiKey.isNullOrBlank()) {
+            _aiAnalysisState.value =
+                AiAnalysisState.Error(appContext.getString(R.string.ai_coach_error_no_key), report)
+            return
+        }
+
+        aiAnalysisJob?.cancel()
+        _aiAnalysisState.value = AiAnalysisState.AskingClaude(report)
+        aiAnalysisJob = viewModelScope.launch {
+            try {
+                val poseKeyFrames = techniqueAnalyzer.extractKeyFrames(clip, report.keyFrames)
+                val aiFrames = poseKeyFrames.map {
+                    com.gateshot.coaching.aicoach.KeyFrame(it.timestampMs, it.reason, it.jpegBytes, it.cropped)
+                }
+                val context = com.gateshot.coaching.aicoach.RunContext(
+                    discipline = _uiState.value.sessionDiscipline,
+                    athleteName = null,
+                    athleteLevel = null,
+                    coachNotes = null,
+                    gateCount = report.gateSegments.size + 1
+                )
+                val aiReport = aiCoachClient.analyze(apiKey, aiFrames, report.toPromptJson(), context)
+                aiReport.save(java.io.File("$clip.aicoach.json"))
+                if (aiAnalysisClipPath == clip) _aiAnalysisState.value = AiAnalysisState.Done(report, aiReport)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: AiCoachException) {
+                android.util.Log.e("MainViewModel", "AI coach report failed: ${e.kind}", e)
+                val msg = appContext.getString(
+                    when (e.kind) {
+                        AiCoachException.Kind.NO_API_KEY -> R.string.ai_coach_error_no_key
+                        AiCoachException.Kind.AUTH -> R.string.ai_coach_error_auth
+                        AiCoachException.Kind.RATE_LIMIT -> R.string.ai_coach_error_rate_limit
+                        AiCoachException.Kind.NETWORK -> R.string.ai_coach_error_network
+                        AiCoachException.Kind.REFUSED -> R.string.ai_coach_error_refused
+                        AiCoachException.Kind.INVALID_RESPONSE -> R.string.ai_coach_error_invalid_response
+                        AiCoachException.Kind.OTHER -> R.string.ai_coach_error_other
+                    }
+                )
+                if (aiAnalysisClipPath == clip) _aiAnalysisState.value = AiAnalysisState.Error(msg, report)
+            } catch (e: Exception) {
+                android.util.Log.e("MainViewModel", "AI coach report failed", e)
+                if (aiAnalysisClipPath == clip) {
+                    _aiAnalysisState.value =
+                        AiAnalysisState.Error(appContext.getString(R.string.ai_coach_error_other), report)
+                }
+            }
+        }
+    }
+
+    fun cancelAiAnalysis() {
+        aiAnalysisJob?.cancel()
+        aiAnalysisJob = null
+        _aiAnalysisState.value = when (val current = _aiAnalysisState.value) {
+            is AiAnalysisState.Tracking -> AiAnalysisState.Idle
+            is AiAnalysisState.AskingClaude -> AiAnalysisState.TechniqueReady(current.report)
+            else -> current
+        }
+    }
+
+    /** Restores tracked/AI results for [clipPath] from sidecars when the Analysis tab opens. */
+    fun loadCachedAiAnalysis(clipPath: String) {
+        if (aiAnalysisClipPath == clipPath) return
+        aiAnalysisJob?.cancel()
+        aiAnalysisClipPath = clipPath
+        val techniqueFile = techniqueSidecarFile(clipPath)
+        if (!techniqueFile.exists()) {
+            _aiAnalysisState.value = AiAnalysisState.Idle
+            return
+        }
+        _aiAnalysisState.value = try {
+            val report = TechniqueReport.load(techniqueFile)
+            val aiFile = java.io.File("$clipPath.aicoach.json")
+            if (aiFile.exists()) AiAnalysisState.Done(report, AiCoachReport.load(aiFile))
+            else AiAnalysisState.TechniqueReady(report)
+        } catch (e: Exception) {
+            android.util.Log.w("MainViewModel", "Failed to load cached AI analysis", e)
+            AiAnalysisState.Idle
         }
     }
 
