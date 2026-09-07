@@ -8,7 +8,12 @@ import com.anthropic.errors.RateLimitException
 import com.anthropic.errors.UnauthorizedException
 import com.anthropic.models.messages.Base64ImageSource
 import com.anthropic.models.messages.ContentBlockParam
+import com.anthropic.core.JsonValue
 import com.anthropic.models.messages.ImageBlockParam
+import com.anthropic.models.messages.JsonOutputFormat
+import com.anthropic.models.messages.OutputConfig
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 import com.anthropic.models.messages.MessageCreateParams
 import com.anthropic.models.messages.TextBlockParam
 import com.fasterxml.jackson.annotation.JsonPropertyDescription
@@ -236,11 +241,22 @@ class AiCoachClient @Inject constructor() {
                 )
             }
 
+            // Manual JSON-schema structured output. The SDK typed
+            // outputConfig(Class) path generates the schema via reflection
+            // (Method.getAnnotatedReturnType) that Android ART lacks, which
+            // throws NoSuchMethodError at runtime.
+            val schema = JsonOutputFormat.Schema.builder().apply {
+                reportJsonSchema().forEach { (key, value) -> putAdditionalProperty(key, JsonValue.from(value)) }
+            }.build()
             val params = MessageCreateParams.builder()
                 .model(MODEL)
                 .maxTokens(MAX_TOKENS)
                 .system(buildSystemPrompt())
-                .outputConfig(AiCoachReportJson::class.java)
+                .outputConfig(
+                    OutputConfig.builder()
+                        .format(JsonOutputFormat.builder().schema(schema).build())
+                        .build()
+                )
                 .addUserMessageOfBlockParams(contentBlocks)
                 .build()
 
@@ -254,13 +270,17 @@ class AiCoachClient @Inject constructor() {
                 throw AiCoachException(AiCoachException.Kind.REFUSED, explanation)
             }
 
-            val structuredBlock = response.content().firstOrNull { it.text().isPresent }?.text()?.orElse(null)
+            val text = response.content()
+                .firstOrNull { it.text().isPresent }
+                ?.text()?.orElse(null)?.text()
                 ?: throw AiCoachException(AiCoachException.Kind.INVALID_RESPONSE, "No structured content in response")
 
-            val reportJson: AiCoachReportJson = structuredBlock.text()
-                ?: throw AiCoachException(AiCoachException.Kind.INVALID_RESPONSE, "Structured output payload was empty")
-
-            reportJson.toReport(model = MODEL, createdAtMs = System.currentTimeMillis())
+            val wire = try {
+                wireJson.decodeFromString(ReportWire.serializer(), text)
+            } catch (e: Exception) {
+                throw AiCoachException(AiCoachException.Kind.INVALID_RESPONSE, "Could not parse the coaching report", e)
+            }
+            wire.toReport(model = MODEL, createdAtMs = System.currentTimeMillis())
         } catch (e: AiCoachException) {
             throw e
         } catch (e: UnauthorizedException) {
@@ -271,8 +291,87 @@ class AiCoachClient @Inject constructor() {
             throw AiCoachException(AiCoachException.Kind.NETWORK, "Network error contacting Anthropic API", e)
         } catch (e: AnthropicServiceException) {
             throw AiCoachException(AiCoachException.Kind.OTHER, e.message ?: "Anthropic service error", e)
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            // Includes SDK/runtime Errors (e.g. NoSuchMethodError on Android):
+            // a coaching report must never take the app down.
             throw AiCoachException(AiCoachException.Kind.OTHER, e.message ?: "Unknown error analyzing run", e)
         }
     }
+}
+
+/** Wire shape requested from the model; mapped to the persisted [AiCoachReport]. */
+@Serializable
+internal data class ReportWire(
+    val summary: String = "",
+    val overallScore: Int = 5,
+    val strengths: List<FindingWire> = emptyList(),
+    val corrections: List<FindingWire> = emptyList(),
+    val drills: List<DrillWire> = emptyList(),
+    val confidenceNote: String = ""
+) {
+    fun toReport(model: String, createdAtMs: Long) = AiCoachReport(
+        summary = summary,
+        overallScore = overallScore.coerceIn(1, 10),
+        strengths = strengths.map { it.toFinding() },
+        corrections = corrections.map { it.toFinding() }.sortedBy { it.priority },
+        drills = drills.map { Drill(name = it.name, description = it.description) },
+        confidenceNote = confidenceNote,
+        model = model,
+        createdAtMs = createdAtMs
+    )
+}
+
+@Serializable
+internal data class FindingWire(
+    val title: String = "",
+    val detail: String = "",
+    val timestampMs: Long? = null,
+    val gateIndex: Int? = null,
+    val priority: Int = 2
+) {
+    fun toFinding() = Finding(title, detail, timestampMs, gateIndex, priority.coerceIn(1, 3))
+}
+
+@Serializable
+internal data class DrillWire(val name: String = "", val description: String = "")
+
+private val wireJson = Json { ignoreUnknownKeys = true; isLenient = true; coerceInputValues = true }
+
+/** JSON schema for [ReportWire] as plain maps/lists (converted with JsonValue.from). */
+internal fun reportJsonSchema(): Map<String, Any> {
+    fun str(desc: String) = mapOf("type" to "string", "description" to desc)
+    val nullableInt = mapOf("type" to listOf("integer", "null"))
+    val finding = mapOf(
+        "type" to "object",
+        "properties" to mapOf(
+            "title" to str("Short headline of the observation"),
+            "detail" to str("Concrete, technique-specific explanation and what to change"),
+            "timestampMs" to nullableInt,
+            "gateIndex" to nullableInt,
+            "priority" to mapOf("type" to "integer", "description" to "1 = highest impact, 3 = minor")
+        ),
+        "required" to listOf("title", "detail", "timestampMs", "gateIndex", "priority"),
+        "additionalProperties" to false
+    )
+    val drill = mapOf(
+        "type" to "object",
+        "properties" to mapOf("name" to str("Drill name"), "description" to str("How to run the drill and what it fixes")),
+        "required" to listOf("name", "description"),
+        "additionalProperties" to false
+    )
+    return mapOf(
+        "type" to "object",
+        "properties" to mapOf(
+            "summary" to str("2-4 sentence overall assessment of the run"),
+            "overallScore" to mapOf("type" to "integer", "description" to "Overall technique score 1-10"),
+            "strengths" to mapOf("type" to "array", "items" to finding),
+            "corrections" to mapOf("type" to "array", "items" to finding),
+            "drills" to mapOf("type" to "array", "items" to drill),
+            "confidenceNote" to str("Honest note on how reliable this analysis is given frame quality and racer size")
+        ),
+        "required" to listOf("summary", "overallScore", "strengths", "corrections", "drills", "confidenceNote"),
+        "additionalProperties" to false
+    )
 }
