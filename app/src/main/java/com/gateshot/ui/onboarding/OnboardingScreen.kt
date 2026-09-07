@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.pager.HorizontalPager
@@ -24,10 +25,14 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.gateshot.R
 import kotlinx.coroutines.launch
 
 data class OnboardingPage(
@@ -37,32 +42,33 @@ data class OnboardingPage(
     val tip: String = ""
 )
 
-val onboardingPages = listOf(
+@Composable
+fun onboardingPages(): List<OnboardingPage> = listOf(
     OnboardingPage(
-        title = "Welcome to GateShot",
-        description = "Ski racing video analysis for coaches and athletes.\n\nFilm your runs with your phone's camera app — its stabilization is unbeatable — then bring the footage here to break it down.",
+        title = stringResource(R.string.onboarding_page1_title),
+        description = stringResource(R.string.onboarding_page1_desc),
         icon = "🎿"
     ),
     OnboardingPage(
-        title = "Film with the Camera App",
-        description = "Record runs in your phone's native camera app as usual — zoom, teleconverter, stabilization all work at their best there.\n\nThen import the clips into GateShot's Library.",
+        title = stringResource(R.string.onboarding_page2_title),
+        description = stringResource(R.string.onboarding_page2_desc),
         icon = "📹",
-        tip = "Or share a video straight from your gallery to GateShot"
+        tip = stringResource(R.string.onboarding_page2_tip)
     ),
     OnboardingPage(
-        title = "Replay & Compare",
-        description = "Slow motion, frame stepping, and run-over-run comparison: ghost overlay, wipe, and split-screen — synchronized gate by gate.",
+        title = stringResource(R.string.onboarding_page3_title),
+        description = stringResource(R.string.onboarding_page3_desc),
         icon = "🔁",
-        tip = "Mark gates while reviewing to unlock timing analysis"
+        tip = stringResource(R.string.onboarding_page3_tip)
     ),
     OnboardingPage(
-        title = "Coach Tools",
-        description = "Draw on frames, record voice-over feedback, track athletes across sessions, and generate session reports.\n\nGlove-friendly controls, built for the slope.",
+        title = stringResource(R.string.onboarding_page4_title),
+        description = stringResource(R.string.onboarding_page4_desc),
         icon = "📋"
     ),
     OnboardingPage(
-        title = "Ready to Analyze",
-        description = "Start a session, import today's runs, and dive in.\n\nGood luck out there! 🏁",
+        title = stringResource(R.string.onboarding_page5_title),
+        description = stringResource(R.string.onboarding_page5_desc),
         icon = "🏆"
     )
 )
@@ -72,7 +78,8 @@ fun OnboardingScreen(
     onComplete: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val pagerState = rememberPagerState(pageCount = { onboardingPages.size })
+    val pages = onboardingPages()
+    val pagerState = rememberPagerState(pageCount = { pages.size })
     val scope = rememberCoroutineScope()
 
     Column(
@@ -87,17 +94,23 @@ fun OnboardingScreen(
                 .fillMaxWidth()
                 .weight(1f)
         ) { page ->
-            OnboardingPageContent(onboardingPages[page])
+            OnboardingPageContent(pages[page])
         }
 
         // Page indicator dots
+        val pageIndicatorDescription = stringResource(
+            R.string.onboarding_page_indicator,
+            pagerState.currentPage + 1,
+            pages.size
+        )
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(vertical = 16.dp),
+                .padding(vertical = 16.dp)
+                .semantics { contentDescription = pageIndicatorDescription },
             horizontalArrangement = Arrangement.Center
         ) {
-            repeat(onboardingPages.size) { index ->
+            repeat(pages.size) { index ->
                 Surface(
                     shape = CircleShape,
                     color = if (index == pagerState.currentPage)
@@ -122,10 +135,11 @@ fun OnboardingScreen(
             Surface(
                 onClick = onComplete,
                 shape = RoundedCornerShape(24.dp),
-                color = Color.Transparent
+                color = Color.Transparent,
+                modifier = Modifier.heightIn(min = 48.dp)
             ) {
                 Text(
-                    text = "Skip",
+                    text = stringResource(R.string.onboarding_skip),
                     color = Color.Gray,
                     fontSize = 16.sp,
                     modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp)
@@ -133,7 +147,7 @@ fun OnboardingScreen(
             }
 
             // Next / Get Started button
-            val isLastPage = pagerState.currentPage == onboardingPages.size - 1
+            val isLastPage = pagerState.currentPage == pages.size - 1
             Surface(
                 onClick = {
                     if (isLastPage) {
@@ -145,10 +159,11 @@ fun OnboardingScreen(
                     }
                 },
                 shape = RoundedCornerShape(24.dp),
-                color = MaterialTheme.colorScheme.primary
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.heightIn(min = 48.dp)
             ) {
                 Text(
-                    text = if (isLastPage) "Get Started" else "Next",
+                    text = if (isLastPage) stringResource(R.string.onboarding_get_started) else stringResource(R.string.onboarding_next),
                     color = Color.Black,
                     fontSize = 16.sp,
                     fontWeight = FontWeight.Bold,

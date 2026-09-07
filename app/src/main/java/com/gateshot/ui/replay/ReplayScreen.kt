@@ -44,6 +44,7 @@ import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Vibration
 import androidx.compose.material.icons.filled.ViewColumn
 import androidx.compose.material.icons.filled.Timer
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -51,6 +52,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -71,6 +73,12 @@ import androidx.compose.ui.graphics.asComposeRenderEffect
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.semantics.toggleableState
+import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -83,10 +91,12 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
+import com.gateshot.R
 import com.gateshot.processing.stabilize.EnhancedExporter
 import com.gateshot.processing.stabilize.PlaybackStabilizer
 import com.gateshot.ui.MainViewModel
 import com.gateshot.videoenhance.AutoColorAnalyzer
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
@@ -156,6 +166,8 @@ fun ReplayScreen(
     // Manually tagged gate timestamps for this clip (sidecar-backed)
     var gateTimestamps by remember { mutableStateOf<List<Long>>(emptyList()) }
     var showGateList by remember { mutableStateOf(false) }
+    // Timestamp pending a delete confirmation (null = no confirmation showing)
+    var pendingDeleteGate by remember { mutableStateOf<Long?>(null) }
     LaunchedEffect(videoFile) {
         if (videoFile != null) {
             viewModel.listGates(videoFile.absolutePath) { gateTimestamps = it }
@@ -168,14 +180,25 @@ fun ReplayScreen(
     val enhanceScope = rememberCoroutineScope()
     var stabAnalyzing by remember { mutableStateOf(false) }
     var stabProgress by remember { mutableFloatStateOf(0f) }
+    var stabError by remember { mutableStateOf<String?>(null) }
+    var stabAnalyzeJob by remember { mutableStateOf<Job?>(null) }
     var stabDx by remember { mutableFloatStateOf(0f) }
     var stabDy by remember { mutableFloatStateOf(0f) }
     var colorAnalyzing by remember { mutableStateOf(false) }
+    var colorError by remember { mutableStateOf<String?>(null) }
+    var colorAnalyzeJob by remember { mutableStateOf<Job?>(null) }
 
     // Export of the enhanced clip (stabilization/color baked into a new MP4)
     var exporting by remember { mutableStateOf(false) }
     var exportProgress by remember { mutableFloatStateOf(0f) }
     var exportMessage by remember { mutableStateOf<String?>(null) }
+    var exportFailed by remember { mutableStateOf(false) }
+    var exportJob by remember { mutableStateOf<Job?>(null) }
+
+    // Localized strings needed inside non-composable closures below
+    val stabFailedMsg = stringResource(R.string.replay_stabilize_failed)
+    val colorFailedMsg = stringResource(R.string.replay_color_failed)
+    val exportFailedMsg = stringResource(R.string.replay_export_failed)
 
     // Create ExoPlayer instance for the reference (main) video
     val exoPlayer = remember {
@@ -315,7 +338,7 @@ fun ReplayScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = if (videoFile != null) videoFile.name else "Replay",
+                text = videoFile?.name ?: stringResource(R.string.replay_title_fallback),
                 color = Color.White,
                 fontSize = 18.sp,
                 fontWeight = FontWeight.Bold,
@@ -329,115 +352,148 @@ fun ReplayScreen(
                 .minByOrNull { kotlin.math.abs(it - currentPosition) }
                 ?.takeIf { kotlin.math.abs(it - currentPosition) <= GATE_TOGGLE_TOLERANCE_MS }
 
+            val cdOverlay = stringResource(R.string.replay_cd_overlay_toggle)
+            val cdSplit = stringResource(R.string.replay_cd_split_screen_toggle)
+            val cdRecordSplit = stringResource(R.string.replay_cd_record_split)
+            val cdMarkGate = stringResource(R.string.replay_cd_mark_gate)
+            val cdUnmarkGate = stringResource(R.string.replay_cd_unmark_gate)
+            val cdAutoclip = stringResource(R.string.replay_cd_autoclip_toggle)
+            val cdPose = stringResource(R.string.replay_cd_pose_toggle)
+
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                // Overlay layers toggle
-                Surface(
-                    onClick = { showOverlayPanel = !showOverlayPanel },
-                    shape = RoundedCornerShape(8.dp),
-                    color = if (showOverlayPanel) MaterialTheme.colorScheme.primary else Color(0xFF444444),
-                    modifier = Modifier.size(40.dp)
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            Icons.Filled.Layers, "Overlay",
-                            tint = if (showOverlayPanel) Color.Black else Color.White,
-                            modifier = Modifier.size(20.dp)
-                        )
+                // Overlay layers toggle — Box adds an invisible >=48dp touch
+                // target around the (visually unchanged) 40dp Surface.
+                Box(modifier = Modifier.size(48.dp), contentAlignment = Alignment.Center) {
+                    Surface(
+                        onClick = { showOverlayPanel = !showOverlayPanel },
+                        shape = RoundedCornerShape(8.dp),
+                        color = if (showOverlayPanel) MaterialTheme.colorScheme.primary else Color(0xFF444444),
+                        modifier = Modifier
+                            .size(40.dp)
+                            .semantics { toggleableState = ToggleableState(showOverlayPanel) }
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                Icons.Filled.Layers, cdOverlay,
+                                tint = if (showOverlayPanel) Color.Black else Color.White,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
                     }
                 }
-                Surface(
-                    onClick = { showSplitScreen = !showSplitScreen },
-                    shape = RoundedCornerShape(8.dp),
-                    color = if (showSplitScreen) MaterialTheme.colorScheme.primary else Color(0xFF444444),
-                    modifier = Modifier.size(40.dp)
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            Icons.Filled.ViewColumn, "Split screen",
-                            tint = if (showSplitScreen) Color.Black else Color.White,
-                            modifier = Modifier.size(20.dp)
-                        )
+                Box(modifier = Modifier.size(48.dp), contentAlignment = Alignment.Center) {
+                    Surface(
+                        onClick = { showSplitScreen = !showSplitScreen },
+                        shape = RoundedCornerShape(8.dp),
+                        color = if (showSplitScreen) MaterialTheme.colorScheme.primary else Color(0xFF444444),
+                        modifier = Modifier
+                            .size(40.dp)
+                            .semantics { toggleableState = ToggleableState(showSplitScreen) }
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                Icons.Filled.ViewColumn, cdSplit,
+                                tint = if (showSplitScreen) Color.Black else Color.White,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
                     }
                 }
                 // Record split — one-shot action, no persistent state
-                Surface(
-                    onClick = { viewModel.onRecordSplit(currentPosition) },
-                    shape = RoundedCornerShape(8.dp),
-                    color = Color(0xFF444444),
-                    modifier = Modifier.size(40.dp)
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(Icons.Filled.Timer, "Record split", tint = Color.White, modifier = Modifier.size(20.dp))
+                Box(modifier = Modifier.size(48.dp), contentAlignment = Alignment.Center) {
+                    Surface(
+                        onClick = { viewModel.onRecordSplit(currentPosition) },
+                        shape = RoundedCornerShape(8.dp),
+                        color = Color(0xFF444444),
+                        modifier = Modifier.size(40.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(Icons.Filled.Timer, cdRecordSplit, tint = Color.White, modifier = Modifier.size(20.dp))
+                        }
                     }
                 }
                 // Toggle a gate at the current position: lit when the playhead
                 // is on a marked gate; tap adds one, tap again removes it.
-                Surface(
-                    onClick = {
-                        val path = videoFile?.absolutePath ?: return@Surface
-                        if (gateAtPlayhead != null) {
-                            viewModel.deleteGate(path, gateAtPlayhead) { gateTimestamps = it }
-                        } else {
-                            viewModel.markGate(path, currentPosition) { gateTimestamps = it }
+                // 56dp touch target — gate marking is a primary, frequently
+                // used control that must work reliably with gloves.
+                Box(modifier = Modifier.size(56.dp), contentAlignment = Alignment.Center) {
+                    Surface(
+                        onClick = {
+                            val path = videoFile?.absolutePath ?: return@Surface
+                            if (gateAtPlayhead != null) {
+                                viewModel.deleteGate(path, gateAtPlayhead) { gateTimestamps = it }
+                            } else {
+                                viewModel.markGate(path, currentPosition) { gateTimestamps = it }
+                            }
+                        },
+                        shape = RoundedCornerShape(8.dp),
+                        color = if (gateAtPlayhead != null) MaterialTheme.colorScheme.primary else Color(0xFF444444),
+                        modifier = Modifier
+                            .size(40.dp)
+                            .semantics { toggleableState = ToggleableState(gateAtPlayhead != null) }
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                Icons.Filled.Flag,
+                                if (gateAtPlayhead != null) cdUnmarkGate else cdMarkGate,
+                                tint = if (gateAtPlayhead != null) Color.Black else Color.White,
+                                modifier = Modifier.size(20.dp)
+                            )
                         }
-                    },
-                    shape = RoundedCornerShape(8.dp),
-                    color = if (gateAtPlayhead != null) MaterialTheme.colorScheme.primary else Color(0xFF444444),
-                    modifier = Modifier.size(40.dp)
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            Icons.Filled.Flag,
-                            "Mark gate",
-                            tint = if (gateAtPlayhead != null) Color.Black else Color.White,
-                            modifier = Modifier.size(20.dp)
-                        )
                     }
                 }
                 // Autoclip toggle: lit while segments are shown; tap again hides them
-                Surface(
-                    onClick = {
-                        if (clipSegments.isNotEmpty()) {
-                            clipSegments = emptyList()
-                        } else if (videoFile != null) {
-                            viewModel.onRunAutoclip(videoFile.absolutePath) { segments ->
-                                clipSegments = segments
+                Box(modifier = Modifier.size(48.dp), contentAlignment = Alignment.Center) {
+                    Surface(
+                        onClick = {
+                            if (clipSegments.isNotEmpty()) {
+                                clipSegments = emptyList()
+                            } else if (videoFile != null) {
+                                viewModel.onRunAutoclip(videoFile.absolutePath) { segments ->
+                                    clipSegments = segments
+                                }
                             }
+                        },
+                        shape = RoundedCornerShape(8.dp),
+                        color = if (clipSegments.isNotEmpty()) MaterialTheme.colorScheme.primary else Color(0xFF444444),
+                        modifier = Modifier
+                            .size(40.dp)
+                            .semantics { toggleableState = ToggleableState(clipSegments.isNotEmpty()) }
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                Icons.Filled.ContentCut, cdAutoclip,
+                                tint = if (clipSegments.isNotEmpty()) Color.Black else Color.White,
+                                modifier = Modifier.size(20.dp)
+                            )
                         }
-                    },
-                    shape = RoundedCornerShape(8.dp),
-                    color = if (clipSegments.isNotEmpty()) MaterialTheme.colorScheme.primary else Color(0xFF444444),
-                    modifier = Modifier.size(40.dp)
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            Icons.Filled.ContentCut, "Autoclip",
-                            tint = if (clipSegments.isNotEmpty()) Color.Black else Color.White,
-                            modifier = Modifier.size(20.dp)
-                        )
                     }
                 }
                 // Pose toggle
-                Surface(
-                    onClick = {
-                        showPose = !showPose
-                        if (showPose && videoFile != null) {
-                            viewModel.estimatePose(videoFile.absolutePath, currentPosition) { kp, angles ->
-                                poseKeypoints = kp
-                                poseAngles = angles
+                Box(modifier = Modifier.size(48.dp), contentAlignment = Alignment.Center) {
+                    Surface(
+                        onClick = {
+                            showPose = !showPose
+                            if (showPose && videoFile != null) {
+                                viewModel.estimatePose(videoFile.absolutePath, currentPosition) { kp, angles ->
+                                    poseKeypoints = kp
+                                    poseAngles = angles
+                                }
                             }
+                        },
+                        shape = RoundedCornerShape(8.dp),
+                        color = if (showPose) MaterialTheme.colorScheme.primary else Color(0xFF444444),
+                        modifier = Modifier
+                            .size(40.dp)
+                            .semantics { toggleableState = ToggleableState(showPose) }
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                Icons.Filled.Accessibility, cdPose,
+                                tint = if (showPose) Color.Black else Color.White,
+                                modifier = Modifier.size(20.dp)
+                            )
                         }
-                    },
-                    shape = RoundedCornerShape(8.dp),
-                    color = if (showPose) MaterialTheme.colorScheme.primary else Color(0xFF444444),
-                    modifier = Modifier.size(40.dp)
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            Icons.Filled.Accessibility, "Pose",
-                            tint = if (showPose) Color.Black else Color.White,
-                            modifier = Modifier.size(20.dp)
-                        )
                     }
                 }
             }
@@ -453,7 +509,7 @@ fun ReplayScreen(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("Runs:", color = Color(0xFF8899AA), fontSize = 11.sp)
+                Text(stringResource(R.string.replay_runs_label), color = Color(0xFF8899AA), fontSize = 11.sp)
                 clipSegments.forEachIndexed { i, (startMs, _) ->
                     Surface(
                         onClick = {
@@ -465,7 +521,7 @@ fun ReplayScreen(
                         color = Color(0xFF2A3A4A)
                     ) {
                         Text(
-                            "Run ${i + 1}",
+                            stringResource(R.string.replay_run_number, i + 1),
                             color = Color(0xFF4FC3F7),
                             fontSize = 12.sp,
                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
@@ -545,38 +601,52 @@ fun ReplayScreen(
 
                 // Export-enhanced button — appears once an enhancement is active
                 if ((stabEnabled && stabTrack != null) || (colorEnabled && colorMatrix != null) || exporting || exportMessage != null) {
+                    fun startExport() {
+                        val file = videoFile ?: return
+                        val outFile = run {
+                            var candidate = File(file.parent, file.nameWithoutExtension + "_enhanced.mp4")
+                            var i = 1
+                            while (candidate.exists()) {
+                                candidate = File(file.parent, file.nameWithoutExtension + "_enhanced_$i.mp4")
+                                i++
+                            }
+                            candidate
+                        }
+                        exporting = true
+                        exportProgress = 0f
+                        exportMessage = null
+                        exportFailed = false
+                        exoPlayer.pause()
+                        exportJob = enhanceScope.launch {
+                            val result = EnhancedExporter().export(
+                                srcPath = file.absolutePath,
+                                outPath = outFile.absolutePath,
+                                track = if (stabEnabled) stabTrack else null,
+                                colorMatrix = if (colorEnabled) colorMatrix?.array?.copyOf() else null
+                            ) { exportProgress = it }
+                            exporting = false
+                            if (result != null) {
+                                exportFailed = false
+                                viewModel.onNativeCaptureComplete(result.outputPath, isVideo = true)
+                                val jitterPct = result.jitterChangePercent?.takeIf { it != 0 }
+                                val jitterNote = jitterPct?.let {
+                                    context.getString(R.string.replay_export_jitter_note, if (it > 0) "+" else "", it)
+                                } ?: ""
+                                exportMessage = context.getString(
+                                    R.string.replay_export_saved,
+                                    File(result.outputPath).name,
+                                    jitterNote
+                                )
+                            } else {
+                                exportFailed = true
+                                exportMessage = exportFailedMsg
+                            }
+                        }
+                    }
                     Surface(
                         onClick = onClick@{
                             if (exporting || videoFile == null) return@onClick
-                            val outFile = run {
-                                var candidate = File(videoFile.parent, videoFile.nameWithoutExtension + "_enhanced.mp4")
-                                var i = 1
-                                while (candidate.exists()) {
-                                    candidate = File(videoFile.parent, videoFile.nameWithoutExtension + "_enhanced_$i.mp4")
-                                    i++
-                                }
-                                candidate
-                            }
-                            exporting = true
-                            exportProgress = 0f
-                            exportMessage = null
-                            exoPlayer.pause()
-                            enhanceScope.launch {
-                                val result = EnhancedExporter().export(
-                                    srcPath = videoFile.absolutePath,
-                                    outPath = outFile.absolutePath,
-                                    track = if (stabEnabled) stabTrack else null,
-                                    colorMatrix = if (colorEnabled) colorMatrix?.array?.copyOf() else null
-                                ) { exportProgress = it }
-                                exporting = false
-                                exportMessage = if (result != null) {
-                                    viewModel.onNativeCaptureComplete(result.outputPath, isVideo = true)
-                                    val jitterNote = result.jitterChangePercent
-                                        ?.takeIf { it != 0 }
-                                        ?.let { " (jitter ${if (it > 0) "+" else ""}$it%)" } ?: ""
-                                    "Saved ${File(result.outputPath).name}$jitterNote"
-                                } else "Export failed"
-                            }
+                            startExport()
                         },
                         shape = RoundedCornerShape(4.dp),
                         color = Color(0xCC000000),
@@ -584,40 +654,169 @@ fun ReplayScreen(
                             .align(Alignment.BottomCenter)
                             .padding(8.dp)
                     ) {
-                        Text(
-                            when {
-                                exporting -> "Exporting… ${(exportProgress * 100).toInt()}%"
-                                exportMessage != null -> exportMessage!!
-                                else -> "⬇ Export enhanced clip"
-                            },
-                            color = if (exportMessage == "Export failed") Color(0xFFEF5350) else Color(0xFF4FC3F7),
-                            fontSize = 10.sp,
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                        )
+                        ) {
+                            Text(
+                                when {
+                                    exporting -> stringResource(R.string.replay_exporting_progress, (exportProgress * 100).toInt())
+                                    exportMessage != null -> exportMessage!!
+                                    else -> stringResource(R.string.replay_export_enhanced_clip)
+                                },
+                                color = if (exportFailed) Color(0xFFEF5350) else Color(0xFF4FC3F7),
+                                fontSize = 10.sp
+                            )
+                            if (exporting) {
+                                Text(
+                                    stringResource(R.string.replay_cancel),
+                                    color = Color.White,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.clickable {
+                                        exportJob?.cancel()
+                                        exporting = false
+                                        exportMessage = null
+                                        exportFailed = false
+                                    }
+                                )
+                            }
+                            if (exportFailed) {
+                                Text(
+                                    stringResource(R.string.replay_retry),
+                                    color = Color(0xFF4FC3F7),
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.clickable { startExport() }
+                                )
+                            }
+                        }
                     }
                 }
 
-                // Stabilization status badge
-                if (stabAnalyzing || (stabEnabled && stabTrack != null)) {
-                    Surface(
-                        shape = RoundedCornerShape(4.dp),
-                        color = Color(0xCC000000),
+                // Stabilization + color analysis status (loading / error / result)
+                if (stabAnalyzing || stabError != null || (stabEnabled && stabTrack != null) ||
+                    colorAnalyzing || colorError != null || (colorEnabled && colorMatrix != null)
+                ) {
+                    Column(
                         modifier = Modifier
                             .align(Alignment.BottomStart)
-                            .padding(8.dp)
+                            .padding(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        Text(
-                            when {
-                                stabAnalyzing -> "Analyzing motion… ${(stabProgress * 100).toInt()}%"
-                                else -> {
-                                    val red = ((stabTrack?.jitterReduction ?: 0f) * 100).toInt()
-                                    if (red > 0) "Stabilized (jitter −$red%)" else "Stabilized"
+                        if (stabAnalyzing || stabError != null || (stabEnabled && stabTrack != null)) {
+                            Surface(shape = RoundedCornerShape(4.dp), color = Color(0xCC000000)) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                ) {
+                                    Text(
+                                        when {
+                                            stabAnalyzing -> stringResource(R.string.replay_analyzing_motion, (stabProgress * 100).toInt())
+                                            stabError != null -> stabError!!
+                                            else -> {
+                                                val red = ((stabTrack?.jitterReduction ?: 0f) * 100).toInt()
+                                                if (red > 0) stringResource(R.string.replay_stabilized_with_jitter, red)
+                                                else stringResource(R.string.replay_stabilized)
+                                            }
+                                        },
+                                        color = if (stabError != null) Color(0xFFEF5350) else Color(0xFF66BB6A),
+                                        fontSize = 10.sp
+                                    )
+                                    if (stabAnalyzing) {
+                                        Text(
+                                            stringResource(R.string.replay_cancel),
+                                            color = Color.White,
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            modifier = Modifier.clickable {
+                                                stabAnalyzeJob?.cancel()
+                                                stabAnalyzing = false
+                                            }
+                                        )
+                                    }
+                                    if (stabError != null) {
+                                        val file = videoFile
+                                        Text(
+                                            stringResource(R.string.replay_retry),
+                                            color = Color(0xFF4FC3F7),
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            modifier = Modifier.clickable {
+                                                if (file != null) {
+                                                    stabAnalyzing = true
+                                                    stabProgress = 0f
+                                                    stabError = null
+                                                    stabAnalyzeJob = enhanceScope.launch {
+                                                        val track = PlaybackStabilizer()
+                                                            .analyze(file.absolutePath) { stabProgress = it }
+                                                        stabTrack = track
+                                                        stabAnalyzing = false
+                                                        stabEnabled = track != null
+                                                        if (track == null) stabError = stabFailedMsg
+                                                    }
+                                                }
+                                            }
+                                        )
+                                    }
                                 }
-                            },
-                            color = Color(0xFF66BB6A),
-                            fontSize = 10.sp,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                        )
+                            }
+                        }
+                        if (colorAnalyzing || colorError != null || (colorEnabled && colorMatrix != null)) {
+                            Surface(shape = RoundedCornerShape(4.dp), color = Color(0xCC000000)) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                ) {
+                                    Text(
+                                        when {
+                                            colorAnalyzing -> stringResource(R.string.replay_analyzing_color)
+                                            colorError != null -> colorError!!
+                                            else -> stringResource(R.string.replay_cd_color_toggle)
+                                        },
+                                        color = if (colorError != null) Color(0xFFEF5350) else Color(0xFF66BB6A),
+                                        fontSize = 10.sp
+                                    )
+                                    if (colorAnalyzing) {
+                                        Text(
+                                            stringResource(R.string.replay_cancel),
+                                            color = Color.White,
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            modifier = Modifier.clickable {
+                                                colorAnalyzeJob?.cancel()
+                                                colorAnalyzing = false
+                                            }
+                                        )
+                                    }
+                                    if (colorError != null) {
+                                        val file = videoFile
+                                        Text(
+                                            stringResource(R.string.replay_retry),
+                                            color = Color(0xFF4FC3F7),
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            modifier = Modifier.clickable {
+                                                if (file != null) {
+                                                    colorAnalyzing = true
+                                                    colorError = null
+                                                    colorAnalyzeJob = enhanceScope.launch {
+                                                        val matrix = AutoColorAnalyzer().analyze(file.absolutePath)
+                                                        colorMatrix = matrix
+                                                        colorAnalyzing = false
+                                                        colorEnabled = matrix != null
+                                                        if (matrix == null) colorError = colorFailedMsg
+                                                    }
+                                                }
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -741,7 +940,7 @@ fun ReplayScreen(
                                     .padding(8.dp)
                             ) {
                                 Text(
-                                    "Trail: enable pose tracking during recording for trajectory lines",
+                                    stringResource(R.string.replay_trail_hint),
                                     color = Color(0xFFFFAB40),
                                     fontSize = 10.sp,
                                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
@@ -776,7 +975,7 @@ fun ReplayScreen(
                             .padding(8.dp)
                     ) {
                         Text(
-                            "Overlay: ${replayState.overlayMode}",
+                            stringResource(R.string.replay_overlay_mode_label, replayState.overlayMode),
                             color = Color(0xFF4FC3F7),
                             fontSize = 10.sp,
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
@@ -832,7 +1031,7 @@ fun ReplayScreen(
                                         .replace("left", "L ")
                                         .replace("right", "R ")
                                     Text(
-                                        "$label: ${angle.toInt()}°",
+                                        stringResource(R.string.replay_pose_angle_label, label, angle.toInt()),
                                         color = Color(0xFF4FC3F7),
                                         fontSize = 11.sp
                                     )
@@ -857,15 +1056,15 @@ fun ReplayScreen(
                             horizontalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
                             Icon(Icons.Filled.Tune, null, tint = Color(0xFF66BB6A), modifier = Modifier.size(14.dp))
-                            Text("Perspective OK", color = Color(0xFF66BB6A), fontSize = 10.sp)
+                            Text(stringResource(R.string.replay_perspective_ok), color = Color(0xFF66BB6A), fontSize = 10.sp)
                         }
                     }
                 }
             } else {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("No clip loaded", color = Color.Gray, fontSize = 16.sp)
+                    Text(stringResource(R.string.replay_no_clip_loaded), color = Color.Gray, fontSize = 16.sp)
                     Spacer(modifier = Modifier.height(8.dp))
-                    Text("Record a video, then come here to review", color = Color(0xFF666666), fontSize = 12.sp)
+                    Text(stringResource(R.string.replay_no_clip_hint), color = Color(0xFF666666), fontSize = 12.sp)
                 }
             }
         }
@@ -879,101 +1078,131 @@ fun ReplayScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
+            val cdStabilize = stringResource(R.string.replay_cd_stabilize_toggle)
+            val cdColor = stringResource(R.string.replay_cd_color_toggle)
+            val stabAnalyzingState = stringResource(R.string.replay_stabilize_analyzing_state)
+            val colorAnalyzingState = stringResource(R.string.replay_color_analyzing_state)
+
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                // Supplementary stabilization toggle (analyzes on first use)
-                Surface(
-                    onClick = {
-                        val file = videoFile ?: return@Surface
-                        when {
-                            stabAnalyzing -> { /* analysis running */ }
-                            stabEnabled -> stabEnabled = false
-                            stabTrack != null -> stabEnabled = true
-                            else -> {
-                                stabAnalyzing = true
-                                stabProgress = 0f
-                                enhanceScope.launch {
-                                    val track = PlaybackStabilizer()
-                                        .analyze(file.absolutePath) { stabProgress = it }
-                                    stabTrack = track
-                                    stabAnalyzing = false
-                                    stabEnabled = track != null
+                // Supplementary stabilization toggle (analyzes on first use).
+                // Box gives a >=48dp touch target around the unchanged 48x32dp Surface.
+                Box(modifier = Modifier.size(width = 48.dp, height = 48.dp), contentAlignment = Alignment.Center) {
+                    Surface(
+                        onClick = {
+                            val file = videoFile ?: return@Surface
+                            when {
+                                stabAnalyzing -> { /* analysis running */ }
+                                stabEnabled -> stabEnabled = false
+                                stabTrack != null -> stabEnabled = true
+                                else -> {
+                                    stabAnalyzing = true
+                                    stabProgress = 0f
+                                    stabError = null
+                                    stabAnalyzeJob = enhanceScope.launch {
+                                        val track = PlaybackStabilizer()
+                                            .analyze(file.absolutePath) { stabProgress = it }
+                                        stabTrack = track
+                                        stabAnalyzing = false
+                                        stabEnabled = track != null
+                                        if (track == null) stabError = stabFailedMsg
+                                    }
                                 }
                             }
+                        },
+                        shape = RoundedCornerShape(8.dp),
+                        color = when {
+                            stabAnalyzing -> Color(0xFF666633)
+                            stabEnabled -> MaterialTheme.colorScheme.primary
+                            else -> Color(0xFF333333)
+                        },
+                        modifier = Modifier
+                            .size(width = 48.dp, height = 32.dp)
+                            .semantics {
+                                toggleableState = if (stabAnalyzing) ToggleableState.Indeterminate else ToggleableState(stabEnabled)
+                                if (stabAnalyzing) stateDescription = stabAnalyzingState
+                            }
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                Icons.Filled.Vibration, cdStabilize,
+                                tint = if (stabEnabled) Color.Black else Color.White,
+                                modifier = Modifier.size(18.dp)
+                            )
                         }
-                    },
-                    shape = RoundedCornerShape(8.dp),
-                    color = when {
-                        stabAnalyzing -> Color(0xFF666633)
-                        stabEnabled -> MaterialTheme.colorScheme.primary
-                        else -> Color(0xFF333333)
-                    },
-                    modifier = Modifier.size(width = 48.dp, height = 32.dp)
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            Icons.Filled.Vibration, "Stabilize",
-                            tint = if (stabEnabled) Color.Black else Color.White,
-                            modifier = Modifier.size(18.dp)
-                        )
                     }
                 }
                 // Auto color correction toggle (analyzes on first use)
-                Surface(
-                    onClick = {
-                        val file = videoFile ?: return@Surface
-                        when {
-                            colorAnalyzing -> { /* analysis running */ }
-                            colorEnabled -> colorEnabled = false
-                            colorMatrix != null -> colorEnabled = true
-                            else -> {
-                                colorAnalyzing = true
-                                enhanceScope.launch {
-                                    val matrix = AutoColorAnalyzer().analyze(file.absolutePath)
-                                    colorMatrix = matrix
-                                    colorAnalyzing = false
-                                    colorEnabled = matrix != null
+                Box(modifier = Modifier.size(width = 48.dp, height = 48.dp), contentAlignment = Alignment.Center) {
+                    Surface(
+                        onClick = {
+                            val file = videoFile ?: return@Surface
+                            when {
+                                colorAnalyzing -> { /* analysis running */ }
+                                colorEnabled -> colorEnabled = false
+                                colorMatrix != null -> colorEnabled = true
+                                else -> {
+                                    colorAnalyzing = true
+                                    colorError = null
+                                    colorAnalyzeJob = enhanceScope.launch {
+                                        val matrix = AutoColorAnalyzer().analyze(file.absolutePath)
+                                        colorMatrix = matrix
+                                        colorAnalyzing = false
+                                        colorEnabled = matrix != null
+                                        if (matrix == null) colorError = colorFailedMsg
+                                    }
                                 }
                             }
+                        },
+                        shape = RoundedCornerShape(8.dp),
+                        color = when {
+                            colorAnalyzing -> Color(0xFF666633)
+                            colorEnabled -> MaterialTheme.colorScheme.primary
+                            else -> Color(0xFF333333)
+                        },
+                        modifier = Modifier
+                            .size(width = 48.dp, height = 32.dp)
+                            .semantics {
+                                toggleableState = if (colorAnalyzing) ToggleableState.Indeterminate else ToggleableState(colorEnabled)
+                                if (colorAnalyzing) stateDescription = colorAnalyzingState
+                            }
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                Icons.Filled.AutoFixHigh, cdColor,
+                                tint = if (colorEnabled) Color.Black else Color.White,
+                                modifier = Modifier.size(18.dp)
+                            )
                         }
-                    },
-                    shape = RoundedCornerShape(8.dp),
-                    color = when {
-                        colorAnalyzing -> Color(0xFF666633)
-                        colorEnabled -> MaterialTheme.colorScheme.primary
-                        else -> Color(0xFF333333)
-                    },
-                    modifier = Modifier.size(width = 48.dp, height = 32.dp)
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            Icons.Filled.AutoFixHigh, "Auto color",
-                            tint = if (colorEnabled) Color.Black else Color.White,
-                            modifier = Modifier.size(18.dp)
-                        )
                     }
                 }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf(0.25f, 0.5f, 1.0f, 2.0f).forEach { speed ->
-                    Surface(
-                        onClick = {
-                            playbackSpeed = speed
-                            exoPlayer.setPlaybackSpeed(speed)
-                            overlayPlayer.setPlaybackSpeed(speed)
-                        },
-                        shape = RoundedCornerShape(8.dp),
-                        color = if (playbackSpeed == speed) MaterialTheme.colorScheme.primary else Color(0xFF333333),
-                        modifier = Modifier.size(width = 48.dp, height = 32.dp)
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Text(
-                                "${speed}x",
-                                color = if (playbackSpeed == speed) Color.Black else Color.White,
-                                fontSize = 11.sp
-                            )
+                    // Box gives a >=48dp touch target — speed is a primary,
+                    // frequently used control — around the unchanged 48x32dp Surface.
+                    Box(modifier = Modifier.size(width = 48.dp, height = 48.dp), contentAlignment = Alignment.Center) {
+                        Surface(
+                            onClick = {
+                                playbackSpeed = speed
+                                exoPlayer.setPlaybackSpeed(speed)
+                                overlayPlayer.setPlaybackSpeed(speed)
+                            },
+                            shape = RoundedCornerShape(8.dp),
+                            color = if (playbackSpeed == speed) MaterialTheme.colorScheme.primary else Color(0xFF333333),
+                            modifier = Modifier
+                                .size(width = 48.dp, height = 32.dp)
+                                .semantics { selected = playbackSpeed == speed }
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Text(
+                                    stringResource(R.string.replay_speed_label, speed),
+                                    color = if (playbackSpeed == speed) Color.Black else Color.White,
+                                    fontSize = 11.sp
+                                )
+                            }
                         }
                     }
                 }
@@ -1034,7 +1263,7 @@ fun ReplayScreen(
                 Text(formatTime(currentPosition), color = Color.Gray, fontSize = 11.sp)
                 if (gateTimestamps.isNotEmpty()) {
                     Text(
-                        "⚑ ${gateTimestamps.size} gates",
+                        stringResource(R.string.replay_gates_count, gateTimestamps.size),
                         color = Color(0xFFFFAB40),
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
@@ -1049,7 +1278,7 @@ fun ReplayScreen(
         if (showGateList && videoFile != null) {
             androidx.compose.material3.AlertDialog(
                 onDismissRequest = { showGateList = false },
-                title = { Text("Gates (${gateTimestamps.size})") },
+                title = { Text(stringResource(R.string.replay_gates_dialog_title, gateTimestamps.size)) },
                 text = {
                     Column {
                         gateTimestamps.forEachIndexed { index, ts ->
@@ -1061,7 +1290,7 @@ fun ReplayScreen(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
-                                    "Gate ${index + 1} — ${formatTime(ts)}",
+                                    stringResource(R.string.replay_gate_row_label, index + 1, formatTime(ts)),
                                     fontSize = 14.sp,
                                     modifier = Modifier
                                         .weight(1f)
@@ -1071,12 +1300,11 @@ fun ReplayScreen(
                                             showGateList = false
                                         }
                                 )
-                                IconButton(onClick = {
-                                    viewModel.deleteGate(videoFile.absolutePath, ts) {
-                                        gateTimestamps = it
-                                    }
-                                }) {
-                                    Icon(Icons.Filled.Delete, "Delete gate", tint = Color(0xFFEF5350))
+                                IconButton(
+                                    onClick = { pendingDeleteGate = ts },
+                                    modifier = Modifier.size(48.dp)
+                                ) {
+                                    Icon(Icons.Filled.Delete, stringResource(R.string.replay_cd_delete_gate), tint = Color(0xFFEF5350))
                                 }
                             }
                         }
@@ -1084,7 +1312,32 @@ fun ReplayScreen(
                 },
                 confirmButton = {
                     androidx.compose.material3.TextButton(onClick = { showGateList = false }) {
-                        Text("Close")
+                        Text(stringResource(R.string.replay_close))
+                    }
+                }
+            )
+        }
+
+        // Delete-gate confirmation — destructive action, confirm before removing
+        val gateToDelete = pendingDeleteGate
+        if (gateToDelete != null && videoFile != null) {
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { pendingDeleteGate = null },
+                title = { Text(stringResource(R.string.replay_confirm_delete_gate_title)) },
+                text = { Text(stringResource(R.string.replay_confirm_delete_gate_text, formatTime(gateToDelete))) },
+                confirmButton = {
+                    androidx.compose.material3.TextButton(onClick = {
+                        viewModel.deleteGate(videoFile.absolutePath, gateToDelete) {
+                            gateTimestamps = it
+                        }
+                        pendingDeleteGate = null
+                    }) {
+                        Text(stringResource(R.string.replay_delete), color = Color(0xFFEF5350))
+                    }
+                },
+                dismissButton = {
+                    androidx.compose.material3.TextButton(onClick = { pendingDeleteGate = null }) {
+                        Text(stringResource(R.string.replay_cancel))
                     }
                 }
             )
@@ -1113,15 +1366,16 @@ fun ReplayScreen(
             IconButton(onClick = {
                 seekBoth(exoPlayer.currentPosition - 33)
             }, modifier = Modifier.size(48.dp)) {
-                Icon(Icons.Filled.SkipPrevious, "Frame back", tint = Color.White, modifier = Modifier.size(28.dp))
+                Icon(Icons.Filled.SkipPrevious, stringResource(R.string.replay_cd_frame_back), tint = Color.White, modifier = Modifier.size(28.dp))
             }
             // Rewind 5s
             IconButton(onClick = {
                 seekBoth(exoPlayer.currentPosition - 5000)
             }, modifier = Modifier.size(48.dp)) {
-                Icon(Icons.Filled.FastRewind, "Rewind", tint = Color.White, modifier = Modifier.size(28.dp))
+                Icon(Icons.Filled.FastRewind, stringResource(R.string.replay_cd_rewind), tint = Color.White, modifier = Modifier.size(28.dp))
             }
-            // Play/Pause — syncs both players
+            // Play/Pause — syncs both players. Already a 64dp touch target,
+            // above even the 56dp glove-friendly ideal for this most-used control.
             Surface(
                 onClick = {
                     if (exoPlayer.isPlaying) {
@@ -1141,12 +1395,14 @@ fun ReplayScreen(
                 },
                 shape = CircleShape,
                 color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(64.dp)
+                modifier = Modifier
+                    .size(64.dp)
+                    .semantics { toggleableState = ToggleableState(isPlaying) }
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Icon(
                         if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                        "Play/Pause",
+                        if (isPlaying) stringResource(R.string.replay_cd_pause) else stringResource(R.string.replay_cd_play),
                         tint = Color.Black,
                         modifier = Modifier.size(36.dp)
                     )
@@ -1156,13 +1412,13 @@ fun ReplayScreen(
             IconButton(onClick = {
                 seekBoth(exoPlayer.currentPosition + 5000)
             }, modifier = Modifier.size(48.dp)) {
-                Icon(Icons.Filled.FastForward, "Forward", tint = Color.White, modifier = Modifier.size(28.dp))
+                Icon(Icons.Filled.FastForward, stringResource(R.string.replay_cd_forward), tint = Color.White, modifier = Modifier.size(28.dp))
             }
             // Frame forward
             IconButton(onClick = {
                 seekBoth(exoPlayer.currentPosition + 33)
             }, modifier = Modifier.size(48.dp)) {
-                Icon(Icons.Filled.SkipNext, "Frame forward", tint = Color.White, modifier = Modifier.size(28.dp))
+                Icon(Icons.Filled.SkipNext, stringResource(R.string.replay_cd_frame_forward), tint = Color.White, modifier = Modifier.size(28.dp))
             }
         }
 
@@ -1191,6 +1447,7 @@ private fun PerspectiveOverlayPanel(
     onClearOverlay: () -> Unit = {}
 ) {
     var showVideoList by remember { mutableStateOf(false) }
+    var showClearLayersConfirm by remember { mutableStateOf(false) }
     val overlayModes = listOf("GHOST", "DIFFERENCE", "TRAIL", "WIPE")
     var selectedMode by remember { mutableStateOf(replayState.overlayMode) }
 
@@ -1203,7 +1460,7 @@ private fun PerspectiveOverlayPanel(
     ) {
         // --- Section 1: Course Reference ---
         Text(
-            "COURSE REFERENCE",
+            stringResource(R.string.replay_course_reference_header),
             color = Color(0xFF8899AA),
             fontSize = 10.sp,
             fontWeight = FontWeight.Bold,
@@ -1232,7 +1489,7 @@ private fun PerspectiveOverlayPanel(
                             .background(pulseColor, CircleShape)
                     )
                     Text(
-                        "Building reference… ${replayState.referenceFramesCaptured} frames",
+                        stringResource(R.string.replay_building_reference, replayState.referenceFramesCaptured),
                         color = Color.White,
                         fontSize = 13.sp
                     )
@@ -1249,23 +1506,23 @@ private fun PerspectiveOverlayPanel(
                     Column(modifier = Modifier.padding(end = 8.dp)) {
                         if (replayState.referenceGateCount > 0) {
                             Text(
-                                "${replayState.referenceGateCount} gates detected",
+                                stringResource(R.string.replay_gates_detected, replayState.referenceGateCount),
                                 color = Color.White,
                                 fontSize = 13.sp
                             )
                             Text(
-                                "Perspective correction ready",
+                                stringResource(R.string.replay_perspective_ready),
                                 color = Color(0xFF66BB6A),
                                 fontSize = 11.sp
                             )
                         } else {
                             Text(
-                                "Reference ready — no gates found",
+                                stringResource(R.string.replay_reference_ready_no_gates),
                                 color = Color.White,
                                 fontSize = 13.sp
                             )
                             Text(
-                                "Overlays work; perspective matching needs closer gates",
+                                stringResource(R.string.replay_perspective_needs_closer_gates),
                                 color = Color(0xFFFFAB40),
                                 fontSize = 11.sp
                             )
@@ -1286,7 +1543,7 @@ private fun PerspectiveOverlayPanel(
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         Icon(Icons.Filled.Panorama, null, tint = Color.White, modifier = Modifier.size(16.dp))
-                        Text("Rebuild from clip", color = Color.White, fontSize = 13.sp)
+                        Text(stringResource(R.string.replay_rebuild_from_clip), color = Color.White, fontSize = 13.sp)
                     }
                 }
             } else {
@@ -1294,12 +1551,12 @@ private fun PerspectiveOverlayPanel(
                 // button keeps its intrinsic single-line width
                 Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
                     Text(
-                        "Build the course reference from this clip",
+                        stringResource(R.string.replay_build_reference_hint),
                         color = Color(0xFFAABBCC),
                         fontSize = 12.sp
                     )
                     Text(
-                        "Best from a slow pan or a wide view of the gates",
+                        stringResource(R.string.replay_build_reference_hint2),
                         color = Color(0xFF667788),
                         fontSize = 11.sp
                     )
@@ -1317,7 +1574,7 @@ private fun PerspectiveOverlayPanel(
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         Icon(Icons.Filled.Panorama, null, tint = Color.Black, modifier = Modifier.size(16.dp))
-                        Text("Build Reference", color = Color.Black, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        Text(stringResource(R.string.replay_build_reference), color = Color.Black, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -1327,19 +1584,28 @@ private fun PerspectiveOverlayPanel(
         if (replayState.hasReference) {
             Spacer(modifier = Modifier.height(4.dp))
             Text(
-                "OVERLAY LAYERS",
+                stringResource(R.string.replay_overlay_layers_header),
                 color = Color(0xFF8899AA),
                 fontSize = 10.sp,
                 fontWeight = FontWeight.Bold,
                 letterSpacing = 1.sp
             )
 
-            // Overlay mode selector
+            // Overlay mode selector — displayed label is localized; the raw
+            // mode value sent to the ViewModel (GHOST/DIFFERENCE/TRAIL/WIPE)
+            // is left untouched since it's a protocol value, not display text.
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 overlayModes.forEach { mode ->
+                    val modeLabel = when (mode) {
+                        "GHOST" -> stringResource(R.string.replay_overlay_mode_ghost)
+                        "DIFFERENCE" -> stringResource(R.string.replay_overlay_mode_difference)
+                        "TRAIL" -> stringResource(R.string.replay_overlay_mode_trail)
+                        "WIPE" -> stringResource(R.string.replay_overlay_mode_wipe)
+                        else -> mode
+                    }
                     Surface(
                         onClick = {
                             selectedMode = mode
@@ -1347,10 +1613,12 @@ private fun PerspectiveOverlayPanel(
                         },
                         shape = RoundedCornerShape(6.dp),
                         color = if (selectedMode == mode) MaterialTheme.colorScheme.primary else Color(0xFF2A3A4A),
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier
+                            .weight(1f)
+                            .semantics { selected = selectedMode == mode }
                     ) {
                         Text(
-                            mode.lowercase().replaceFirstChar { it.uppercase() },
+                            modeLabel,
                             color = if (selectedMode == mode) Color.Black else Color(0xFFAABBCC),
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Medium,
@@ -1369,12 +1637,12 @@ private fun PerspectiveOverlayPanel(
             ) {
                 IconButton(
                     onClick = { viewModel.onNavigateGate("prev") },
-                    modifier = Modifier.size(36.dp)
+                    modifier = Modifier.size(48.dp)
                 ) {
-                    Icon(Icons.Filled.ChevronLeft, "Previous gate", tint = Color.White)
+                    Icon(Icons.Filled.ChevronLeft, stringResource(R.string.replay_cd_previous_gate), tint = Color.White)
                 }
                 Text(
-                    "Gate ${replayState.currentGate + 1}",
+                    stringResource(R.string.replay_current_gate, replayState.currentGate + 1),
                     color = Color.White,
                     fontSize = 14.sp,
                     fontWeight = FontWeight.Medium,
@@ -1382,9 +1650,9 @@ private fun PerspectiveOverlayPanel(
                 )
                 IconButton(
                     onClick = { viewModel.onNavigateGate("next") },
-                    modifier = Modifier.size(36.dp)
+                    modifier = Modifier.size(48.dp)
                 ) {
-                    Icon(Icons.Filled.ChevronRight, "Next gate", tint = Color.White)
+                    Icon(Icons.Filled.ChevronRight, stringResource(R.string.replay_cd_next_gate), tint = Color.White)
                 }
             }
 
@@ -1402,14 +1670,14 @@ private fun PerspectiveOverlayPanel(
                 ) {
                     Icon(Icons.Filled.Add, null, tint = Color(0xFF4FC3F7), modifier = Modifier.size(18.dp))
                     Text(
-                        "Add run for comparison",
+                        stringResource(R.string.replay_add_run_comparison),
                         color = Color(0xFF4FC3F7),
                         fontSize = 13.sp
                     )
                     Spacer(modifier = Modifier.weight(1f))
                     if (replayState.overlayLayerCount > 0) {
                         Text(
-                            "${replayState.overlayLayerCount} layers",
+                            stringResource(R.string.replay_layers_count, replayState.overlayLayerCount),
                             color = Color(0xFF667788),
                             fontSize = 11.sp
                         )
@@ -1422,7 +1690,7 @@ private fun PerspectiveOverlayPanel(
                 val videos = remember { viewModel.getRecordedVideos() }
                 if (videos.isEmpty()) {
                     Text(
-                        "No recorded videos yet",
+                        stringResource(R.string.replay_no_recorded_videos),
                         color = Color(0xFF667788),
                         fontSize = 12.sp,
                         modifier = Modifier.padding(start = 8.dp, top = 4.dp)
@@ -1461,7 +1729,7 @@ private fun PerspectiveOverlayPanel(
                                     )
                                     val sizeMb = file.length() / (1024 * 1024)
                                     Text(
-                                        "${sizeMb}MB",
+                                        stringResource(R.string.replay_size_mb, sizeMb),
                                         color = Color(0xFF667788),
                                         fontSize = 11.sp
                                     )
@@ -1479,7 +1747,7 @@ private fun PerspectiveOverlayPanel(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Text("Opacity", color = Color(0xFF8899AA), fontSize = 11.sp)
+                    Text(stringResource(R.string.replay_opacity_label), color = Color(0xFF8899AA), fontSize = 11.sp)
                     Slider(
                         value = overlayOpacity,
                         onValueChange = onOpacityChanged,
@@ -1491,7 +1759,7 @@ private fun PerspectiveOverlayPanel(
                         ),
                         modifier = Modifier.weight(1f)
                     )
-                    Text("${(overlayOpacity * 100).toInt()}%", color = Color.White, fontSize = 11.sp)
+                    Text(stringResource(R.string.replay_percent, (overlayOpacity * 100).toInt()), color = Color.White, fontSize = 11.sp)
                 }
             }
 
@@ -1502,7 +1770,7 @@ private fun PerspectiveOverlayPanel(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Text("Wipe", color = Color(0xFF8899AA), fontSize = 11.sp)
+                    Text(stringResource(R.string.replay_wipe_label), color = Color(0xFF8899AA), fontSize = 11.sp)
                     Slider(
                         value = wipePosition,
                         onValueChange = onWipeChanged,
@@ -1520,12 +1788,12 @@ private fun PerspectiveOverlayPanel(
             // Clear overlay
             if (replayState.overlayLayerCount > 0) {
                 Surface(
-                    onClick = onClearOverlay,
+                    onClick = { showClearLayersConfirm = true },
                     shape = RoundedCornerShape(6.dp),
                     color = Color(0xFF3A2020)
                 ) {
                     Text(
-                        "Clear all layers",
+                        stringResource(R.string.replay_clear_all_layers),
                         color = Color(0xFFEF9A9A),
                         fontSize = 12.sp,
                         textAlign = TextAlign.Center,
@@ -1534,6 +1802,24 @@ private fun PerspectiveOverlayPanel(
                             .padding(vertical = 6.dp)
                     )
                 }
+            }
+            if (showClearLayersConfirm) {
+                AlertDialog(
+                    onDismissRequest = { showClearLayersConfirm = false },
+                    title = { Text(stringResource(R.string.replay_confirm_clear_layers_title)) },
+                    text = { Text(stringResource(R.string.replay_confirm_clear_layers_text)) },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            showClearLayersConfirm = false
+                            onClearOverlay()
+                        }) { Text(stringResource(R.string.replay_clear)) }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showClearLayersConfirm = false }) {
+                            Text(stringResource(R.string.replay_cancel))
+                        }
+                    }
+                )
             }
         }
     }

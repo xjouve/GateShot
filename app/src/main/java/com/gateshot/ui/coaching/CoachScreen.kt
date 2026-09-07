@@ -18,8 +18,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.gateshot.R
 import com.gateshot.ui.MainViewModel
 import com.gateshot.ui.analysis.AnalysisScreen
 import com.gateshot.ui.annotation.AnnotationScreen
@@ -38,7 +40,12 @@ fun CoachScreen(
 ) {
     // Restore the sub-tab the coach was last on; it's disposed on navigation
     var selectedTab by remember { mutableIntStateOf(viewModel.coachSession.selectedTab) }
-    val tabs = listOf("Annotate", "Athletes", "Analysis", "Tools")
+    val tabs = listOf(
+        stringResource(R.string.coach_tab_annotate),
+        stringResource(R.string.coach_tab_athletes),
+        stringResource(R.string.coach_tab_analysis),
+        stringResource(R.string.coach_tab_tools)
+    )
 
     Column(
         modifier = modifier

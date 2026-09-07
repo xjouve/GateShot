@@ -27,11 +27,14 @@ import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Timeline
 import androidx.compose.material.icons.filled.Undo
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -51,9 +54,13 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.gateshot.R
 import com.gateshot.coaching.annotation.DrawingElement
 import com.gateshot.coaching.annotation.DrawingType
 import com.gateshot.coaching.annotation.PointF
@@ -124,6 +131,12 @@ fun AnnotationScreen(
     var isRecordingVoice by remember { mutableStateOf(false) }
     var canvasSize by remember { mutableStateOf(androidx.compose.ui.unit.IntSize.Zero) }
     var saveMessage by remember { mutableStateOf<String?>(null) }
+    var isSaving by remember { mutableStateOf(false) }
+    var showClearConfirm by remember { mutableStateOf(false) }
+    var frameLoadRetryKey by remember { mutableStateOf(0) }
+
+    val savedText = stringResource(R.string.annotation_saved)
+    val saveFailedText = stringResource(R.string.annotation_save_failed)
 
     val strokes = remember(framePath) {
         mutableStateListOf<DrawingStroke>().also { it.addAll(session.annotationStrokes) }
@@ -166,7 +179,7 @@ fun AnnotationScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("Annotate", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+            Text(stringResource(R.string.annotation_title), color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
             saveMessage?.let { msg ->
                 androidx.compose.runtime.LaunchedEffect(msg) {
                     kotlinx.coroutines.delay(2500)
@@ -176,24 +189,60 @@ fun AnnotationScreen(
             }
             Row {
                 IconButton(onClick = { if (strokes.isNotEmpty()) strokes.removeLast() }) {
-                    Icon(Icons.Filled.Undo, "Undo", tint = Color.White)
+                    Icon(Icons.Filled.Undo, contentDescription = stringResource(R.string.annotation_cd_undo), tint = Color.White)
                 }
-                IconButton(onClick = { strokes.clear() }) {
-                    Icon(Icons.Filled.Delete, "Clear all", tint = Color(0xFFEF5350))
+                IconButton(onClick = { if (strokes.isNotEmpty()) showClearConfirm = true }) {
+                    Icon(Icons.Filled.Delete, contentDescription = stringResource(R.string.annotation_cd_clear_all), tint = Color(0xFFEF5350))
                 }
-                IconButton(onClick = {
-                    val elements = strokesToElements(
-                        strokes.toList(),
-                        canvasSize.width.toFloat(),
-                        canvasSize.height.toFloat()
-                    )
-                    viewModel.onSaveAnnotatedFrame(elements) { savedPath ->
-                        saveMessage = if (savedPath != null) "Frame saved" else "Save failed"
+                IconButton(
+                    onClick = {
+                        if (!isSaving) {
+                            isSaving = true
+                            val elements = strokesToElements(
+                                strokes.toList(),
+                                canvasSize.width.toFloat(),
+                                canvasSize.height.toFloat()
+                            )
+                            viewModel.onSaveAnnotatedFrame(elements) { savedPath ->
+                                isSaving = false
+                                saveMessage = if (savedPath != null) savedText else saveFailedText
+                            }
+                        }
+                    },
+                    enabled = !isSaving
+                ) {
+                    if (isSaving) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(20.dp),
+                            color = MaterialTheme.colorScheme.primary,
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        Icon(Icons.Filled.Save, contentDescription = stringResource(R.string.annotation_cd_save), tint = MaterialTheme.colorScheme.primary)
                     }
-                }) {
-                    Icon(Icons.Filled.Save, "Save", tint = MaterialTheme.colorScheme.primary)
                 }
             }
+        }
+
+        if (showClearConfirm) {
+            AlertDialog(
+                onDismissRequest = { showClearConfirm = false },
+                title = { Text(stringResource(R.string.annotation_confirm_clear_title)) },
+                text = { Text(stringResource(R.string.annotation_confirm_clear_text)) },
+                confirmButton = {
+                    TextButton(onClick = {
+                        strokes.clear()
+                        showClearConfirm = false
+                    }) {
+                        Text(stringResource(R.string.annotation_clear), color = Color(0xFFEF5350))
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showClearConfirm = false }) {
+                        Text(stringResource(R.string.annotation_cancel))
+                    }
+                }
+            )
         }
 
         // Drawing canvas over video frame
@@ -229,7 +278,7 @@ fun AnnotationScreen(
                 }
         ) {
             // Video frame — loaded from the captured frame file
-            val frameBitmap = remember(framePath) {
+            val frameBitmap = remember(framePath, frameLoadRetryKey) {
                 framePath?.let { path ->
                     try {
                         android.graphics.BitmapFactory.decodeFile(path)
@@ -239,16 +288,37 @@ fun AnnotationScreen(
             if (frameBitmap != null) {
                 androidx.compose.foundation.Image(
                     bitmap = frameBitmap.asImageBitmap(),
-                    contentDescription = "Video frame",
+                    contentDescription = stringResource(R.string.annotation_video_frame_cd),
                     contentScale = ContentScale.Fit,
                     modifier = Modifier.fillMaxSize()
                 )
-            } else {
+            } else if (framePath == null) {
+                // EMPTY — no frame captured yet
                 Box(
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center
                 ) {
-                    Text("Pause replay and tap Annotate to capture a frame", color = Color(0xFF444444), fontSize = 14.sp)
+                    Text(stringResource(R.string.annotation_empty_hint), color = Color(0xFF444444), fontSize = 14.sp)
+                }
+            } else {
+                // ERROR — a frame path exists but decoding it failed
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            stringResource(R.string.annotation_frame_load_failed),
+                            color = Color(0xFFEF9A9A),
+                            fontSize = 14.sp,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                            modifier = Modifier.padding(horizontal = 24.dp)
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        TextButton(onClick = { frameLoadRetryKey++ }) {
+                            Text(stringResource(R.string.annotation_retry))
+                        }
+                    }
                 }
             }
 
@@ -283,6 +353,12 @@ fun AnnotationScreen(
                 DrawTool.ARROW to Icons.Filled.ArrowForward,
                 DrawTool.CIRCLE to Icons.Filled.RadioButtonUnchecked
             ).forEach { (tool, icon) ->
+                val toolContentDescription = when (tool) {
+                    DrawTool.FREEHAND -> stringResource(R.string.annotation_cd_tool_freehand)
+                    DrawTool.LINE -> stringResource(R.string.annotation_cd_tool_line)
+                    DrawTool.ARROW -> stringResource(R.string.annotation_cd_tool_arrow)
+                    DrawTool.CIRCLE -> stringResource(R.string.annotation_cd_tool_circle)
+                }
                 Surface(
                     onClick = { selectedTool = tool },
                     shape = RoundedCornerShape(8.dp),
@@ -290,7 +366,7 @@ fun AnnotationScreen(
                     modifier = Modifier.size(48.dp)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
-                        Icon(icon, tool.name, tint = if (selectedTool == tool) Color.Black else Color.White, modifier = Modifier.size(24.dp))
+                        Icon(icon, contentDescription = toolContentDescription, tint = if (selectedTool == tool) Color.Black else Color.White, modifier = Modifier.size(24.dp))
                     }
                 }
             }
@@ -298,12 +374,21 @@ fun AnnotationScreen(
             Spacer(modifier = Modifier.width(8.dp))
 
             // Color picks — high-vis colors for snow
+            val selectedColorDescription = stringResource(R.string.annotation_cd_color_selected)
             listOf(Color.Red, Color.Yellow, Color(0xFF4FC3F7), Color.Green).forEach { color ->
                 Surface(
                     onClick = { selectedColor = color },
                     shape = CircleShape,
                     color = color,
-                    modifier = Modifier.size(36.dp),
+                    modifier = Modifier
+                        .size(36.dp)
+                        .then(
+                            if (selectedColor == color) {
+                                Modifier.semantics {
+                                    contentDescription = selectedColorDescription
+                                }
+                            } else Modifier
+                        ),
                     shadowElevation = if (selectedColor == color) 4.dp else 0.dp
                 ) {
                     if (selectedColor == color) {
@@ -356,13 +441,13 @@ fun AnnotationScreen(
                 ) {
                     Icon(
                         if (isRecordingVoice) Icons.Filled.MicOff else Icons.Filled.Mic,
-                        "Voice-over",
+                        contentDescription = null,
                         tint = Color.White,
                         modifier = Modifier.size(24.dp)
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        if (isRecordingVoice) "Stop Voice-Over" else "Record Voice-Over",
+                        if (isRecordingVoice) stringResource(R.string.annotation_stop_voice_over) else stringResource(R.string.annotation_record_voice_over),
                         color = Color.White,
                         fontSize = 14.sp
                     )

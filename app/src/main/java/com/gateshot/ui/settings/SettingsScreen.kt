@@ -28,9 +28,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.gateshot.R
 import com.gateshot.ui.MainViewModel
 
 @Composable
@@ -46,7 +48,7 @@ fun SettingsScreen(
     ) {
         // Header
         Text(
-            text = "Settings",
+            text = stringResource(R.string.settings_title),
             color = Color.White,
             fontSize = 24.sp,
             fontWeight = FontWeight.Bold,
@@ -54,21 +56,21 @@ fun SettingsScreen(
         )
 
         // --- Export ---
-        SettingsSection("Export & Sharing") {
+        SettingsSection(stringResource(R.string.settings_section_export)) {
             var watermarkEnabled by remember { mutableStateOf(
                 viewModel.loadSettingBool("export", "watermark_enabled", false)
             ) }
 
             SettingsToggle(
-                title = "Watermark on Social shares",
-                subtitle = "Adds \"GateShot\" watermark to exported videos and frames",
+                title = stringResource(R.string.settings_watermark_title),
+                subtitle = stringResource(R.string.settings_watermark_subtitle),
                 checked = watermarkEnabled,
                 onCheckedChange = { watermarkEnabled = it; viewModel.saveSetting("export", "watermark_enabled", it) }
             )
         }
 
         // --- Storage ---
-        SettingsSection("Storage") {
+        SettingsSection(stringResource(R.string.settings_section_storage)) {
             val uiState by viewModel.uiState.collectAsState()
             val context = LocalContext.current
             val videoDir = remember {
@@ -87,31 +89,31 @@ fun SettingsScreen(
             }
 
             Text(
-                text = "Free space: ${"%.1f".format(uiState.storageRemainingGb)} GB",
+                text = stringResource(R.string.settings_free_space, "%.1f".format(uiState.storageRemainingGb)),
                 color = Color.White,
                 fontSize = 15.sp,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
             )
             Text(
-                text = "Videos: $videoCount files (${videoSizeMb} MB)",
+                text = stringResource(R.string.settings_videos_count, videoCount, videoSizeMb.toInt()),
                 color = Color.Gray,
                 fontSize = 13.sp,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp)
             )
             Text(
-                text = "Annotated frames: $frameCount files (${frameSizeMb} MB)",
+                text = stringResource(R.string.settings_frames_count, frameCount, frameSizeMb.toInt()),
                 color = Color.Gray,
                 fontSize = 13.sp,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp)
             )
             Text(
-                text = "Total: ${videoSizeMb + frameSizeMb} MB used by GateShot",
+                text = stringResource(R.string.settings_total_used, (videoSizeMb + frameSizeMb).toInt()),
                 color = Color.Gray,
                 fontSize = 13.sp,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp)
             )
             Text(
-                text = "Imported videos are copied into GateShot's storage; delete clips from the Library to free space.",
+                text = stringResource(R.string.settings_storage_hint),
                 color = Color(0xFF666666),
                 fontSize = 11.sp,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
@@ -119,21 +121,21 @@ fun SettingsScreen(
         }
 
         // --- About ---
-        SettingsSection("About") {
+        SettingsSection(stringResource(R.string.settings_section_about)) {
             Text(
-                text = "GateShot v0.1.0",
+                text = stringResource(R.string.settings_about_version),
                 color = Color.White,
                 fontSize = 14.sp,
                 modifier = Modifier.padding(horizontal = 16.dp)
             )
             Text(
-                text = "Ski Racing Video Analysis",
+                text = stringResource(R.string.settings_about_tagline),
                 color = Color.Gray,
                 fontSize = 13.sp,
                 modifier = Modifier.padding(horizontal = 16.dp)
             )
             Text(
-                text = "Record with your phone's camera app, analyze in GateShot",
+                text = stringResource(R.string.settings_about_body),
                 color = Color.Gray,
                 fontSize = 13.sp,
                 modifier = Modifier.padding(horizontal = 16.dp)

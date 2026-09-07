@@ -2,6 +2,7 @@ package com.gateshot.ui
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.gateshot.R
 import com.gateshot.core.api.EndpointRegistry
 import com.gateshot.core.config.ConfigStore
 import com.gateshot.core.event.AppEvent
@@ -31,6 +32,9 @@ data class MainUiState(
     val storageRemainingGb: Float = 400f,
     val moduleStatuses: Map<String, String> = emptyMap()
 )
+
+/** A one-shot, user-visible message (error or info) surfaced via a Snackbar. */
+data class UiMessage(val text: String, val isError: Boolean = true)
 
 /**
  * Scratch state for the Replay screen that must survive tab switches. Replay's
@@ -117,6 +121,10 @@ class MainViewModel @Inject constructor(
     private val _galleryRefresh = MutableStateFlow(0)
     val galleryRefresh: StateFlow<Int> = _galleryRefresh.asStateFlow()
 
+    /** App-wide user-visible error/message channel (surfaced as a Snackbar). */
+    private val _uiMessages = MutableSharedFlow<UiMessage>(extraBufferCapacity = 4)
+    val uiMessages: SharedFlow<UiMessage> = _uiMessages.asSharedFlow()
+
     init {
         viewModelScope.launch {
             modeManager.currentMode.collect { mode ->
@@ -162,6 +170,9 @@ class MainViewModel @Inject constructor(
                 if (imported.isNotEmpty()) {
                     _galleryRefresh.update { it + 1 }
                 }
+            } catch (e: Exception) {
+                android.util.Log.e("MainViewModel", "importVideos failed", e)
+                _uiMessages.emit(UiMessage(appContext.getString(R.string.error_import_failed)))
             } finally {
                 _isImporting.value = false
             }
@@ -187,6 +198,9 @@ class MainViewModel @Inject constructor(
                     _selectedVideoPath.value = file.absolutePath
                     _openInReplay.emit(Unit)
                 }
+            } catch (e: Exception) {
+                android.util.Log.e("MainViewModel", "onOpenExternalVideo failed", e)
+                _uiMessages.emit(UiMessage(appContext.getString(R.string.error_import_failed)))
             } finally {
                 _isImporting.value = false
             }
@@ -211,7 +225,10 @@ class MainViewModel @Inject constructor(
                     "coach/timing/split/record",
                     com.gateshot.coaching.timing.RecordSplitRequest(videoPositionMs = positionMs)
                 )
-            } catch (_: Exception) { }
+            } catch (e: Exception) {
+                android.util.Log.e("MainViewModel", "onRecordSplit failed", e)
+                _uiMessages.emit(UiMessage(appContext.getString(R.string.error_record_split_failed)))
+            }
         }
     }
 
@@ -225,7 +242,10 @@ class MainViewModel @Inject constructor(
                         videoPositionMs = annotationPositionMs
                     )
                 )
-            } catch (_: Exception) { }
+            } catch (e: Exception) {
+                android.util.Log.e("MainViewModel", "startVoiceRecording failed", e)
+                _uiMessages.emit(UiMessage(appContext.getString(R.string.error_voice_start_failed)))
+            }
         }
     }
 
@@ -235,7 +255,10 @@ class MainViewModel @Inject constructor(
                 endpointRegistry.call<Unit, com.gateshot.coaching.annotation.VoiceAnnotation>(
                     "coach/annotate/voiceover/stop", Unit
                 )
-            } catch (_: Exception) { }
+            } catch (e: Exception) {
+                android.util.Log.e("MainViewModel", "stopVoiceRecording failed", e)
+                _uiMessages.emit(UiMessage(appContext.getString(R.string.error_voice_stop_failed)))
+            }
         }
     }
 
@@ -289,7 +312,8 @@ class MainViewModel @Inject constructor(
                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
                     onSaved(response.dataOrNull())
                 }
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                android.util.Log.w("MainViewModel", "onSaveAnnotatedFrame failed", e)
                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) { onSaved(null) }
             }
         }
@@ -299,14 +323,20 @@ class MainViewModel @Inject constructor(
         return try {
             val prefs = appContext.getSharedPreferences("gateshot_config", android.content.Context.MODE_PRIVATE)
             prefs.getFloat("${section}_${key}", default)
-        } catch (_: Exception) { default }
+        } catch (e: Exception) {
+            android.util.Log.w("MainViewModel", "loadSettingFloat failed", e)
+            default
+        }
     }
 
     fun loadSettingBool(section: String, key: String, default: Boolean): Boolean {
         return try {
             val prefs = appContext.getSharedPreferences("gateshot_config", android.content.Context.MODE_PRIVATE)
             prefs.getBoolean("${section}_${key}", default)
-        } catch (_: Exception) { default }
+        } catch (e: Exception) {
+            android.util.Log.w("MainViewModel", "loadSettingBool failed", e)
+            default
+        }
     }
 
     fun saveSetting(section: String, key: String, value: Any) {
@@ -549,6 +579,15 @@ class MainViewModel @Inject constructor(
         }
     }
 
+    fun onDeleteAthlete(athleteId: Long, onDone: () -> Unit = {}) {
+        viewModelScope.launch {
+            endpointRegistry.call<Long, Boolean>("coach/athlete/delete", athleteId)
+            // Fires only after the delete completed, so a follow-up list
+            // refresh actually sees the row gone (mirrors onCreateAthlete).
+            onDone()
+        }
+    }
+
     fun getAthletes(onResult: (List<Map<String, String>>) -> Unit) {
         viewModelScope.launch {
             try {
@@ -565,7 +604,11 @@ class MainViewModel @Inject constructor(
                     )
                 } ?: emptyList()
                 onResult(athletes)
-            } catch (_: Exception) { }
+            } catch (e: Exception) {
+                android.util.Log.e("MainViewModel", "getAthletes failed", e)
+                _uiMessages.emit(UiMessage(appContext.getString(R.string.error_load_athletes_failed)))
+                onResult(emptyList())
+            }
         }
     }
 
@@ -615,6 +658,7 @@ class MainViewModel @Inject constructor(
                 }
             } catch (e: Exception) {
                 android.util.Log.e("GateShot", "Pose estimation failed: ${e.message}")
+                _uiMessages.emit(UiMessage(appContext.getString(R.string.error_pose_failed)))
             }
         }
     }
@@ -703,7 +747,10 @@ class MainViewModel @Inject constructor(
                         } ?: emptyList()
                 }
                 onResult(errors)
-            } catch (_: Exception) { onResult(emptyList()) }
+            } catch (e: Exception) {
+                android.util.Log.w("MainViewModel", "getErrorPatterns failed", e)
+                onResult(emptyList())
+            }
         }
     }
 
@@ -820,7 +867,10 @@ class MainViewModel @Inject constructor(
                         } ?: emptyList()
                 }.sortedByDescending { it["date"] }
                 onResult(entries)
-            } catch (_: Exception) { onResult(emptyList()) }
+            } catch (e: Exception) {
+                android.util.Log.w("MainViewModel", "getProgressTimeline failed", e)
+                onResult(emptyList())
+            }
         }
     }
 

@@ -12,7 +12,9 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -27,6 +29,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Timer
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
@@ -34,6 +37,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -44,9 +48,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.gateshot.R
 import com.gateshot.ui.MainViewModel
 
 data class GalleryItem(
@@ -110,27 +116,41 @@ fun GalleryScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "Library",
+                    text = stringResource(R.string.gallery_title),
                     color = Color.White,
                     fontSize = 20.sp,
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    text = "${items.size} videos",
+                    text = stringResource(R.string.gallery_video_count, items.size),
                     color = Color.Gray,
                     fontSize = 14.sp
                 )
             }
 
-            if (items.isEmpty() && !isImporting) {
+            if (isImporting && items.isEmpty()) {
                 Column(
                     modifier = Modifier.fillMaxSize().padding(32.dp),
                     verticalArrangement = Arrangement.Center,
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Text("No videos yet", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                    CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
                     Text(
-                        "Film runs with your phone's camera app, then import them here.",
+                        stringResource(R.string.gallery_importing),
+                        color = Color.White,
+                        fontSize = 14.sp,
+                        modifier = Modifier.padding(top = 12.dp)
+                    )
+                }
+            } else if (items.isEmpty()) {
+                Column(
+                    modifier = Modifier.fillMaxSize().padding(32.dp),
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(stringResource(R.string.gallery_empty_title), color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                    Text(
+                        stringResource(R.string.gallery_empty_body),
                         color = Color.Gray,
                         fontSize = 14.sp,
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center,
@@ -175,10 +195,12 @@ fun GalleryScreen(
                     color = Color.Black,
                     modifier = Modifier.size(20.dp)
                 )
-                Text("  Importing…", fontWeight = FontWeight.Bold)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(stringResource(R.string.gallery_importing), fontWeight = FontWeight.Bold)
             } else {
                 Icon(Icons.Filled.Add, contentDescription = null)
-                Text(" Import videos", fontWeight = FontWeight.Bold)
+                Spacer(modifier = Modifier.width(4.dp))
+                Text(stringResource(R.string.gallery_import_button), fontWeight = FontWeight.Bold)
             }
         }
     }
@@ -192,6 +214,7 @@ fun GalleryThumbnail(
     modifier: Modifier = Modifier
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
+    var showDeleteConfirm by remember { mutableStateOf(false) }
 
     Box(
         modifier = modifier
@@ -223,7 +246,7 @@ fun GalleryThumbnail(
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Icon(
                 Icons.Filled.PlayArrow,
-                contentDescription = "Play",
+                contentDescription = stringResource(R.string.gallery_cd_play),
                 tint = Color.White.copy(alpha = 0.8f),
                 modifier = Modifier.size(40.dp)
             )
@@ -242,7 +265,7 @@ fun GalleryThumbnail(
                     horizontalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
                     Icon(Icons.Filled.Timer, null, tint = Color.Black, modifier = Modifier.size(10.dp))
-                    Text("Gates", color = Color.Black, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                    Text(stringResource(R.string.gallery_gates_badge), color = Color.Black, fontSize = 9.sp, fontWeight = FontWeight.Bold)
                 }
             }
         }
@@ -274,19 +297,34 @@ fun GalleryThumbnail(
                     }
                 }
             }, modifier = Modifier.size(48.dp)) {
-                Icon(Icons.Filled.Share, contentDescription = "Share", tint = Color.White, modifier = Modifier.size(20.dp))
+                Icon(Icons.Filled.Share, contentDescription = stringResource(R.string.gallery_cd_share), tint = Color.White, modifier = Modifier.size(20.dp))
             }
-            IconButton(onClick = {
-                if (item.filePath.isNotEmpty()) {
-                    java.io.File(item.filePath).delete()
-                    // Clean up analysis sidecars
-                    val base = java.io.File(item.filePath)
-                    java.io.File(base.parent, base.nameWithoutExtension + ".gates").delete()
-                    onDelete()
-                }
-            }, modifier = Modifier.size(48.dp)) {
-                Icon(Icons.Filled.Delete, contentDescription = "Delete", tint = Color(0xFFEF5350), modifier = Modifier.size(20.dp))
+            IconButton(onClick = { showDeleteConfirm = true }, modifier = Modifier.size(48.dp)) {
+                Icon(Icons.Filled.Delete, contentDescription = stringResource(R.string.gallery_cd_delete), tint = Color(0xFFEF5350), modifier = Modifier.size(20.dp))
             }
         }
+    }
+
+    if (showDeleteConfirm) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirm = false },
+            title = { Text(stringResource(R.string.gallery_confirm_delete_title)) },
+            text = { Text(stringResource(R.string.gallery_confirm_delete_text)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    showDeleteConfirm = false
+                    if (item.filePath.isNotEmpty()) {
+                        java.io.File(item.filePath).delete()
+                        // Clean up analysis sidecars
+                        val base = java.io.File(item.filePath)
+                        java.io.File(base.parent, base.nameWithoutExtension + ".gates").delete()
+                        onDelete()
+                    }
+                }) { Text(stringResource(R.string.gallery_delete), color = Color(0xFFEF5350)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteConfirm = false }) { Text(stringResource(R.string.gallery_cancel)) }
+            }
+        )
     }
 }
