@@ -115,6 +115,24 @@ class TechniqueMathTest {
     }
 
     @Test
+    fun `pixel-space angle is undistorted on a non-square frame while normalized-space is not`() {
+        val frameW = 1080f
+        val frameH = 1920f
+        // A true 90 degree knee bend in pixel space (perpendicular thigh/shin, not axis-aligned
+        // so anisotropic normalization actually distorts it).
+        val hipPx = Point(400f, 700f)
+        val kneePx = Point(600f, 900f)
+        val anklePx = Point(800f, 700f)
+
+        val pixelAngle = angleAt(hipPx, kneePx, anklePx)
+        assertTrue(abs(pixelAngle - 90f) < 1f, "pixel-space angle should be ~90, got $pixelAngle")
+
+        fun norm(p: Point) = Point(p.x / frameW, p.y / frameH)
+        val normalizedAngle = angleAt(norm(hipPx), norm(kneePx), norm(anklePx))
+        assertTrue(abs(normalizedAngle - 90f) > 5f, "normalized-space angle should be distorted away from 90, got $normalizedAngle")
+    }
+
+    @Test
     fun `plausible person requires hip knee-or-ankle and reasonable height`() {
         assertTrue(isPlausiblePerson(hipDetected = true, kneeOrAnkleDetected = true, heightFraction = 0.5f))
         assertFalse(isPlausiblePerson(hipDetected = false, kneeOrAnkleDetected = true, heightFraction = 0.5f))

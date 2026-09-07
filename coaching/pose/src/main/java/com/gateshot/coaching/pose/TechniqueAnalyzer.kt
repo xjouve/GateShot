@@ -511,7 +511,12 @@ class TechniqueAnalyzer @Inject constructor(
 
     private fun buildSample(tMs: Long, r: TrackResult, dirSign: Float): PoseSample {
         val kp = r.skeleton.keypoints.associateBy { it.id }
-        fun pt(id: Int): Point? = kp[id]?.takeIf { it.confidence >= MIN_KEYPOINT_CONFIDENCE }?.let { Point(it.x, it.y) }
+        // Keypoints are normalized [0,1] to the full frame; angle/distance math must run in
+        // PIXEL space (x*frameW, y*frameH) — on a non-square (9:16 or 16:9) frame, normalized
+        // coordinates are anisotropically scaled and distort angles (a 90° knee can read as
+        // 60° or 120°).
+        fun pt(id: Int): Point? = kp[id]?.takeIf { it.confidence >= MIN_KEYPOINT_CONFIDENCE }
+            ?.let { Point(it.x * r.frameW, it.y * r.frameH) }
 
         val lHip = pt(PoseEstimationModule.LEFT_HIP); val rHip = pt(PoseEstimationModule.RIGHT_HIP)
         val lKnee = pt(PoseEstimationModule.LEFT_KNEE); val rKnee = pt(PoseEstimationModule.RIGHT_KNEE)
@@ -544,9 +549,10 @@ class TechniqueAnalyzer @Inject constructor(
         } else 0f
 
         val handsForward = if ((lWrist != null || rWrist != null) && lHip != null && rHip != null && r.personHeightPx > 0f) {
+            // lWrist/rWrist/lHip/rHip are already pixel-space here, so no extra frameW scaling needed.
             val meanWristX = listOfNotNull(lWrist?.x, rWrist?.x).average().toFloat()
             val hipCenterX = (lHip.x + rHip.x) / 2f
-            val diffPx = (meanWristX - hipCenterX) * r.frameW
+            val diffPx = meanWristX - hipCenterX
             (diffPx / r.personHeightPx) * dirSign
         } else 0f
 
