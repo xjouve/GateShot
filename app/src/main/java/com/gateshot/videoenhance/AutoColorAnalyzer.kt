@@ -3,7 +3,9 @@ package com.gateshot.videoenhance
 import android.graphics.Bitmap
 import android.graphics.ColorMatrix
 import android.media.MediaMetadataRetriever
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 
 /**
@@ -27,17 +29,26 @@ class AutoColorAnalyzer {
             retriever.setDataSource(videoPath)
             val durationMs = retriever
                 .extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
-                ?.toLongOrNull() ?: return@withContext null
+                ?.toLongOrNull()
+            if (durationMs == null) {
+                android.util.Log.w(TAG, "Cannot analyze color for $videoPath: duration metadata missing/unparseable")
+                return@withContext null
+            }
 
             var sumR = 0.0; var sumG = 0.0; var sumB = 0.0
             val lumas = ArrayList<Float>(SAMPLE_FRAMES * SAMPLE_SIZE * SAMPLE_SIZE)
 
             var sampled = 0
             for (i in 0 until SAMPLE_FRAMES) {
+                coroutineContext.ensureActive()
                 val tUs = durationMs * 1000L * (2 * i + 1) / (2 * SAMPLE_FRAMES)
                 val frame = retriever.getFrameAtTime(
                     tUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC
-                ) ?: continue
+                )
+                if (frame == null) {
+                    android.util.Log.w(TAG, "Skipping unreadable frame $i/$SAMPLE_FRAMES at ${tUs}us in $videoPath")
+                    continue
+                }
                 val scaled = Bitmap.createScaledBitmap(frame, SAMPLE_SIZE, SAMPLE_SIZE, true)
                 if (scaled !== frame) frame.recycle()
                 val pixels = IntArray(SAMPLE_SIZE * SAMPLE_SIZE)
@@ -52,7 +63,10 @@ class AutoColorAnalyzer {
                 }
                 sampled++
             }
-            if (sampled == 0 || lumas.isEmpty()) return@withContext null
+            if (sampled == 0 || lumas.isEmpty()) {
+                android.util.Log.w(TAG, "Cannot analyze color for $videoPath: no frames could be sampled")
+                return@withContext null
+            }
 
             val n = lumas.size.toDouble()
             val meanR = (sumR / n).toFloat()
@@ -84,16 +98,21 @@ class AutoColorAnalyzer {
                 0f, 0f, 0f, 1f, 0f
             )))
             matrix
+        } catch (e: CancellationException) {
+            android.util.Log.w(TAG, "Color analysis cancelled for $videoPath")
+            throw e
         } catch (e: Exception) {
             android.util.Log.e(TAG, "Color analysis failed: ${e.message}")
             null
         } finally {
-            try { retriever.release() } catch (_: Exception) { }
+            try { retriever.release() } catch (e: Exception) {
+                android.util.Log.w(TAG, "MediaMetadataRetriever.release() failed for $videoPath: ${e.message}")
+            }
         }
     }
 
     companion object {
-        private const val TAG = "AutoColor"
+        private const val TAG = "AutoColorAnalyzer"
         private const val SAMPLE_FRAMES = 5
         private const val SAMPLE_SIZE = 64
         private const val WB_MIN = 0.85f

@@ -51,7 +51,12 @@ class TimingFeatureModule @Inject constructor(
                     val splits = Json.decodeFromString<List<Split>>(file.readText())
                     splitsByRun[runId] = splits.toMutableList()
                 }
-            } catch (_: Exception) { }
+            } catch (e: Exception) {
+                // Startup load only; if it fails the run starts with no history
+                // instead of crashing, but the coach should be able to see why
+                // persisted splits didn't come back.
+                android.util.Log.w("TimingFeatureModule", "Failed to load persisted splits: ${e.message}")
+            }
         }
     }
 
@@ -105,21 +110,19 @@ class TimingFeatureModule @Inject constructor(
             val runId = activeRunId
                 ?: return ApiResponse.error(404, "No active timing run")
             val splits = splitsByRun.getOrPut(runId) { mutableListOf() }
-            val split = Split(
-                gateNumber = nextGateNumber++,
-                timestamp = request.videoPositionMs,
-                elapsedMs = if (splits.isEmpty()) 0L
-                    else request.videoPositionMs - splits.first().timestamp,
-                splitMs = if (splits.isEmpty()) 0L
-                    else request.videoPositionMs - splits.last().timestamp
-            )
+            val split = computeSplit(splits, nextGateNumber++, request.videoPositionMs)
             splits.add(split)
             eventBus.publish(AppEvent.SplitRecorded(split.gateNumber, split.timestamp))
-            // Persist to disk
+            // Persist to disk. Best-effort: the split is already recorded in
+            // memory and returned to the caller, so a disk failure here only
+            // risks losing history across app restarts — log it rather than
+            // failing a request that already succeeded.
             scope.launch(Dispatchers.IO) {
                 try {
                     File(splitsDir, "$runId.json").writeText(Json.encodeToString(splits.toList()))
-                } catch (_: Exception) { }
+                } catch (e: Exception) {
+                    android.util.Log.w("TimingFeatureModule", "Failed to persist splits for run $runId: ${e.message}")
+                }
             }
             return ApiResponse.success(split)
         }
@@ -256,6 +259,24 @@ data class Split(
     val elapsedMs: Long,    // Time since first split (start)
     val splitMs: Long       // Time since previous split
 )
+
+/**
+ * Compute the next split from a video-position timestamp.
+ *
+ * Splits are marked while reviewing a clip, so the reference clock is the
+ * video position, not wall time. Pulled out of [TimingFeatureModule.RecordSplit]
+ * so the arithmetic can be unit-tested without an Android Context/EventBus.
+ */
+internal fun computeSplit(existing: List<Split>, gateNumber: Int, videoPositionMs: Long): Split {
+    return Split(
+        gateNumber = gateNumber,
+        timestamp = videoPositionMs,
+        elapsedMs = if (existing.isEmpty()) 0L
+            else videoPositionMs - existing.first().timestamp,
+        splitMs = if (existing.isEmpty()) 0L
+            else videoPositionMs - existing.last().timestamp
+    )
+}
 
 data class RecordSplitRequest(val videoPositionMs: Long)
 data class DeleteSplitRequest(val runId: String, val gateNumber: Int)

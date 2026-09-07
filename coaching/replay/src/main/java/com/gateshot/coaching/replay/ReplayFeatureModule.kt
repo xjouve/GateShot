@@ -332,7 +332,7 @@ class ReplayFeatureModule @Inject constructor(
         scope.launch(Dispatchers.IO) {
             try {
                 val gatesFile = gatesFileFor(videoUri) ?: return@launch
-                gatesFile.writeText(timestamps.joinToString("\n"))
+                gatesFile.writeText(formatGateTimestamps(timestamps))
                 android.util.Log.i("Replay", "Saved ${timestamps.size} gate timestamps to ${gatesFile.name}")
             } catch (e: Exception) {
                 android.util.Log.e("Replay", "Failed to save gate timestamps: ${e.message}")
@@ -359,7 +359,7 @@ class ReplayFeatureModule @Inject constructor(
                 val updated = (loadGateTimestamps(request.videoPath) + request.positionMs)
                     .distinct()
                     .sorted()
-                gatesFile.writeText(updated.joinToString("\n"))
+                gatesFile.writeText(formatGateTimestamps(updated))
                 ApiResponse.success(updated)
             }
         }
@@ -389,7 +389,7 @@ class ReplayFeatureModule @Inject constructor(
                 val updated = loadGateTimestamps(request.videoPath)
                     .filter { it != request.positionMs }
                 if (updated.isEmpty()) gatesFile.delete()
-                else gatesFile.writeText(updated.joinToString("\n"))
+                else gatesFile.writeText(formatGateTimestamps(updated))
                 ApiResponse.success(updated)
             }
         }
@@ -418,10 +418,11 @@ class ReplayFeatureModule @Inject constructor(
             val videoFile = File(android.net.Uri.parse(videoUri).path ?: return emptyList())
             val gatesFile = File(videoFile.parent, videoFile.nameWithoutExtension + ".gates")
             if (!gatesFile.exists()) return emptyList()
-            gatesFile.readLines()
-                .filter { it.isNotBlank() }
-                .mapNotNull { it.trim().toLongOrNull() }
-        } catch (_: Exception) { emptyList() }
+            parseGateTimestamps(gatesFile.readLines())
+        } catch (e: Exception) {
+            android.util.Log.w("ReplayFeatureModule", "Failed to load gate timestamps: ${e.message}")
+            emptyList()
+        }
     }
 
     // --- Persistence ---

@@ -56,10 +56,15 @@ class VideoImportManager @Inject constructor(
         val resolver = context.contentResolver
         var displayName: String? = null
         var dateTakenMs: Long? = null
+        var sourceSizeBytes: Long = 0L
 
         resolver.query(
             uri,
-            arrayOf(OpenableColumns.DISPLAY_NAME, MediaStore.MediaColumns.DATE_TAKEN),
+            arrayOf(
+                OpenableColumns.DISPLAY_NAME,
+                MediaStore.MediaColumns.DATE_TAKEN,
+                MediaStore.MediaColumns.SIZE
+            ),
             null, null, null
         )?.use { cursor ->
             if (cursor.moveToFirst()) {
@@ -67,15 +72,28 @@ class VideoImportManager @Inject constructor(
                 if (nameIdx >= 0) displayName = cursor.getString(nameIdx)
                 val dateIdx = cursor.getColumnIndex(MediaStore.MediaColumns.DATE_TAKEN)
                 if (dateIdx >= 0 && !cursor.isNull(dateIdx)) dateTakenMs = cursor.getLong(dateIdx)
+                val sizeIdx = cursor.getColumnIndex(MediaStore.MediaColumns.SIZE)
+                if (sizeIdx >= 0 && !cursor.isNull(sizeIdx)) sourceSizeBytes = cursor.getLong(sizeIdx)
             }
         }
 
         val dir = File(context.getExternalFilesDir(null), "GateShot/videos").apply { mkdirs() }
         val target = dedupe(dir, sanitize(displayName))
 
-        resolver.openInputStream(uri)?.use { input ->
-            target.outputStream().use { output -> input.copyTo(output) }
-        } ?: return null
+        if (!hasEnoughSpace(dir, sourceSizeBytes)) {
+            throw java.io.IOException("Not enough free space to import $uri")
+        }
+
+        val input = resolver.openInputStream(uri) ?: return null
+        try {
+            input.use { stream ->
+                target.outputStream().use { output -> stream.copyTo(output) }
+            }
+        } catch (e: Exception) {
+            // A partial file must never be left behind for a failed/cancelled copy.
+            target.delete()
+            throw e
+        }
 
         if (target.length() == 0L) {
             target.delete()
@@ -138,5 +156,24 @@ class VideoImportManager @Inject constructor(
 
     companion object {
         private const val TAG = "VideoImport"
+
+        /** Conservative safety margin left free after the copy, in bytes. */
+        const val MIN_FREE_BYTES: Long = 50L * 1024 * 1024 // 50MB
     }
+}
+
+/**
+ * True when [destDir]'s filesystem has room for [requiredBytes] plus a
+ * [minFreeBytes] safety margin. [requiredBytes] may be unknown (<= 0, e.g.
+ * the content resolver didn't report `SIZE`) — in that case only the margin
+ * is required. Extracted as a standalone function so it's testable without
+ * a real Android `File`/`ContentResolver` stack.
+ */
+internal fun hasEnoughSpace(
+    destDir: File,
+    requiredBytes: Long,
+    minFreeBytes: Long = VideoImportManager.MIN_FREE_BYTES
+): Boolean {
+    val needed = if (requiredBytes > 0) requiredBytes + minFreeBytes else minFreeBytes
+    return destDir.usableSpace >= needed
 }

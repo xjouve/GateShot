@@ -21,6 +21,7 @@ import java.nio.MappedByteBuffer
 import java.nio.channels.FileChannel
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.ensureActive
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.atan2
@@ -150,13 +151,18 @@ class PoseEstimationModule @Inject constructor(
                 )
                 options.addDelegate(nnApiDelegate)
             } catch (_: Exception) {
-                // NNAPI not available — try GPU
+                // NNAPI not available on this device — normal, try GPU next.
                 try {
                     val gpuDelegate = GpuDelegate()
                     options.addDelegate(gpuDelegate)
                 } catch (_: Exception) {
-                    // Fall back to CPU with 4 threads
+                    // Fall back to CPU with 4 threads. Both hardware delegates
+                    // failed, which is a real perf regression worth surfacing.
                     options.setNumThreads(4)
+                    android.util.Log.w(
+                        "PoseEstimationModule",
+                        "NNAPI and GPU delegates unavailable; falling back to CPU inference"
+                    )
                 }
             }
 
@@ -165,6 +171,7 @@ class PoseEstimationModule @Inject constructor(
             isModelLoaded = true
         } catch (e: Exception) {
             isModelLoaded = false
+            android.util.Log.e("PoseEstimationModule", "Failed to load pose model: ${e.message}", e)
         }
     }
 
@@ -188,7 +195,13 @@ class PoseEstimationModule @Inject constructor(
                     }
                     return outFile
                 }
-            } catch (_: Exception) { }
+            } catch (e: Exception) {
+                android.util.Log.w(
+                    "PoseEstimationModule",
+                    "Failed to copy asset model candidate '$name' to filesDir; trying next candidate",
+                    e
+                )
+            }
         }
         return null
     }
@@ -392,6 +405,7 @@ class PoseEstimationModule @Inject constructor(
 
         override suspend fun handle(request: PoseBatchRequest): ApiResponse<List<PoseResult>> {
             val results = request.frames.mapIndexed { index, framePixels ->
+                kotlin.coroutines.coroutineContext.ensureActive()
                 val skeleton = estimatePoseFromFrame(
                     request.frameWidth, request.frameHeight, framePixels
                 )

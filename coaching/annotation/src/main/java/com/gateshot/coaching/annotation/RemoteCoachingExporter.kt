@@ -104,7 +104,10 @@ class RemoteCoachingExporter(private val context: Context) {
             val metadataEntry = zipFile.getEntry("metadata.json") ?: return null
             val metadataJson = zipFile.getInputStream(metadataEntry).bufferedReader().readText()
             json.decodeFromString<CoachingPackage>(metadataJson)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            // Returned null already signals failure to the caller; log so a
+            // corrupt/incompatible .gateshot package is diagnosable.
+            android.util.Log.w("RemoteCoachingExporter", "Failed to import package: ${e.message}")
             null
         }
     }

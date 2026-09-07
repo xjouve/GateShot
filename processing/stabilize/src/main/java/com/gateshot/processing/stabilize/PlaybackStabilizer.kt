@@ -79,10 +79,18 @@ class PlaybackStabilizer {
             retriever.setDataSource(videoPath)
             val frameCount = retriever
                 .extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_FRAME_COUNT)
-                ?.toIntOrNull() ?: return@withContext null
+                ?.toIntOrNull()
+            if (frameCount == null) {
+                android.util.Log.w(TAG, "Cannot stabilize $videoPath: frame count metadata missing/unparseable")
+                return@withContext null
+            }
             val durationMs = retriever
                 .extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
-                ?.toFloatOrNull() ?: return@withContext null
+                ?.toFloatOrNull()
+            if (durationMs == null) {
+                android.util.Log.w(TAG, "Cannot stabilize $videoPath: duration metadata missing/unparseable")
+                return@withContext null
+            }
             val rotationDeg = retriever
                 .extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)
                 ?.toIntOrNull() ?: 0
@@ -147,11 +155,16 @@ class PlaybackStabilizer {
                 rotationDeg = rotationDeg,
                 jitterReduction = reduction
             )
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            android.util.Log.w(TAG, "Stabilization analysis cancelled for $videoPath")
+            throw e
         } catch (e: Exception) {
             android.util.Log.e(TAG, "Stabilization analysis failed: ${e.message}")
             null
         } finally {
-            try { retriever.release() } catch (_: Exception) { }
+            try { retriever.release() } catch (e: Exception) {
+                android.util.Log.w(TAG, "MediaMetadataRetriever.release() failed for $videoPath: ${e.message}")
+            }
         }
     }
 

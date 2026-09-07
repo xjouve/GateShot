@@ -7,10 +7,13 @@ import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMetadataRetriever
 import android.media.MediaMuxer
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import java.nio.ByteBuffer
+import kotlin.coroutines.coroutineContext
 import kotlin.math.abs
 
 /**
@@ -49,16 +52,35 @@ class EnhancedExporter {
     ): Result? = withContext(Dispatchers.Default) {
         try {
             val frames = transcode(srcPath, outPath, track, colorMatrix, onProgress)
-            if (frames <= 0) return@withContext null
+            if (frames <= 0) {
+                android.util.Log.w(TAG, "Export produced no frames, discarding output: $outPath")
+                deletePartialOutput(outPath)
+                return@withContext null
+            }
             // Self-check only makes sense when we actually warped.
             val jitterChange = if (track != null) {
                 measureJitterChange(srcPath, outPath, track.cropFactor)
             } else null
             Result(outPath, frames, jitterChange)
+        } catch (e: CancellationException) {
+            android.util.Log.w(TAG, "Export cancelled, discarding partial output: $outPath")
+            deletePartialOutput(outPath)
+            throw e
         } catch (e: Exception) {
             android.util.Log.e(TAG, "Export failed: ${e.message}")
-            try { java.io.File(outPath).delete() } catch (_: Exception) { }
+            deletePartialOutput(outPath)
             null
+        }
+    }
+
+    private fun deletePartialOutput(outPath: String) {
+        try {
+            val file = java.io.File(outPath)
+            if (file.exists() && !file.delete()) {
+                android.util.Log.w(TAG, "Failed to delete partial/corrupt output file: $outPath")
+            }
+        } catch (e: Exception) {
+            android.util.Log.w(TAG, "Failed to delete partial/corrupt output file $outPath: ${e.message}")
         }
     }
 
@@ -189,9 +211,10 @@ class EnhancedExporter {
                         val ptsNs = info.presentationTimeUs * 1000
                         decoder.releaseOutputBuffer(outIdx, render)
                         if (render) {
-                            awaitFrame(frameAvailable) { frameReady }.also {
+                            awaitFrame(frameAvailable, { isActive }) { frameReady }.also {
                                 synchronized(frameAvailable) { frameReady = false }
                             }
+                            coroutineContext.ensureActive()
                             gl.updateTexImage()
                             var tx = 0f
                             var ty = 0f
@@ -215,26 +238,51 @@ class EnhancedExporter {
             }
             drainEncoder(true)
         } finally {
-            try { decoder.stop() } catch (_: Throwable) { }
-            try { decoder.release() } catch (_: Throwable) { }
-            try { encoder.stop() } catch (_: Throwable) { }
-            try { encoder.release() } catch (_: Throwable) { }
+            try { decoder.stop() } catch (e: Throwable) {
+                android.util.Log.w(TAG, "decoder.stop() failed: ${e.message}")
+            }
+            try { decoder.release() } catch (e: Throwable) {
+                android.util.Log.w(TAG, "decoder.release() failed: ${e.message}")
+            }
+            try { encoder.stop() } catch (e: Throwable) {
+                android.util.Log.w(TAG, "encoder.stop() failed: ${e.message}")
+            }
+            try { encoder.release() } catch (e: Throwable) {
+                android.util.Log.w(TAG, "encoder.release() failed: ${e.message}")
+            }
             gl.release()
             encoderInputSurface.release()
             extractor.release()
         }
 
-        // Audio passthrough into the same muxer.
-        if (audioTrack >= 0 && muxerStarted) {
-            copyAudio(srcPath, audioTrack, muxer)
+        try {
+            // Audio passthrough into the same muxer.
+            if (audioTrack >= 0 && muxerStarted) {
+                copyAudio(srcPath, audioTrack, muxer)
+            }
+            if (muxerStarted) {
+                try {
+                    muxer.stop()
+                } catch (e: Throwable) {
+                    // muxer.stop() failing means the written MP4 box tables
+                    // never got finalized: the output file is corrupt. Do NOT
+                    // treat this as a swallow-and-continue case — propagate so
+                    // the caller (export()) marks the export failed and
+                    // deletes the file instead of returning it as success.
+                    android.util.Log.w(TAG, "muxer.stop() failed - output file is corrupt: ${e.message}")
+                    throw IllegalStateException("muxer.stop() failed, output is likely corrupt", e)
+                }
+            }
+        } finally {
+            try { muxer.release() } catch (e: Throwable) {
+                android.util.Log.w(TAG, "muxer.release() failed: ${e.message}")
+            }
         }
-        try { muxer.stop() } catch (_: Throwable) { }
-        try { muxer.release() } catch (_: Throwable) { }
         onProgress(1f)
         frameIndex
     }
 
-    private fun copyAudio(srcPath: String, audioTrack: Int, muxer: MediaMuxer) {
+    private suspend fun copyAudio(srcPath: String, audioTrack: Int, muxer: MediaMuxer) {
         val ex = MediaExtractor().apply { setDataSource(srcPath) }
         try {
             ex.selectTrack(audioTrack)
@@ -245,6 +293,7 @@ class EnhancedExporter {
             val buffer = ByteBuffer.allocate(maxSize)
             val info = MediaCodec.BufferInfo()
             while (true) {
+                coroutineContext.ensureActive()
                 val sz = ex.readSampleData(buffer, 0)
                 if (sz < 0) break
                 info.offset = 0
@@ -255,10 +304,15 @@ class EnhancedExporter {
                 muxer.writeSampleData(muxTrack, buffer, info)
                 ex.advance()
             }
-        } catch (_: Throwable) {
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
             // Audio is best-effort; an enhanced clip without audio still beats none.
+            android.util.Log.w(TAG, "Audio passthrough failed, exporting video-only: ${e.message}")
         } finally {
-            ex.release()
+            try { ex.release() } catch (e: Throwable) {
+                android.util.Log.w(TAG, "audio MediaExtractor.release() failed: ${e.message}")
+            }
         }
     }
 
@@ -270,11 +324,8 @@ class EnhancedExporter {
     private fun measureJitterChange(srcPath: String, outPath: String, cropFactor: Float): Int? {
         return try {
             val src = measureJitter(srcPath)
-            // The output is zoomed by the crop, which magnifies identical
-            // physical motion by the same factor — normalize it out.
-            val out = measureJitter(outPath) / cropFactor
-            if (src <= 1e-3f) null
-            else (100f * (out - src) / src).toInt()
+            val out = measureJitter(outPath)
+            computeJitterChangePercent(src, out, cropFactor)
         } catch (e: Exception) {
             android.util.Log.w(TAG, "Jitter self-check failed: ${e.message}")
             null
@@ -311,14 +362,16 @@ class EnhancedExporter {
             }
             sum
         } finally {
-            try { retriever.release() } catch (_: Exception) { }
+            try { retriever.release() } catch (e: Exception) {
+                android.util.Log.w(TAG, "MediaMetadataRetriever.release() failed for $path: ${e.message}")
+            }
         }
     }
 
-    private inline fun awaitFrame(lock: Object, ready: () -> Boolean) {
+    private inline fun awaitFrame(lock: Object, isActive: () -> Boolean, ready: () -> Boolean) {
         synchronized(lock) {
             var spins = 0
-            while (!ready() && spins < 500) {
+            while (!ready() && spins < 500 && isActive()) {
                 lock.wait(10)
                 spins++
             }
@@ -344,5 +397,22 @@ class EnhancedExporter {
     companion object {
         private const val TAG = "EnhancedExporter"
         private const val CHECK_SIZE = 128
+
+        /**
+         * Pure math for the export self-check: the output is zoomed by the
+         * crop, which magnifies identical physical motion by the same
+         * factor, so that's normalized out before comparing to the source.
+         * Returns null when the source has ~no measurable jitter (percent
+         * change would be meaningless / divide-by-near-zero).
+         */
+        internal fun computeJitterChangePercent(
+            srcJitter: Float,
+            outJitterRaw: Float,
+            cropFactor: Float
+        ): Int? {
+            if (srcJitter <= 1e-3f) return null
+            val out = outJitterRaw / cropFactor
+            return (100f * (out - srcJitter) / srcJitter).toInt()
+        }
     }
 }

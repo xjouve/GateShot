@@ -58,7 +58,13 @@ class AnnotationFeatureModule @Inject constructor(
         try {
             mediaRecorder?.stop()
             mediaRecorder?.release()
-        } catch (_: Exception) { }
+        } catch (e: Exception) {
+            // MediaRecorder.stop() throws IllegalStateException when no valid
+            // audio was captured (e.g. a near-instant stop). The resulting
+            // VoiceAnnotation may point at an empty/corrupt file; this is also
+            // called from shutdown(), so we log rather than propagate.
+            android.util.Log.w("AnnotationFeatureModule", "Failed to stop/release voice recorder: ${e.message}")
+        }
         mediaRecorder = null
         isRecordingVoice = false
     }

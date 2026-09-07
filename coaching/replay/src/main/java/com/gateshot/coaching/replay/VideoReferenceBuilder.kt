@@ -2,6 +2,8 @@ package com.gateshot.coaching.replay
 
 import android.graphics.Bitmap
 import android.media.MediaMetadataRetriever
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.ensureActive
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -23,7 +25,7 @@ import kotlin.math.roundToInt
  */
 internal class VideoReferenceBuilder {
 
-    fun selectFrames(
+    suspend fun selectFrames(
         videoPath: String,
         onFrameSelected: (Int) -> Unit = {}
     ): List<CourseReferenceCapture.CapturedFrame> {
@@ -43,6 +45,7 @@ internal class VideoReferenceBuilder {
 
             var tMs = 0L
             while (tMs < durationMs && anchors.size < MAX_ANCHORS) {
+                kotlin.coroutines.coroutineContext.ensureActive()
                 val bitmap = retriever.getScaledFrameAtTime(
                     tMs * 1000,
                     MediaMetadataRetriever.OPTION_CLOSEST,
@@ -91,11 +94,17 @@ internal class VideoReferenceBuilder {
             if (cumulativePanPx < 0) anchors.reverse()
 
             return anchors
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             android.util.Log.e(TAG, "Reference frame selection failed: ${e.message}")
             return emptyList()
         } finally {
-            try { retriever.release() } catch (_: Exception) { }
+            try {
+                retriever.release()
+            } catch (e: Exception) {
+                android.util.Log.w(TAG, "Failed to release MediaMetadataRetriever: ${e.message}")
+            }
         }
     }
 

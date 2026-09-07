@@ -40,16 +40,27 @@ class SessionFeatureModule @Inject constructor(
         // it shows up in the library. Requires an active session AND run —
         // the importer must ensure both exist before publishing.
         eventBus.collect<AppEvent.NativeCaptureCompleted>(scope) { event ->
-            val session = dao.getActiveSession() ?: return@collect
-            val run = dao.getActiveRun(session.id) ?: return@collect
-            dao.insertMedia(
-                MediaEntity(
-                    runId = run.id,
-                    type = if (event.isVideo) MediaType.VIDEO else MediaType.PHOTO,
-                    fileUri = event.fileUri,
-                    captureTimestamp = System.currentTimeMillis()
+            try {
+                val session = dao.getActiveSession() ?: return@collect
+                val run = dao.getActiveRun(session.id) ?: return@collect
+                dao.insertMedia(
+                    MediaEntity(
+                        runId = run.id,
+                        type = if (event.isVideo) MediaType.VIDEO else MediaType.PHOTO,
+                        fileUri = event.fileUri,
+                        captureTimestamp = System.currentTimeMillis()
+                    )
                 )
-            )
+            } catch (e: Exception) {
+                // Runs on a background scope with no CoroutineExceptionHandler —
+                // an uncaught Room failure here (disk full, corrupt DB) must not
+                // crash the process; fail this event and keep collecting.
+                android.util.Log.e(
+                    "SessionFeatureModule",
+                    "Failed to record media for event $event",
+                    e
+                )
+            }
         }
     }
 
