@@ -2,19 +2,24 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
-        android:maxSdkVersion="28" />
-    <uses-permission android:name="android.permission.BLUETOOTH" />
+    <!-- BLE timing-system pairing (ALGE/Microgate/Tag Heuer) is currently a
+         stub in coaching/timing: no BluetoothLeScanner.startScan() exists
+         yet, so BLUETOOTH_SCAN is not requested. Legacy BLUETOOTH is only
+         needed pre-S; BLUETOOTH_CONNECT covers S+. -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
-    <uses-permission android:name="android.permission.INTERNET" />
 
     <application
         android:name=".GateShotApp"
         android:allowBackup="true"
-        android:icon="@drawable/ic_launcher_foreground"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:label="GateShot"
         android:supportsRtl="true"
-        android:theme="@style/Theme.GateShot">
+        android:theme="@style/Theme.GateShot"
+        android:enableOnBackInvokedCallback="true"
+        android:fullBackupContent="@xml/backup_rules"
+        android:dataExtractionRules="@xml/data_extraction_rules">
 
         <activity
             android:name=".MainActivity"

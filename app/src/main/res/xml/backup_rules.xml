@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Legacy Auto Backup rules (API < 31). Keeps the athlete/session Room
+  databases and prefs; excludes the large recorded/imported media
+  directories under external-files-dir.
+-->
+<full-backup-content>
+    <exclude domain="external" path="GateShot/videos" />
+    <exclude domain="external" path="GateShot/photos" />
+</full-backup-content>
