@@ -197,9 +197,10 @@ New load-bearing facts:
 15. Compose: a `Row` of chips carrying full sentences squeezes the 2nd+ chip to
     zero width (letter-wrapped, enormous height) — stack them in a `Column`.
 16. Testing the AI path without a real key: enter any string in Settings; the
-    request goes out and comes back as the AUTH error state (verified). A
-    dummy key `sk-ant-dummy-key-for-auth-test` is currently stored on the dev
-    phone — replace it with a real key to get a report.
+    request goes out and comes back as the AUTH error state (verified).
+    A **real** key is now stored on the dev phone (2026-09-08), so the AI
+    path runs for real — every report costs money. To go back to testing the
+    error path, overwrite the key in Settings with any junk string.
 
 ## Open items (in rough priority order)
 
