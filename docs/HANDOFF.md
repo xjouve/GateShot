@@ -202,6 +202,135 @@ New load-bearing facts:
     path runs for real — every report costs money. To go back to testing the
     error path, overwrite the key in Settings with any junk string.
 
+## AI coaching: first real-key report (2026-09-08)
+
+The end-to-end paid path has now been exercised on the device for the first
+time, on `4601.mp4` (SL training clip, camera at the finish looking up the
+hill, racer skiing toward the lens).
+
+| | |
+|---|---|
+| Model returned | `claude-opus-5` (matches the pinned constant) |
+| Latency | ~60–90 s, UI shows "Asking Claude…" with a Cancel button |
+| Cost shown on the button | ~$0,09 |
+| Verdict | overallScore 5/10 |
+| Content | 3 strengths, 7 corrections, 6 drills |
+
+**It works, and the report quality is good.** Every item carries a
+`timestampMs` and cites the metric behind it. The three priority-1
+corrections were: hands low and trailing the hips, stance too upright at the
+ankle, and a narrow foot platform leaving nothing to angulate against.
+
+**Calibration was the standout.** The model down-weighted its own confidence
+off the 40 % tracking rather than overclaiming, noticed a coach blocking the
+frame at 12,4 s, and declined to treat the discipline as confirmed. The
+`confidenceNote` field is doing real work — keep it in the schema.
+
+**Defect found: `gateIndex` was null on 6 of 7 corrections.** Gate
+correlation is dead weight until gates are tagged. This is also a hard
+prerequisite for the reference-band work below, because a mean over a whole
+run is close to meaningless for comparison — you need metrics at turn phases.
+
+**Reading a report:** don't OCR screenshots. The result is persisted next to
+the clip as `<clip>.aicoach.json` (`summary`, `overallScore`, `strengths`,
+`corrections`, `drills`, `confidenceNote`, `model`, `createdAtMs`). Pull that
+file. Printed `?` mojibake on em-dashes is only the Windows console codepage;
+the file is valid UTF-8.
+
+**Installing / replacing the key on the dev phone:** the store is plain
+SharedPreferences, file `gateshot_config`, key `anthropic_api_key`. Recipe
+that worked: `adb shell am force-stop com.gateshot` FIRST (a running app
+flushes in-memory prefs over your write), then push a small `sh` script to
+`/data/local/tmp` and run it via `adb shell run-as com.gateshot sh …`, doing a
+`sed -i` substitution on that one XML value so the other 44 settings survive.
+Quoting a sed script straight through `adb shell` from git bash is a nesting
+trap; the pushed-script route avoids it. Validate a key cheaply without
+spending anything: `GET https://api.anthropic.com/v1/models` with `x-api-key`
+and `anthropic-version: 2023-06-01`. That also confirms the pinned model still
+exists on the account. One spurious 503 was seen; retry before concluding
+auth failure.
+
+## Where the AI coaching goes next (design decisions, 2026-09-08)
+
+Worked through with the user this session. Recorded here because none of it is
+derivable from the code.
+
+**1. The binding constraint is the pixel budget on the racer, not the prompt.**
+On this clip the racer was ~94 px tall, so a thigh spans ~25 px and a 3 px
+joint error is already several degrees of knee angle. Cropping tighter lets
+the pose net spend its full input resolution on the racer and removes the
+distractors that caused 8 search fallbacks — but it cannot create detail the
+sensor never captured. Ceiling: cropping moves you from unusable to
+*directional*, not to precise joint angles.
+
+**2. Therefore capture comes first.** Filming side-on from mid-course, panning
+with the telephoto, puts the racer several hundred px tall; the phone already
+has the glass. An **in-app framing guide shown before recording** is worth
+more than any post-processing. Second: replace motion-saliency localization
+with a **person detector + tracker** that holds the racer across frames
+(fixes the temporal dropouts too).
+
+**3. Claude is prompted, not trained.** Do NOT plan to "train the coach" on
+reference videos — that is a category error. Two separable things:
+the *pose tracker* is a network and fine-tuning it on ski footage would
+genuinely help (it has never seen a tucked racer in a helmet with poles at
+distance); *Claude* only ever sees what is in the prompt. The buildable
+version of the user's idea is to **feed it measured reference numbers**, e.g.
+"knee angle at apex 155°, elite band 105–125°" — concrete and defensible
+instead of the model reaching for priors.
+
+**4. Reference corpus source: social-media racer clips, not broadcast.**
+Racers post runs on Instagram. Those are phone-shot from the side of a hill
+and share view geometry with our own capture in a way a World Cup TV feed
+never will. Stratify by metadata: camera position, sex, discipline, level.
+Store *numbers only*, never redistribute the clips.
+
+**5. Per-metric view validity beats more metadata buckets.** "Behind" and
+"front" are buckets on a continuous variable — a camera 10 m left of the fall
+line and one straight down it are both "front" and give materially different
+apparent torso lean. Our metrics are 2D pixel-space, so admit a sample into
+the band only when the view supports *that specific metric*:
+- `kneeAngle` — holds up while the leg is near the image plane, collapses
+  under foreshortening.
+- `stanceRatio`, `handsForward` — most view-sensitive metrics we have, worst
+  head-on.
+- `shoulderTilt` — reads well from front/behind, poorly from the side.
+
+**6. The band will be biased tight (selection bias).** Racers post their good
+runs and cut to the best turns. The reference therefore describes elite
+skiing on its best day, already edited, and will make our athlete look worse
+than they are. Label it a *best-run distribution* and publish interquartile
+ranges, not means. Ship it as a band, never as a target.
+
+**7. Age adjustment must be empirical, not from the literature.** There is
+good literature on youth range of motion, strength and growth, but very
+little mapping a 14-year-old to an expected knee angle at apex in slalom.
+Use the literature for **guardrails on what not to prescribe** (loading,
+growth-plate risk); get the age bands from age-group racers on the same
+platforms and at the user's own club. Same reasoning applies to elite
+references generally: technique is adapted to that athlete's body, skis and
+course, and a junior copying Odermatt's angles gets hurt.
+
+**8. Tension to plan around:** good reference footage is filmed close, our
+clip was filmed far. The better the reference, the less comparable it is to
+what athletes actually shoot. This is *why* item 2 comes before item 4 —
+fixing capture is what puts our own footage in the same measurement space as
+the reference.
+
+**9. Validation gate before collecting at scale — do this first.** Take
+skiers already known to be stronger and weaker, filmed the same way, and check
+whether the pipeline ranks them correctly. **If it cannot separate skiers you
+can separate by eye, the band is noise and sample size will not rescue it.**
+Cheap test; it decides whether the whole reference plan deserves funding.
+
+**10. Strata multiply fast; start with one cell.** 2 sexes × 3 disciplines ×
+3 view buckets = 18 cells before level or age, at ~20–30 clean turns each.
+Start with the single cell matching footage already in hand: SL, head-on.
+
+**11. Instagram re-encodes and racers post in slow motion.** Angles survive;
+anything timing-derived (turn duration, pressure timing) does not. Do not
+build reference bands on timing metrics from that source.
+
 ## Open items (in rough priority order)
 
 1. **Field test on real training footage** — everything is device-verified
@@ -213,9 +342,17 @@ New load-bearing facts:
    would need shape/line detection or ML. Roadmap.
 3. **BLE electronic timing** (ALGE/Microgate/Tag Heuer) — backend endpoints
    are stubs (`ConnectTimingSystem` fakes success); needs physical units.
-4. **AI analysis follow-ups:** tap-to-select-racer seed (wire `initialHint`),
-   a skeleton overlay of tracked samples in Replay, and a real-key end-to-end
-   run to tune the coaching prompt on actual reports.
+4. **AI analysis follow-ups** — real-key run is DONE (see "first real-key
+   report" above); the prompt no longer needs proving, it needs better input.
+   In order: (a) in-app **framing guide before recording** — biggest single
+   win, the racer is too few pixels tall to measure precisely; (b) **person
+   detector + tracker** to replace motion-saliency localization and hold a
+   tight crop across frames; (c) **gate/turn-phase segmentation**, without
+   which `gateIndex` stays null and reference bands are meaningless;
+   (d) tap-to-select-racer seed (wire `initialHint`); (e) skeleton overlay of
+   tracked samples in Replay. Only then (f) the elite **reference-band
+   corpus** — see "Where the AI coaching goes next" above, and run the
+   discriminative validation gate before collecting at scale.
 5. Cosmetics/cleanup: optional `MainViewModel` → `AnalysisViewModel` rename;
    Library still lists old camera-era test clips on the device (user can
    delete in-app); TRAIL overlay mode is still a ghost fallback.
