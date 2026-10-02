@@ -4,6 +4,9 @@
     <uses-permission android:name="android.permission.INTERNET" />
 
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Full-rate gyroscope for the in-app periscope stabilizer. -->
+    <uses-permission android:name="android.permission.HIGH_SAMPLING_RATE_SENSORS" />
     <!-- BLE timing-system pairing (ALGE/Microgate/Tag Heuer) is currently a
          stub in coaching/timing: no BluetoothLeScanner.startScan() exists
          yet, so BLUETOOTH_SCAN is not requested. Legacy BLUETOOTH is only

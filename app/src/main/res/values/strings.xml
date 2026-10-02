@@ -87,10 +87,11 @@
     <string name="replay_clear">Clear</string>
 
     <string name="gallery_title">Library</string>
+    <string name="home_title">Film a ski run</string>
+    <string name="home_new_session">New training session</string>
     <string name="gallery_video_count">%1$d videos</string>
     <string name="gallery_empty_title">No videos yet</string>
-    <string name="gallery_empty_body">Film runs with your phone\'s camera app, then import them here.</string>
-    <string name="gallery_import_button">Import videos</string>
+    <string name="gallery_empty_body">Film runs from Home, or share a video to GateShot from another app.</string>
     <string name="gallery_importing">Importing…</string>
     <string name="gallery_cd_play">Play</string>
     <string name="gallery_gates_badge">Gates</string>

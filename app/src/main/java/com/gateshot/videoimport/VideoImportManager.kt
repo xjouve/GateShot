@@ -26,10 +26,8 @@ import javax.inject.Singleton
  * session DB records a MediaEntity row, ExoPlayer/MediaMetadataRetriever
  * get plain file paths.
  *
- * Videos are COPIED, not referenced: Photo Picker URI grants don't survive
- * process death, and the analysis pipeline is file-path based throughout.
- * The Library's delete action is the pressure valve for the duplicated
- * storage.
+ * Videos shared into GateShot are copied into app storage because the analysis
+ * pipeline uses file paths.
  */
 @Singleton
 class VideoImportManager @Inject constructor(
@@ -37,7 +35,6 @@ class VideoImportManager @Inject constructor(
     private val endpointRegistry: EndpointRegistry,
     private val eventBus: EventBus
 ) {
-
     /** Copies each URI into GateShot/videos and records it in the session DB. */
     suspend fun import(uris: List<Uri>): List<File> = withContext(Dispatchers.IO) {
         if (uris.isEmpty()) return@withContext emptyList()
@@ -85,9 +82,13 @@ class VideoImportManager @Inject constructor(
         }
 
         val input = resolver.openInputStream(uri) ?: return null
+        var copiedBytes = 0L
         try {
             input.use { stream ->
-                target.outputStream().use { output -> stream.copyTo(output) }
+                target.outputStream().use { output ->
+                    copiedBytes = stream.copyTo(output)
+                    output.fd.sync()
+                }
             }
         } catch (e: Exception) {
             // A partial file must never be left behind for a failed/cancelled copy.
@@ -95,9 +96,11 @@ class VideoImportManager @Inject constructor(
             throw e
         }
 
-        if (target.length() == 0L) {
+        if (copiedBytes == 0L || target.length() != copiedBytes ||
+            (sourceSizeBytes > 0L && target.length() != sourceSizeBytes)
+        ) {
             target.delete()
-            return null
+            throw java.io.IOException("Incomplete video copy from $uri")
         }
 
         // Library and Replay sort by lastModified — stamp it with the capture

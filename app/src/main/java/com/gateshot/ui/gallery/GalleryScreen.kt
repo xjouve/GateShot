@@ -20,18 +20,13 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.PickVisualMediaRequest
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -71,13 +66,6 @@ fun GalleryScreen(
     val context = androidx.compose.ui.platform.LocalContext.current
     val galleryRefresh by viewModel.galleryRefresh.collectAsState()
     val isImporting by viewModel.isImporting.collectAsState()
-
-    // System Photo Picker — no storage permission needed
-    val pickVideos = rememberLauncherForActivityResult(
-        ActivityResultContracts.PickMultipleVisualMedia()
-    ) { uris ->
-        viewModel.importVideos(uris)
-    }
 
     // Load videos from GateShot storage (in-app recordings historically,
     // imported clips going forward)
@@ -176,33 +164,6 @@ fun GalleryScreen(
             }
         }
 
-        ExtendedFloatingActionButton(
-            onClick = {
-                if (!isImporting) {
-                    pickVideos.launch(
-                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
-                    )
-                }
-            },
-            containerColor = MaterialTheme.colorScheme.primary,
-            contentColor = Color.Black,
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(16.dp)
-        ) {
-            if (isImporting) {
-                CircularProgressIndicator(
-                    color = Color.Black,
-                    modifier = Modifier.size(20.dp)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(stringResource(R.string.gallery_importing), fontWeight = FontWeight.Bold)
-            } else {
-                Icon(Icons.Filled.Add, contentDescription = null)
-                Spacer(modifier = Modifier.width(4.dp))
-                Text(stringResource(R.string.gallery_import_button), fontWeight = FontWeight.Bold)
-            }
-        }
     }
 }
 

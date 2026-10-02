@@ -5,6 +5,7 @@ import androidx.compose.ui.res.stringResource
 import com.gateshot.R
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SlowMotionVideo
@@ -23,7 +24,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -41,18 +41,22 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.gateshot.ui.MainViewModel
 import com.gateshot.ui.coaching.CoachScreen
+import com.gateshot.ui.capture.CaptureScreen
 import com.gateshot.ui.gallery.GalleryScreen
+import com.gateshot.ui.home.HomeScreen
 import com.gateshot.ui.replay.ReplayScreen
 import com.gateshot.ui.settings.SettingsScreen
 
 sealed class Screen(val route: String, val label: String, val icon: ImageVector) {
+    data object Home : Screen("home", "Home", Icons.Filled.Home)
     data object Gallery : Screen("gallery", "Library", Icons.Filled.PhotoLibrary)
     data object Replay : Screen("replay", "Replay", Icons.Filled.SlowMotionVideo)
     data object Coach : Screen("coach", "Coach", Icons.Filled.School)
     data object Settings : Screen("settings", "Settings", Icons.Filled.Settings)
+    data object Capture : Screen("capture", "Capture", Icons.Filled.SlowMotionVideo)
 }
 
-val allScreens = listOf(Screen.Gallery, Screen.Replay, Screen.Coach, Screen.Settings)
+val allScreens = listOf(Screen.Home, Screen.Gallery, Screen.Replay, Screen.Coach, Screen.Settings)
 
 @Composable
 fun GateShotNavHost(
@@ -62,13 +66,13 @@ fun GateShotNavHost(
     viewModel: MainViewModel = hiltViewModel()
 ) {
     val navController = rememberNavController()
-    val uiState by viewModel.uiState.collectAsState()
+    val currentEntry by navController.currentBackStackEntryAsState()
 
     // A clip is ready for review (Library tap or external open) — switch tab
     LaunchedEffect(Unit) {
         viewModel.openInReplay.collect {
             navController.navigate(Screen.Replay.route) {
-                popUpTo(Screen.Gallery.route) { saveState = true }
+                popUpTo(Screen.Home.route) { saveState = true }
                 launchSingleTop = true
             }
         }
@@ -91,17 +95,10 @@ fun GateShotNavHost(
         }
     }
 
-    // Session creation dialog — offered once at startup when no session is
-    // active; also reachable later from the session flow.
+    // Session setup is optional and opened from Home.
     var showSessionDialog by remember { mutableStateOf(false) }
     var sessionEventName by remember { mutableStateOf("") }
     var sessionDiscipline by remember { mutableStateOf("SL") }
-
-    LaunchedEffect(Unit) {
-        if (uiState.sessionName == null) {
-            showSessionDialog = true
-        }
-    }
 
     if (showSessionDialog) {
         AlertDialog(
@@ -155,19 +152,27 @@ fun GateShotNavHost(
 
     Scaffold(
         bottomBar = {
-            GateShotBottomBar(
-                navController = navController,
-                screens = allScreens
-            )
+            if (currentEntry?.destination?.route != Screen.Capture.route) {
+                GateShotBottomBar(navController = navController, screens = allScreens)
+            }
         },
         snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
         containerColor = Color.Black
     ) { padding ->
         NavHost(
             navController = navController,
-            startDestination = Screen.Gallery.route,
+            startDestination = Screen.Home.route,
             modifier = modifier.padding(padding)
         ) {
+            composable(Screen.Home.route) {
+                HomeScreen(onStartSession = { showSessionDialog = true },
+                    onRecord = { navController.navigate(Screen.Capture.route) })
+            }
+
+            composable(Screen.Capture.route) {
+                CaptureScreen(viewModel = viewModel, onBack = { navController.popBackStack() })
+            }
+
             composable(Screen.Gallery.route) {
                 GalleryScreen(viewModel = viewModel)
             }
@@ -209,7 +214,7 @@ fun GateShotBottomBar(
                 onClick = {
                     if (currentRoute != screen.route) {
                         navController.navigate(screen.route) {
-                            popUpTo(Screen.Gallery.route) { saveState = true }
+                            popUpTo(Screen.Home.route) { saveState = true }
                             launchSingleTop = true
                             restoreState = true
                         }

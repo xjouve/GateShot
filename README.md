@@ -8,15 +8,19 @@ Ski racing **video analysis** for coaches and athletes, built for the Oppo Find 
 
 ## Workflow
 
-1. **Film** runs in the native camera app (full zoom/teleconverter/EIS quality).
-2. **Import** into GateShot: the Library's *Import videos* button (system Photo Picker), or *Open with / Share to GateShot* from the gallery.
+Home opens without a phone-wide media grid. **Record with GateShot** opens an in-app Camera2 viewfinder on the Find X9 Pro's logical rear camera at 3.03×, which engages physical periscope lens 4. Tap a racer in the preview to set an AF region and enable the MediaTek tracking-AF request. GateShot records an MP4 directly into its own Library. It does not open Oppo Camera or the phone-wide media picker.
+
+GateShot stores recorded and shared clips in app-specific storage. Removing the app also removes those clips, so back up important coaching videos before uninstalling GateShot.
+
+1. **Film** runs in GateShot with the periscope telephoto viewfinder.
+2. **Review** recordings in GateShot's Library, or use *Open with / Share to GateShot* from another app for an existing video.
 3. **Analyze**: replay in slow motion, mark gates, compare runs, draw on frames, record voice-overs, generate session reports.
 
 ## Features
 
 ### Library
 - Video grid with thumbnails, gate-tagged badge, share, delete
-- Import via the system Photo Picker (no storage permission needed)
+- GateShot recordings in the GateShot-only video grid
 - `ACTION_VIEW` / `ACTION_SEND` intent filters — open or share any video straight into GateShot
 - Imported clips are copied into app storage and recorded in the session database; capture time is preserved for ordering
 

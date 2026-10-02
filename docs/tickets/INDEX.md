@@ -29,3 +29,4 @@
 | [018](018-setuprawcapture-race-crash.md) | `setupRawCapture` race crashes on rebind | High | Fixed |
 | [019](019-super-eis-stuck-preview.md) | Super-EIS vendor keys leave preview permanently black | Critical | Fixed (reverted + rebind on EIS change + re-entrancy guard) |
 | [020](020-teleconverter-video-stabilization.md) | Teleconverter video unstabilized; native EIS gated to system-only camera | High | CLOSED — resolved by pivoting GateShot to a video-analysis app (record in native app, analyze in GateShot) |
+| [021](021-in-app-telephoto-capture.md) | GateShot-owned periscope recording, AF, and stabilization | High | In-app capture verified; handheld stabilization and moving-racer AF need field test |

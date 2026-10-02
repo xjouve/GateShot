@@ -188,25 +188,6 @@ class MainViewModel @Inject constructor(
     private val _isImporting = MutableStateFlow(false)
     val isImporting: StateFlow<Boolean> = _isImporting.asStateFlow()
 
-    /** Import videos picked from the system Photo Picker into the Library. */
-    fun importVideos(uris: List<android.net.Uri>) {
-        if (uris.isEmpty()) return
-        viewModelScope.launch {
-            _isImporting.value = true
-            try {
-                val imported = videoImportManager.import(uris)
-                if (imported.isNotEmpty()) {
-                    _galleryRefresh.update { it + 1 }
-                }
-            } catch (e: Exception) {
-                android.util.Log.e("MainViewModel", "importVideos failed", e)
-                _uiMessages.emit(UiMessage(appContext.getString(R.string.error_import_failed)))
-            } finally {
-                _isImporting.value = false
-            }
-        }
-    }
-
     /** Open a Library clip in the Replay tab. */
     fun openVideoInReplay(path: String) {
         viewModelScope.launch {
@@ -225,7 +206,7 @@ class MainViewModel @Inject constructor(
                     _galleryRefresh.update { it + 1 }
                     _selectedVideoPath.value = file.absolutePath
                     _openInReplay.emit(Unit)
-                }
+                } ?: _uiMessages.emit(UiMessage(appContext.getString(R.string.error_import_failed)))
             } catch (e: Exception) {
                 android.util.Log.e("MainViewModel", "onOpenExternalVideo failed", e)
                 _uiMessages.emit(UiMessage(appContext.getString(R.string.error_import_failed)))

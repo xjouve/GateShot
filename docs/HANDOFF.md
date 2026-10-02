@@ -1,4 +1,108 @@
-# GateShot — Session Handoff (2026-09-08)
+# GateShot — Session Handoff (2026-09-08, capture section 2026-09-28)
+
+## ▶ RESUME HERE (2026-09-28): in-app capture + own stabilizer (UNCOMMITTED)
+
+**Direction change since 2026-09-08:** GateShot records video itself again, through the Camera2 periscope path and its own stabilizer; there is no handoff to the Oppo camera app. The full dated history, with every measurement, is in `docs/tickets/021-in-app-telephoto-capture.md`.
+
+**All of this work is uncommitted on `main`** (see `git status`: `ui/capture/`, `ui/home/`, the new `processing/stabilize` classes and tests, the icon, and ticket 021). Commit it to a branch before experimenting further.
+
+### What exists and works (verified on device CPH2791, serial 3B15C6001PS00000)
+- **Capture** (`app/.../ui/capture/`: `TeleCapture`, `StabRenderer`, `OpticalStage`, `GyroStabilizer`, `CaptureScreen`):
+  - Portrait only. The periscope image needs a 180° flip; the GL renderer handles it, with MP4 hint 90.
+  - Zoom chips on camera 0:
+
+    | Chip | HAL zoom | Crop |
+    |---|---|---|
+    | 10x | 3.03 | 1.25 |
+    | 20x | 3.636 | 2.0 |
+    | 30x | 5.454 | 2.0 |
+
+    A HAL zoom below 3.03 switches to the MAIN lens (physical camera 2), so it must never go lower.
+  - Pipeline: 4K OES stream → GL affine warp → viewfinder, plus a 1080p H.264 recording at 16 Mbps.
+  - Encoder timestamps must be converted from BOOTTIME to MONOTONIC.
+  - Tap-to-focus: AF/AE region, AF trigger cancel+start, unlock after FOCUSED_LOCKED. The user is not sure AF actually works; this is unverified with a moving subject.
+- **Stabilizer:**
+  - Gyro at 397 Hz (needs `HIGH_SAMPLING_RATE_SENSORS`), sync +6 ms, f = 35362 px/rad at 3840.
+  - Axes (portrait): image x = +f·Δθ(gyro Y), y = +f·Δθ(gyro X).
+  - Per-column rolling-shutter term: readout 7 ms across the source at zoom 3.636, scaled 1/zoom.
+  - Optical residual: `GlobalShiftEstimator` (Lucas–Kanade, 256² centre, 4 threads).
+  - At 20x/30x, recording uses a live **L1-optimal path** (Grundmann 2011):
+    - `L1PathPlanner`, an exact bounded simplex matching the LP reference to 0.0 px, ~27 ms per solve on the phone;
+    - 1 s look-ahead;
+    - a self-centred 36-frame ring of 1620×2880 (~670 MB).
+  - No wait after Stop. This is a hard user requirement: a post-recording wait is "unusable on the slope".
+- **Logo:** `Image_big_cat_v1.png` → `res/drawable-nodpi/ic_launcher_logo.png` (the app icon, user-approved) and `watermark_logo.png` (drawn bottom-right on recordings).
+- **Debug props** (always reset them to 0):
+  - `adb shell setprop debug.gateshot.synth 1` injects a known sub-pixel wobble; score it with `build/qa/stab_m4/synth/synth.py`.
+  - `debug.gateshot.ois 1` requests OIS. It is proven to have NO effect for third-party apps.
+- **Per-recording logs:** `GateShot/stablogs/<run>_gyro.csv` and `<run>_frames.csv` on the phone.
+
+### Honest status: the user judges it clearly worse than the Hasselblad native stabilizer
+The last six-clip A/B is in `build/qa/stab_m8/ab9/`. Position wobble in px, as side / up:
+
+| Clip | Band | GateShot | Native |
+|---|---|---|---|
+| 20x still | 0.2–1 Hz | 2.48 / 5.08 | 3.93 / 7.69 |
+| 20x still | 1–3 Hz | 0.19 / 0.35 | 0.15 / 0.36 |
+| 20x still | 3–14 Hz | 0.11 / 0.17 | 0.24 / 0.24 |
+| 20x pan | 1–3 Hz, up | 14.3 | 0.45 |
+| 20x pan | 3–14 Hz, up | 10.5 | 0.15 |
+| 10x still | 0.2–1 Hz, side | 24.7 | 3.4 |
+
+- **20x pan is broken:** the up correction jumps 20–40 px per frame. The self-centred buffer's centre (the planner's tentative path) lurches and does not cancel, because the image does not follow the gyro exactly (yaw gain ≈ 0.8, measurement noise).
+- **10x sway is structural:** the margin is small, and the periscope has no wider field than 10x.
+- **Key new finding:** GateShot frames are about half as sharp as native. Laplacian variance at 1080 width:
+
+  | Clip | GateShot | Native |
+  |---|---|---|
+  | 10x | 98 | 201 |
+  | 20x still | 17.5 | 31.3 |
+  | 20x pan | 15.6 | 26.8 |
+
+  The motion metrics are blind to this. Suspects:
+  - two bilinear resamples (camera → ring → output);
+  - 1080p H.264 at 16 Mbps, where native records 4K HEVC 10-bit;
+  - no exposure-time cap while recording (motion blur, "shimmer");
+  - possible AF hunting.
+
+### Next plan (recommended; the user has not yet said go)
+1. **Image quality first.** Verify each item with the sharpness metric against the native clips BEFORE asking the user to film:
+   - 4K high-bitrate HEVC output;
+   - a single sharper resample (bicubic/Lanczos), with no double bilinear;
+   - an exposure-time cap while recording;
+   - focus lock after tap.
+2. **Replace live L1 + self-centring with Gyroflow-style velocity-dampened smoothing:** strong smoothing when still, weaker in pans, no window discontinuities. Gyroflow is GPL-3: reuse its ideas, not its code.
+3. **Later:**
+   - an ~10-band rolling-shutter mesh (Karpenko 2011);
+   - on-device re-calibration of readout and sync (rate cross-correlation);
+   - focus-breathing correction (Google Pixel fused stabilization, 2017).
+- **Alternative route to native quality:** Oppo's CameraUnit SDK (`/product/framework/com.oplus.camera.unit.sdk.jar`) reaches the native super-EIS but is gated by Oppo app authorization. **Do not attempt to bypass it.** The only legitimate route is applying to Oppo's CameraUnit / open-capability program.
+
+### Research survey 2026-09-28 (top ideas)
+- Karpenko et al. 2011 (Stanford): gyro stabilization with rolling-shutter correction and cross-correlation sync.
+- Google "Fused Video Stabilization" 2017: gyro + OIS + focus-breathing correction.
+- Gyroflow: velocity-dampened smoothing and a rolling-shutter tool (GPL-3).
+- Deep Online Fused Video Stabilization (WACV 2022; no code).
+- Kalman/IMM online smoothing.
+- Stabilization patents (US11818465, US9204048): cap the exposure time, because blur in stabilized video shimmers.
+- OpenCamera-Sensors (GPL-3): synchronized IMU logging.
+- The accelerometer is useless for hand translation; image-based translation measurement is the right tool.
+
+### Method (use it, don't re-learn it)
+- Judge by ALL bands (0.2–1, 1–3, 3–14 Hz; `build/qa/stab_m7/ab8/bandall.py`) plus sharpness. A single HF "jitter" figure misled us once, and the user caught the overclaim.
+- Work offline and test live only at the end:
+  1. Simulate on logged clips.
+  2. Run the pixel bench (`build/qa/stab_m5/ois/bench*.py`, `build/qa/stab_m6/pan/design*.py`) on raw Stab-OFF clips with their gyro logs.
+  3. Pin each Kotlin port to the Python reference with a replay unit test.
+  4. Verify GPU paths on device with the synth known-signal test.
+- Gotchas:
+  - OpenCV auto-rotates phone MP4s: assert `frame.shape`.
+  - GLSL `mediump` is fp16 on Mali: always use `highp`.
+  - Gradle serves stale test results: use `--rerun --no-build-cache`.
+  - Git Bash heredocs corrupt backslashes: write scripts to files.
+  - Git Bash adb pulls need `export MSYS_NO_PATHCONV=1`.
+  - A "Camera disabled (3)" error after reinstall or a USB drop: restart the app cleanly.
+- Before each live test, check the installed APK is the fresh build.
 
 Read this first when resuming work. It captures where the project stands after
 the video-analysis pivot and everything shipped on top of it.
