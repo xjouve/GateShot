@@ -25,8 +25,11 @@ class GyroStabilizer(
      *  camera 0 handheld clips (+6 ms twice; the June camera-6 clip gave +8). */
     private val syncOffsetNs: Long = 6_000_000L,
 ) {
-    /** Portrait image width in units of its height (16:9 stream shown upright). */
-    val aspect = 9f / 16f
+    /** Output view (upright portrait) width in units of its height. */
+    val viewAspect = 9f / 16f
+    /** Camera frame (upright portrait) width in units of its height: 9/16 for a 16:9
+     *  stream, 3/4 for the 4:3 stream, whose extra width is all stabilization margin. */
+    @Volatile var srcAspect = 9f / 16f
 
     private val path = GyroPath()
     // Two paths from the same gyro, tuned on the 2026-09-28 handheld clips
@@ -48,14 +51,15 @@ class GyroStabilizer(
      *  zoom so the stabilizer has ~25% margin per side). */
     @Volatile var cropZoom = 1.25f
         private set
-    /** Crop of the gyro stage, which is also what the recording buffer holds. The
-     *  rest, up to [cropZoom], is margin for the recording's look-ahead stage:
-     *  ~2% per side at 10x (all the 1.2 crop allows), ~14% at 20x/30x, where the
-     *  look-ahead needs up to ~125 px to smooth a hand pan. */
-    val gyroCropZoom get() = if (cropZoom < 1.5f) cropZoom * (1.15f / 1.2f) else cropZoom / 1.5f
+    /** Crop of the recording buffer: 1 = it holds the WHOLE camera frame (2160x3840, an
+     *  exact copy). The recording path is then bounded only by the real crop margin, with
+     *  no self-centring of the buffer. Simulated on the 2026-10-02 handheld clips
+     *  (build/qa/stab_m9/u1/sim_full.py): the path stays fixed (0 px) where the smaller
+     *  self-centred buffer (20x) and the causal hold (10x) wandered by 40-180 px. */
+    val gyroCropZoom get() = 1f
 
-    /** 20x/30x: live L1 path planning on the recording (enough margin for it). */
-    val l1Mode get() = cropZoom >= 1.5f
+    /** The recording path is planned live with a 1 s look-ahead (L1) at every zoom level. */
+    val l1Mode get() = true
 
     /** Set camera zoom (relative to 3.03) and crop together, for a zoom level. */
     fun setView(cameraZoomFactor: Float, crop: Float) {
@@ -108,8 +112,8 @@ class GyroStabilizer(
             ?: return Correction(0f, 0f, 0.0, 0.0, false)
         val f = focalPerRad
         // Margin (rad) the crop leaves on each side before the warp would leave the frame.
-        val marginX = (aspect / 2f) * (1f - 1f / gyroCropZoom) / f
-        val marginY = 0.5f * (1f - 1f / gyroCropZoom) / f
+        val marginX = 0.5f * (srcAspect - viewAspect / cropZoom) / f
+        val marginY = 0.5f * (1f - 1f / cropZoom) / f
         val vY = smY.step(frameTsNs, raw[1], marginX.toDouble())   // yaw -> image x
         val vX = smX.step(frameTsNs, raw[0], marginY.toDouble())   // pitch -> image y
         if (restartRing) { ringX.reset(); ringY.reset(); restartRing = false }
@@ -139,7 +143,8 @@ class GyroStabilizer(
         val a0 = path.angleAt(tMid - 1_000_000L); val a1 = path.angleAt(tMid + 1_000_000L)
         var rsX = 0f; var rsY = 0f
         if (a0 != null && a1 != null) {
-            val readout = READOUT_S_AT_BASE_ZOOM / zoomFactor      // s across the source width
+            // s across the source width; the 4:3 stream reads 4/3 as many sensor rows
+            val readout = READOUT_S_AT_BASE_ZOOM * (srcAspect / viewAspect) / zoomFactor
             rsX = (f * (a1[1] - a0[1]) / 2e-3 * readout).toFloat()   // yaw rate -> x stretch
             rsY = (f * (a1[0] - a0[0]) / 2e-3 * readout).toFloat()   // pitch rate -> y skew
         }
@@ -162,10 +167,12 @@ class GyroStabilizer(
     }
 
     companion object {
-        /** Sensor readout across the full source width at camera zoom 3.03. Measured
-         *  3.5 ms across the 20x view (crop 2.0, zoom 3.636) = 7.0 ms across the source
-         *  there; scaled as 1/zoom (the sensor reads its full width, the zoom crops). */
-        const val READOUT_S_AT_BASE_ZOOM = 7.0e-3 * 3.636 / 3.03
+        /** Sensor readout across the full source width at camera zoom 3.03: 2304 rows x
+         *  3.25 us (S5KHP5 4x4-binned 16:9 mode in the oppo-source kernel driver; the HAL
+         *  reports the same SENSOR_ROLLING_SHUTTER_SKEW, 7.488 ms, at every zoom). Scaled as
+         *  1/zoom (the sensor reads its full height, the zoom crops). The pixel bench
+         *  (stab_m5/ois/bench_T.py) prefers it to the 8.4 ms first fitted there. */
+        const val READOUT_S_AT_BASE_ZOOM = 7.488e-3
         const val SYNTH_X_PX = 0.6; const val SYNTH_X_HZ = 2.3
         const val SYNTH_Y_PX = 0.8; const val SYNTH_Y_HZ = 3.1
     }

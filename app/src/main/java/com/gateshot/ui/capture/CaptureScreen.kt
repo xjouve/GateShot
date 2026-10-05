@@ -141,7 +141,7 @@ fun CaptureScreen(viewModel: MainViewModel, onBack: () -> Unit) {
                         modifier = Modifier
                             .padding(horizontal = 6.dp)
                             .background(Color(0x99000000), CircleShape)
-                            .clickable {
+                            .clickable(enabled = !recording) {
                                 zoomLevel = level
                                 controller?.setZoomLevel(level)
                             }

@@ -42,7 +42,8 @@ class L1PathPlannerTest {
     fun `matches the LP solution on real gyro paths`() {
         val dir = File("../../build/qa/stab_m6/pan/l1ref")
         assumeTrue(dir.isDirectory)
-        for (f in dir.listFiles()!!.filter { it.name.endsWith(".csv") }.sorted()) {
+        // kotlin_*.csv in the same folder is L1DumpTest's output, not a reference
+        for (f in dir.listFiles()!!.filter { it.name.endsWith(".csv") && !it.name.startsWith("kotlin_") }.sorted()) {
             val lines = f.readLines()
             val margin = lines[0].toDouble()
             val rows = lines.drop(1).map { l -> l.split(',').map { it.toDouble() } }

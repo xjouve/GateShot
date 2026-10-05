@@ -55,6 +55,7 @@ class TeleCapture(private val context: Context, private val view: TextureView) {
     private var file: File? = null
     private var recording = false
     private var activeArray = Rect()
+    private var streamAspect = 9f / 16f      // camera stream height / width
     private var afRegions = 0
     private var aeRegions = 0
 
@@ -76,6 +77,7 @@ class TeleCapture(private val context: Context, private val view: TextureView) {
     }
 
     private var lastResultLog = 0L
+    private var keysLogged = false
     @Volatile private var unlockAfterFocus = false
     /** Once a second, log what the HAL actually applied (stabilization, AF). */
     private val resultLogger = object : CameraCaptureSession.CaptureCallback() {
@@ -97,9 +99,33 @@ class TeleCapture(private val context: Context, private val view: TextureView) {
             val now = System.currentTimeMillis()
             if (now - lastResultLog < 1000) return
             lastResultLog = now
+            if (!keysLogged && debugProp("debug.gateshot.keys") == "1") {
+                // Debug-only: which stabilization-related result keys (OIS hall samples,
+                // EIS data) the HAL hands to a third-party app, and how big they are.
+                keysLogged = true
+                for (k in result.keys) {
+                    val n = k.name.lowercase()
+                    if (!(n.contains("ois") || n.contains("eis") || n.contains("gyro") || n.contains("hall"))) continue
+                    val v = try { result.get(k) } catch (e: Exception) { "ERR ${e.message}" }
+                    val d = when (v) {
+                        is ByteArray -> "byte[${v.size}] ${v.take(48).joinToString(" ")}"
+                        is IntArray -> "int[${v.size}] ${v.take(24).joinToString(" ")}"
+                        is FloatArray -> "float[${v.size}] ${v.take(24).joinToString(" ")}"
+                        is LongArray -> "long[${v.size}] ${v.take(12).joinToString(" ")}"
+                        is Array<*> -> "arr[${v.size}] ${v.take(8).joinToString(" ")}"
+                        else -> v.toString()
+                    }
+                    Log.i(TAG, "key ${k.name} = $d")
+                }
+            }
             Log.i(TAG, "result videoStab=${result.get(CaptureResult.CONTROL_VIDEO_STABILIZATION_MODE)} " +
                 "ois=${result.get(CaptureResult.LENS_OPTICAL_STABILIZATION_MODE)} " +
                 "afState=${result.get(CaptureResult.CONTROL_AF_STATE)} " +
+                "exp=${(result.get(CaptureResult.SENSOR_EXPOSURE_TIME) ?: 0L) / 1000}us " +
+                "iso=${result.get(CaptureResult.SENSOR_SENSITIVITY)} " +
+                "focus=${result.get(CaptureResult.LENS_FOCUS_DISTANCE)} " +
+                "skew=${(result.get(CaptureResult.SENSOR_ROLLING_SHUTTER_SKEW) ?: 0L) / 1000}us " +
+                "crop=${result.get(CaptureResult.SCALER_CROP_REGION)} " +
                 "afRegions=${result.get(CaptureResult.CONTROL_AF_REGIONS)?.joinToString()} " +
                 "physical=${result.get(CaptureResult.LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID)} " +
                 "zoom=${result.get(CaptureResult.CONTROL_ZOOM_RATIO)}")
@@ -127,7 +153,13 @@ class TeleCapture(private val context: Context, private val view: TextureView) {
             // 4K source so the stabilizer's crop costs no sharpness in the 1080p output.
             val sizes = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
                 ?.getOutputSizes(SurfaceTexture::class.java).orEmpty()
-            val stream = sizes.firstOrNull { it.width == 3840 && it.height == 2160 } ?: Size(1920, 1080)
+            // Prefer the 4:3 stream: in portrait its extra 720 px of width are stabilization
+            // margin on the side axis, which a 16:9 frame leaves too thin for hand sway
+            // (build/qa/stab_m9/u2/sim.py: 445 px of forced picture motion at 20x -> 0).
+            val stream = sizes.firstOrNull { it.width == 3840 && it.height == 2880 }
+                ?: sizes.firstOrNull { it.width == 3840 && it.height == 2160 } ?: Size(1920, 1080)
+            stabilizer.srcAspect = stream.height.toFloat() / stream.width
+            streamAspect = stabilizer.srcAspect
             val texture = view.surfaceTexture ?: error("Viewfinder is not ready")
             val logo = try {
                 android.graphics.BitmapFactory.decodeResource(context.resources, com.gateshot.R.drawable.watermark_logo)
@@ -177,6 +209,10 @@ class TeleCapture(private val context: Context, private val view: TextureView) {
             // Debug-only experiment (adb shell setprop debug.gateshot.ois 1): request
             // hardware OIS, to measure whether the periscope lens really stabilizes.
             val oisProbe = debugProp("debug.gateshot.ois") == "1"
+            if (debugProp("debug.gateshot.keys") == "1") {
+                try { builder.set(CaptureRequest.STATISTICS_OIS_DATA_MODE, CaptureRequest.STATISTICS_OIS_DATA_MODE_ON) }
+                catch (_: Exception) { }
+            }
             builder.set(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE,
                 if (oisProbe) CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_ON
                 else CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_OFF)
@@ -209,13 +245,30 @@ class TeleCapture(private val context: Context, private val view: TextureView) {
      */
     // 10x: 1.25, 4% tighter than the Oppo 10x framing, halves simulated sway
     // (the periscope cannot go wider: below zoom 3.03 the camera switches to lens 2).
+    // 20x/30x stay at 2.0: a 2.4 crop with the camera at zoom 3.03 would give 20x more margin
+    // (2026-10-05 clip: forced picture motion 121 px -> 0, stab_m9/u2/sim.py) but measured
+    // 10-25% less sharp on the same scene (stab_m9/s43/sharp_ms.py): the HAL's own zoom
+    // beats our upscale.
     private fun crop(level: Int) = if (level <= 10) 1.25f else 2.0f
     // Never below 1 (zoom 3.03): lower ratios switch to the main camera (lens 2).
-    private fun cameraFactor(level: Int) = maxOf(1f, level / 10f * 1.2f / crop(level))
+    private fun cameraFactor(level: Int): Float {
+        // Debug-only (adb shell setprop debug.gateshot.zoom 6.5): force the HAL zoom
+        // ratio, to probe the sensor mode the HAL picks (rolling-shutter skew, detail).
+        debugProp("debug.gateshot.zoom").toFloatOrNull()?.let { if (it >= baseZoom) return it / baseZoom }
+        return maxOf(1f, level / 10f * 1.2f / crop(level))
+    }
+
+    /** Recorded size (landscape buffer): the output view at 1:1 source pixels or above, so
+     *  the single resample never downscales. 10x views 1728x3072 source px -> 4K; 20x/30x
+     *  view 1080x1920 -> 1080p. 4K at 20x was tried on 2026-10-05 and reverted: no sharper
+     *  (build/qa/stab_m9/k4/sharp4k.py) and the extra load slowed the shift estimates. */
+    private fun videoSize() = if (stabilizer.cropZoom >= 1.5f) Size(1920, 1080) else Size(3840, 2160)
 
     fun setZoomLevel(level: Int) {
+        if (recording) return           // buffer and encoder are sized for the level
         zoomLevel = level
         stabilizer.setView(cameraFactor(level), crop(level))
+        try { renderer?.viewChanged() } catch (e: Exception) { onError("Zoom: ${e.message}") }
         val builder = request ?: return
         val live = session ?: return
         try {
@@ -233,6 +286,7 @@ class TeleCapture(private val context: Context, private val view: TextureView) {
             val dir = File(context.getExternalFilesDir(null), "GateShot/videos").apply { mkdirs() }
             val base = "run_${System.currentTimeMillis()}"
             val output = File(dir, "$base.mp4")
+            val size = videoSize()
             val mediaRecorder = MediaRecorder(context).apply {
                 val audioAllowed = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
                     PackageManager.PERMISSION_GRANTED
@@ -244,10 +298,11 @@ class TeleCapture(private val context: Context, private val view: TextureView) {
                     setAudioEncodingBitRate(128_000)
                     setAudioSamplingRate(48_000)
                 }
-                setVideoEncoder(MediaRecorder.VideoEncoder.H264)
-                setVideoSize(1920, 1080)
+                // HEVC at about the native camera's rate (4K: ~57 Mbps measured).
+                setVideoEncoder(MediaRecorder.VideoEncoder.HEVC)
+                setVideoSize(size.width, size.height)
                 setVideoFrameRate(30)
-                setVideoEncodingBitRate(16_000_000)
+                setVideoEncodingBitRate(if (size.width > 1920) 60_000_000 else 30_000_000)
                 // The renderer stores the upright portrait image rotated into the
                 // landscape buffer; players rotate it back by 90 degrees.
                 setOrientationHint(90)
@@ -257,19 +312,19 @@ class TeleCapture(private val context: Context, private val view: TextureView) {
             val logDir = File(context.getExternalFilesDir(null), "GateShot/stablogs").apply { mkdirs() }
             gyroLog = File(logDir, "${base}_gyro.csv").bufferedWriter().apply { write("t_ns,gx,gy,gz\n") }
             frameLog = File(logDir, "${base}_frames.csv").bufferedWriter().apply {
-                write("frame_ts_ns,dthetax,dthetay,offx,offy,clamped,enabled,optx,opty,measx,measy,rawx,rawy,l1x,l1y\n")
+                write("frame_ts_ns,dthetax,dthetay,offx,offy,clamped,enabled,optx,opty,measx,measy,rawx,rawy,l1x,l1y,inl\n")
             }
             // measx/measy: shift measured by the optical stage (ring px), NaN if skipped.
             // rawx/rawy: gyro angles (rad); l1x/l1y: camera path minus L1 path (ring px, 20x/30x).
             r.onFrame = { ts, c, ox, oy, m ->
                 frameLog?.let { w ->
-                    try { w.write("$ts,${c.dThetaX},${c.dThetaY},${c.ringOffX},${c.ringOffY},${c.clamped},${stabilizer.enabled},$ox,$oy,${m?.get(0) ?: ""},${m?.get(1) ?: ""},${c.rawX},${c.rawY},${m?.getOrNull(2) ?: ""},${m?.getOrNull(3) ?: ""}\n") }
+                    try { w.write("$ts,${c.dThetaX},${c.dThetaY},${c.ringOffX},${c.ringOffY},${c.clamped},${stabilizer.enabled},$ox,$oy,${m?.get(0) ?: ""},${m?.get(1) ?: ""},${c.rawX},${c.rawY},${m?.getOrNull(2) ?: ""},${m?.getOrNull(3) ?: ""},${m?.getOrNull(4) ?: ""}\n") }
                     catch (_: Exception) {}
                 }
             }
             mediaRecorder.start()
             stabilizer.restartRecordingPath()
-            r.setEncoder(mediaRecorder.surface, 1920, 1080)
+            r.setEncoder(mediaRecorder.surface, size.width, size.height)
             file = output
             recorder = mediaRecorder
             recording = true
@@ -306,13 +361,13 @@ class TeleCapture(private val context: Context, private val view: TextureView) {
         if (afRegions == 0 || activeArray.isEmpty) return
         // Undo the stabilizer crop: the tap is inside the central 1/zoom of the frame.
         val z = stabilizer.cropZoom
-        val u = 0.5f + (x - 0.5f) / z
+        val u = 0.5f + (x - 0.5f) / z * (stabilizer.viewAspect / streamAspect)
         val v = 0.5f + (y - 0.5f) / z
         // Upright portrait (u, v) -> landscape sensor coordinates, undoing the
         // 180-degree periscope inversion. Assumes the usual 90-degree rear sensor.
         val afX = 1f - v
-        // The 16:9 stream is a vertical centre crop of the (taller) active array.
-        val visible = ((9f / 16f) * activeArray.width() / activeArray.height()).coerceAtMost(1f)
+        // A 16:9 stream is a vertical centre crop of the (taller) active array.
+        val visible = (streamAspect * activeArray.width() / activeArray.height()).coerceAtMost(1f)
         val afY = (1f - visible) / 2f + u * visible
         val size = (activeArray.width() * 0.12f).toInt()
         val cx = activeArray.left + (afX * activeArray.width()).toInt()

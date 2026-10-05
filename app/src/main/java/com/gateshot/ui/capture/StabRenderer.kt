@@ -74,6 +74,7 @@ class StabRenderer(
     private lateinit var stage: OpticalStage
     private var current = GyroStabilizer.Correction(0f, 0f, 0.0, 0.0, false)
     private var released = false
+    private var stLogged = false
     private val bootToMonotonicNs = android.os.SystemClock.elapsedRealtimeNanos() - System.nanoTime()
 
     // Once-a-second diagnostics.
@@ -95,12 +96,17 @@ class StabRenderer(
             setupGl()
             setupWatermark()
             stage = OpticalStage({ w, h, ox, oy ->
-                val c = if (ox.isNaN()) current else current.copy(offX = ox, offY = oy)
-                buildWarp(c, stabilizer.gyroCropZoom, qxa = 1f, qxb = 0f, qya = 0f, qyb = -1f)
+                // Exact texel copy for the recording buffer: whole-pixel offset, no
+                // rolling-shutter warp, nearest sampling. The encode pass resamples once.
+                buildWarp(current.copy(offX = ox, offY = oy, rsX = 0f, rsY = 0f), stabilizer.gyroCropZoom,
+                    qxa = 1f, qxb = 0f, qya = 0f, qyb = -1f, viewAsp = stabilizer.srcAspect)
+                oesFilter(GLES20.GL_NEAREST)
                 draw(w, h)
+                oesFilter(GLES20.GL_LINEAR)
             }, { Pair(stabilizer.gyroCropZoom, stabilizer.cropZoom) },
                 { stabilizer.gyroCropZoom / stabilizer.cropZoom },
-                { stabilizer.focalPerRad * stabilizer.gyroCropZoom }, { stabilizer.enabled })
+                { stabilizer.focalPerRad * stabilizer.gyroCropZoom }, { stabilizer.enabled },
+                srcW = streamHeight, srcH = streamWidth)
             stage.prepare()
             cameraTexture = SurfaceTexture(texId).apply {
                 setDefaultBufferSize(streamWidth, streamHeight)
@@ -108,6 +114,15 @@ class StabRenderer(
             }
             cameraSurface = Surface(cameraTexture)
         }
+    }
+
+    /** The zoom level changed (not while recording): resize the recording buffer for it. */
+    fun viewChanged() = runOnGl { if (encoderEgl == EGL14.EGL_NO_SURFACE) stage.prepare() }
+
+    private fun oesFilter(mode: Int) {
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, texId)
+        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, mode)
+        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, mode)
     }
 
     /** Attach (or detach with null) the encoder input surface. Blocks until done. */
@@ -130,6 +145,10 @@ class StabRenderer(
         if (released) return
         cameraTexture.updateTexImage()
         cameraTexture.getTransformMatrix(stMatrix)
+        if (!stLogged) {
+            stLogged = true
+            Log.i(TAG, "stMatrix=${stMatrix.joinToString { "%.5f".format(it) }}")
+        }
         val ts = cameraTexture.timestamp
         val c = stabilizer.correctionFor(ts)
         logStats(ts, c)
@@ -164,12 +183,14 @@ class StabRenderer(
 
     /**
      * Output texcoord (a, b) -> camera texcoord. The output position in the
-     * upright image is q = (qx * aspect, qy) with qx = qxa(a-.5) + qxb(b-.5),
+     * upright image is q = (qx * viewAsp, qy) with qx = qxa(a-.5) + qxb(b-.5),
      * qy = qya(a-.5) + qyb(b-.5). The source is sampled at s = q / zoom + offset,
      * then mapped into the upside-down natural texture: t = (0.5 - sx/aspect, 0.5 + sy).
      */
-    private fun buildWarp(c: GyroStabilizer.Correction, z: Float, qxa: Float, qxb: Float, qya: Float, qyb: Float) {
-        val asp = stabilizer.aspect
+    private fun buildWarp(c: GyroStabilizer.Correction, z: Float, qxa: Float, qxb: Float, qya: Float, qyb: Float,
+                          viewAsp: Float = stabilizer.viewAspect) {
+        val asp = stabilizer.srcAspect
+        val r = viewAsp / asp       // output width as a fraction of the source width (at z = 1)
         // q.x / aspect and q.y as affine in (a, b, 1).
         val xa = qxa; val xb = qxb; val xc = -0.5f * (qxa + qxb)
         val ya = qya; val yb = qyb; val yc = -0.5f * (qya + qyb)
@@ -177,7 +198,7 @@ class StabRenderer(
         // -0.5..0.5), Y = s.y. Rolling shutter shifts column X by (rsX, rsY) * X:
         // X' = X * (1 + rsX/aspect), Y' = Y + rsY * X. Still affine, so one matrix.
         // t.x = 0.5 - X' ; t.y = 0.5 + Y'
-        val pxA = xa / z; val pxB = xb / z; val pxC = xc / z + c.offX / asp
+        val pxA = xa * r / z; val pxB = xb * r / z; val pxC = xc * r / z + c.offX / asp
         val pyA = ya / z; val pyB = yb / z; val pyC = yc / z + c.offY
         val kx = 1f + c.rsX / asp
         val txA = -pxA * kx; val txB = -pxB * kx; val txC = 0.5f - pxC * kx
