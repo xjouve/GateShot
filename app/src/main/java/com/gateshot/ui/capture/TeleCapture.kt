@@ -124,6 +124,7 @@ class TeleCapture(private val context: Context, private val view: TextureView) {
                 "exp=${(result.get(CaptureResult.SENSOR_EXPOSURE_TIME) ?: 0L) / 1000}us " +
                 "iso=${result.get(CaptureResult.SENSOR_SENSITIVITY)} " +
                 "focus=${result.get(CaptureResult.LENS_FOCUS_DISTANCE)} " +
+                "edge=${result.get(CaptureResult.EDGE_MODE)} nr=${result.get(CaptureResult.NOISE_REDUCTION_MODE)} " +
                 "skew=${(result.get(CaptureResult.SENSOR_ROLLING_SHUTTER_SKEW) ?: 0L) / 1000}us " +
                 "crop=${result.get(CaptureResult.SCALER_CROP_REGION)} " +
                 "afRegions=${result.get(CaptureResult.CONTROL_AF_REGIONS)?.joinToString()} " +
@@ -206,6 +207,14 @@ class TeleCapture(private val context: Context, private val view: TextureView) {
             // in ways the gyro model does not know about.
             builder.set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE,
                 CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
+            // Debug-only sweep (adb shell setprop debug.gateshot.edge / .nr <mode>): the ISP's
+            // edge-enhancement and noise-reduction modes; unset leaves the template's.
+            debugProp("debug.gateshot.edge").toIntOrNull()?.let {
+                builder.set(CaptureRequest.EDGE_MODE, it); Log.i(TAG, "requesting EDGE_MODE $it")
+            }
+            debugProp("debug.gateshot.nr").toIntOrNull()?.let {
+                builder.set(CaptureRequest.NOISE_REDUCTION_MODE, it); Log.i(TAG, "requesting NOISE_REDUCTION_MODE $it")
+            }
             // Debug-only experiment (adb shell setprop debug.gateshot.ois 1): request
             // hardware OIS, to measure whether the periscope lens really stabilizes.
             val oisProbe = debugProp("debug.gateshot.ois") == "1"
