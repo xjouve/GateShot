@@ -246,22 +246,33 @@ internal class OpticalStage(
         val fixX = err[0] - prevErr[0]; val fixY = err[1] - prevErr[1]
         prevErr = err
         if (p == null) return
+        // Where the gyro expects the picture to have moved (ring px): the search starts
+        // there. In l1Mode the ring holds the camera frame as it came, so that is the whole
+        // gyro step; otherwise the gyro warp has already removed it.
+        var seedX = 0f; var seedY = 0f
+        val r1 = rawByIndex[index]; val r0 = rawByIndex[index - 1]
+        if (gyro.l1Mode && r1 != null && r0 != null) {
+            val pxPerRad = (ringFocal() * ringH).toDouble()
+            seedX = (gain(0) * pxPerRad * (r1[0] - r0[0])).toFloat()
+            seedY = (gain(1) * pxPerRad * (r1[1] - r0[1])).toFloat()
+        }
         pending.incrementAndGet()
         workers.execute {
             try {
                 val t0 = System.nanoTime()
-                val s = estimator.estimate(p, luma)
+                val s = estimator.estimate(p, luma, seedX / SCALE, seedY / SCALE)
                 synchronized(this) { statEstMs += (System.nanoTime() - t0) / 1e6; statEst++ }
                 val dx = s.dx * SCALE + fixX
                 val dy = s.dy * SCALE + fixY
-                // Low agreement or a huge jump: the frame is dominated by something
-                // moving on its own (or blur) -- treat as no measurement.
-                // Pans legitimately move the buffered picture by tens of px/frame
-                // (15 px rejected half of a real 20x pan).
+                // Low agreement, or far from where the gyro puts the picture: the frame is
+                // dominated by something moving on its own (or blur) -- no measurement.
+                // The distance is taken from the prediction, not from zero: a fast pan
+                // moves the picture 60-100 px a frame, and a bound on the shift itself
+                // threw exactly those frames away (build/qa/stab_m9/fable/check4.py).
                 // The agreement threshold is low because settle() also checks every
                 // measurement against the gyro: in a pan 5-8% of frames failed the old 0.4
                 // and each unmeasured frame costs 5-7 px (build/qa/stab_m9/u6/decomp.py).
-                if (s.inlierFraction >= MIN_INLIERS && abs(dx) < 60f && abs(dy) < 60f) {
+                if (s.inlierFraction >= MIN_INLIERS && abs(dx - seedX) < 60f && abs(dy - seedY) < 60f) {
                     shifts[index] = floatArrayOf(dx, dy, s.inlierFraction)
                 } else statRejected++
             } finally {
@@ -543,7 +554,11 @@ internal class OpticalStage(
         const val LOOKAHEAD = 30                 // frames (1.0 s at 30 fps): L1 path look-ahead
         private const val OPTICAL_WINDOW = 12    // +/- frames for the optical leftover smoothing
         private const val L1_MARGIN = 0.8f       // share of the buffer margin the L1 path may use
-        private const val GATE_PX = 4.0          // measurement vs gyro prediction: accepted difference,
+        // 10, not 4: the gyro prediction itself is 2-3 px rms off a correct measurement at
+        // any speed, so 4 px threw away good ones. On five logged 20x clips 10 px accepts no
+        // additional wrong measurement and lowers the path error on each
+        // (build/qa/stab_m9/g1/gate_replay.py).
+        private const val GATE_PX = 10.0         // measurement vs gyro prediction: accepted difference,
         private const val GATE_FRACTION = 0.3    // ring px + share of the predicted step
         private const val GAIN_RATE = 1.0 / 30   // per frame: ~1 s memory
         private const val GAIN_MIN_POWER = 50.0  // px^2: below this the axis is not moving enough to fit

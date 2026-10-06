@@ -29,9 +29,10 @@ import java.util.concurrent.TimeUnit
  * optics. All warp maths is done in the upright portrait image, y down, in units
  * of the image height.
  *
- * The viewfinder is gyro-only (zero latency). The recording goes through
- * [OpticalStage] as well: a 0.4 s buffer that removes the motion the gyro
- * cannot see before each frame is encoded.
+ * The viewfinder goes through [ViewfinderStage]: shown one frame late, placed by the
+ * gyro and by that frame's own image measurement. The recording goes through
+ * [OpticalStage]: a 1 s buffer that removes the motion the gyro cannot see before
+ * each frame is encoded.
  */
 class StabRenderer(
     previewTexture: SurfaceTexture,
@@ -72,6 +73,8 @@ class StabRenderer(
     /** Per recorded frame (GL thread): timestamp, gyro correction, optical offset (ring fraction). */
     var onFrame: ((Long, GyroStabilizer.Correction, Float, Float, FloatArray?) -> Unit)? = null
     private lateinit var stage: OpticalStage
+    private lateinit var viewfinder: ViewfinderStage
+    private val srcHeightPx = streamWidth      // the upright portrait image's height
     private var current = GyroStabilizer.Correction(0f, 0f, 0.0, 0.0, false)
     private var released = false
     private var stLogged = false
@@ -108,6 +111,14 @@ class StabRenderer(
                 { stabilizer.focalPerRad * stabilizer.gyroCropZoom }, { stabilizer.enabled },
                 srcW = streamHeight, srcH = streamWidth)
             stage.prepare()
+            viewfinder = ViewfinderStage({ w, h ->
+                // Exact texel copy of the whole frame, as for the recording buffer.
+                buildWarp(GyroStabilizer.Correction(0f, 0f, 0.0, 0.0, false), 1f,
+                    qxa = 1f, qxb = 0f, qya = 0f, qyb = -1f, viewAsp = stabilizer.srcAspect)
+                oesFilter(GLES20.GL_NEAREST)
+                draw(w, h)
+                oesFilter(GLES20.GL_LINEAR)
+            }, srcW = streamHeight, srcH = streamWidth)
             cameraTexture = SurfaceTexture(texId).apply {
                 setDefaultBufferSize(streamWidth, streamHeight)
                 setOnFrameAvailableListener({ drawFrame() }, handler)
@@ -117,7 +128,10 @@ class StabRenderer(
     }
 
     /** The zoom level changed (not while recording): resize the recording buffer for it. */
-    fun viewChanged() = runOnGl { if (encoderEgl == EGL14.EGL_NO_SURFACE) stage.prepare() }
+    fun viewChanged() = runOnGl {
+        if (encoderEgl == EGL14.EGL_NO_SURFACE) stage.prepare()
+        viewfinder.reset()
+    }
 
     private fun oesFilter(mode: Int) {
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, texId)
@@ -154,9 +168,16 @@ class StabRenderer(
         logStats(ts, c)
 
         EGL14.eglMakeCurrent(display, previewEgl, previewEgl, context)
-        // Viewfinder: portrait view, output (a, b) with b up -> image (a, 1 - b).
-        buildWarp(c, stabilizer.cropZoom, qxa = 1f, qxb = 0f, qya = 0f, qyb = -1f)
-        draw(previewWidth, previewHeight)
+        // Viewfinder: the previous frame, placed with its image measurement. Stab OFF and
+        // the very first frame show the current frame as it is.
+        if (!stabilizer.enabled) viewfinder.reset()
+        val shown = stabilizer.enabled && viewfinder.show(ts, c, (stabilizer.focalPerRad * srcHeightPx).toDouble(),
+            stabilizer.cropZoom, stabilizer.srcAspect, stabilizer.viewAspect, previewWidth, previewHeight)
+        if (!shown) {
+            // Portrait view, output (a, b) with b up -> image (a, 1 - b).
+            buildWarp(c, stabilizer.cropZoom, qxa = 1f, qxb = 0f, qya = 0f, qyb = -1f)
+            draw(previewWidth, previewHeight)
+        }
         EGL14.eglSwapBuffers(display, previewEgl)
 
         if (encoderEgl != EGL14.EGL_NO_SURFACE) {
@@ -353,6 +374,7 @@ class StabRenderer(
             runOnGl {
                 released = true
                 if (::stage.isInitialized) stage.release()
+                if (::viewfinder.isInitialized) viewfinder.release()
                 if (wmTex != 0) GLES20.glDeleteTextures(1, intArrayOf(wmTex), 0)
                 if (display != EGL14.EGL_NO_DISPLAY) {
                     EGL14.eglMakeCurrent(display, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)

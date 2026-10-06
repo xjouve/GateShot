@@ -299,3 +299,66 @@ internal class PathFilter(
 
     fun reset() { prevT = Long.MIN_VALUE }
 }
+
+/**
+ * Hold of the viewfinder, one axis, on the measured image path. Unlike [PathFilter] it does
+ * not pull the view back to the centre: once the correction is inside [rest] of the margin
+ * the view stands still, and it only moves again when the correction passes [engage] of
+ * the margin (then back to [rest], at [backHz]) or when the user pans.
+ *
+ * [PathFilter] with a slow return was tried first (2026-10-06): after a re-aim it overshot
+ * by up to 745 px and then crept for more than 10 s, which the user saw as a viewfinder
+ * that "keeps moving without my panning". Replayed on the same clips this hold stands
+ * within 3 px from 1 s after the move ends (build/qa/stab_m9/g3/settle.py).
+ * Returns raw - smooth (rad).
+ */
+internal class ViewHold(
+    private val engage: Double = 0.45,
+    private val rest: Double = 0.25,
+    backHz: Double = 0.4,
+    private val panStart: Double = Math.toRadians(0.5),
+    private val panFull: Double = Math.toRadians(1.5),
+) {
+    private val wBack = 2.0 * PI * backHz
+    private val wStill = 2.0 * PI * 0.002
+    private val wPan = 2.0 * PI * 0.7
+    private val rateTau = 1.0 / (2.0 * PI * 0.1)     // as PathFilter: a slow pan-rate estimate
+    private var sm = 0.0
+    private var vel = 0.0
+    private var rate = 0.0
+    private var prevRaw = 0.0
+    private var prevT = Long.MIN_VALUE
+    private var returning = false
+
+    fun step(tNs: Long, raw: Double, margin: Double): Double {
+        if (prevT == Long.MIN_VALUE || tNs <= prevT || tNs - prevT > 500_000_000L) {
+            sm = raw; vel = 0.0; rate = 0.0; prevRaw = raw; prevT = tNs; returning = false
+            return 0.0
+        }
+        val dt = (tNs - prevT) / 1e9
+        prevT = tNs
+        rate += (((raw - prevRaw) / dt) - rate) * (dt / (rateTau + dt))
+        prevRaw = raw
+        val x = ((abs(rate) - panStart) / (panFull - panStart)).coerceIn(0.0, 1.0)
+        val k = x * x * (3 - 2 * x)
+        var d = raw - sm
+        val e = abs(d) / margin
+        if (e > engage) returning = true else if (e <= rest) returning = false
+        // Spring on what exceeds the rest zone only, so the view stops at its edge.
+        val excess = if (returning) sign(d) * (abs(d) - rest * margin) else 0.0
+        val stiff = (1 - k) * (wBack * wBack * excess + wStill * wStill * d) + k * wPan * wPan * d
+        val w = (1 - k) * wBack + k * wPan
+        vel += dt * (stiff + 2.0 * w * (k * rate - vel))
+        sm += dt * vel
+        d = raw - sm
+        if (abs(d) > margin) {
+            // Hold the view at the margin edge and adopt the pan rate.
+            d = sign(d) * margin
+            sm = raw - d
+            vel = rate
+        }
+        return d
+    }
+
+    fun reset() { prevT = Long.MIN_VALUE }
+}

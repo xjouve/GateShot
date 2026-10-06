@@ -18,7 +18,16 @@ class GlobalShiftEstimator(private val size: Int = 256, private val levels: Int 
 
     data class Shift(val dx: Float, val dy: Float, val inlierFraction: Float)
 
-    fun estimate(prev: FloatArray, cur: FloatArray): Shift {
+    fun estimate(prev: FloatArray, cur: FloatArray): Shift = estimate(prev, cur, 0f, 0f, 6)
+
+    /**
+     * As [estimate], searching around an expected shift ([seedDx], [seedDy], input px; the
+     * gyro prediction) instead of around zero. A fast pan moves the picture further than a
+     * search centred on zero reaches (+/-24 px at 256): those frames had no measurement,
+     * and each one costs a few px of path error (build/qa/stab_m9/fable/check4.py).
+     * [range] is the search half-width at the coarsest level, in px of that level.
+     */
+    fun estimate(prev: FloatArray, cur: FloatArray, seedDx: Float, seedDy: Float, range: Int = 3): Shift {
         require(prev.size == size * size && cur.size == size * size)
         val pa = pyramid(prev)
         val pb = pyramid(cur)
@@ -28,7 +37,9 @@ class GlobalShiftEstimator(private val size: Int = 256, private val levels: Int 
         // Coarsest level: exhaustive integer search, so large shifts cannot
         // lock onto a wrong local minimum; gradient refinement takes it from there.
         val top = levels - 1
-        val seed = coarseSearch(pa[top], pb[top], size shr top, 6)
+        val unit = (1 shl top).toFloat()
+        val seed = coarseSearch(pa[top], pb[top], size shr top,
+            Math.round(seedDx / unit), Math.round(seedDy / unit), range)
         dx = seed.first.toFloat(); dy = seed.second.toFloat()
         for (l in levels - 1 downTo 0) {
             if (l < levels - 1) { dx *= 2f; dy *= 2f }
@@ -37,6 +48,40 @@ class GlobalShiftEstimator(private val size: Int = 256, private val levels: Int 
             dx = r.dx; dy = r.dy; inliers = r.inlierFraction
         }
         return Shift(dx, dy, inliers)
+    }
+
+    /**
+     * Cheaper estimate for the viewfinder, which needs the answer within one frame: the
+     * half-size level only, started from the gyro prediction (no exhaustive search, so the
+     * seed must be within a few px). A quarter of the cost of [estimate]; on real handheld
+     * pairs it differs from it by 0.03 px rms (GlobalShiftRealFramesTest). [fullIters]
+     * adds passes at full size, which cost three times as much as everything else.
+     */
+    fun estimateFast(prev: FloatArray, cur: FloatArray, seedDx: Float, seedDy: Float,
+                     halfIters: Int = 8, fullIters: Int = 0): Shift {
+        require(prev.size == size * size && cur.size == size * size)
+        val half = size / 2
+        val r1 = refine(halve(prev), halve(cur), half, seedDx / 2f, seedDy / 2f, halfIters)
+        if (fullIters == 0) return Shift(r1.dx * 2f, r1.dy * 2f, r1.inlierFraction)
+        return refine(prev, cur, size, r1.dx * 2f, r1.dy * 2f, fullIters)
+    }
+
+    /**
+     * Gradient refinement alone at this estimator's size, from a seed within a few px: for a
+     * caller that already holds reduced frames (the viewfinder reduces while it decodes the
+     * read-back, so its estimate is this and nothing else).
+     */
+    fun refineFrom(prev: FloatArray, cur: FloatArray, seedDx: Float, seedDy: Float, iters: Int = 8): Shift {
+        require(prev.size == size * size && cur.size == size * size)
+        return refine(prev, cur, size, seedDx, seedDy, iters)
+    }
+
+    private fun halve(src: FloatArray): FloatArray {
+        val n = size / 2
+        return FloatArray(n * n) { i ->
+            val x = (i % n) * 2; val y = (i / n) * 2
+            0.25f * (src[y * size + x] + src[y * size + x + 1] + src[(y + 1) * size + x] + src[(y + 1) * size + x + 1])
+        }
     }
 
     private fun pyramid(img: FloatArray): Array<FloatArray> {
@@ -55,13 +100,18 @@ class GlobalShiftEstimator(private val size: Int = 256, private val levels: Int 
         return out as Array<FloatArray>
     }
 
-    private fun coarseSearch(a: FloatArray, b: FloatArray, n: Int, range: Int): Pair<Int, Int> {
-        val m = range + 2
-        var best = Pair(0, 0)
+    private fun coarseSearch(a: FloatArray, b: FloatArray, n: Int, cx0: Int, cy0: Int, range: Int): Pair<Int, Int> {
+        // Keep at least a third of the frame in the comparison window.
+        val lim = n / 3 - range
+        val cx = cx0.coerceIn(-lim, lim); val cy = cy0.coerceIn(-lim, lim)
+        // One window for every candidate, so their costs compare like for like.
+        val x0 = maxOf(2, range - cx + 2); val x1 = n - maxOf(2, range + cx + 2)
+        val y0 = maxOf(2, range - cy + 2); val y1 = n - maxOf(2, range + cy + 2)
+        var best = Pair(cx, cy)
         var bestCost = Double.MAX_VALUE
-        for (sy in -range..range) for (sx in -range..range) {
+        for (sy in cy - range..cy + range) for (sx in cx - range..cx + range) {
             var cost = 0.0
-            for (y in m until n - m) for (x in m until n - m) {
+            for (y in y0 until y1) for (x in x0 until x1) {
                 cost += abs(b[(y + sy) * n + x + sx] - a[y * n + x])
             }
             if (cost < bestCost) { bestCost = cost; best = Pair(sx, sy) }
