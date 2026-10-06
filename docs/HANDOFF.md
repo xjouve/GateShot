@@ -54,7 +54,13 @@
   - Edge HIGH_QUALITY with NR OFF: +38% detail in the top band at the centre, but noise +13% to +250%; detail/noise equal or worse.
   - In the default clip detail/noise is 110-170 at 0.03-0.125, 17 at 0.125-0.25, 2.1-2.4 at 0.25-0.375 and **0.5-0.6 at 0.375-0.5**: in that light the top band holds more noise than detail (the difference also contains codec noise and any residual jitter, so this is an upper bound on sensor noise). Not measured in daylight.
   - Frame rate 31 fps in every mode. Decision: keep the template's modes.
-- **Next:** (1) EDGE_MODE / NOISE_REDUCTION_MODE sweep on a fixed phone (the app sets neither; the camera offers edge modes 0-3 and NR modes 0-4), with the frame rate logged; (2) the cored sharpen in the Lanczos pass, kernel chosen offline against the table above with the measurement fixed as the advisers say; (3) the shared estimate.
+- **Native on the same fixed scene, same evening** (`sh2/nat.py`; `sh2/native.mp4` is 10 s cut from the user's 109 s native clip; native reduced 2:1, registered onto GateShot's grid, tone-matched per patch by histogram; GateShot = the default clip `ex_nx.mp4`). Ratio native / GateShot, bands 0.03-0.125 | 0.125-0.25 | 0.25-0.375 | 0.375-0.5 cycles per GateShot px, three patches:
+  - detail: 0.78-0.81 | 0.29-0.55 | 1.17-2.33 | 2.59-3.47. Native carries less than GateShot in the middle band and 2.6-3.5x more in the top one: a different sharpening shape, not just "more".
+  - noise: 0.32-0.46 | 0.25-0.28 | 0.70-0.87 | 1.09-1.50.
+  - detail/noise: native is about 2x GateShot in every band (centre: 369 / 31.7 / 5.5 / 1.33 against 181 / 17.3 / 2.1 / 0.56). Even native's top band is barely above its noise in this light.
+  - Reading: to equal native here GateShot needs twice the signal-to-noise (what averaging two aligned frames gives on a static background, in power) and then a reshaping of the spectrum (top band up by ~1.6-1.9x in amplitude, middle band down). Without tone matching the detail ratios read 0.4-0.7x lower: tone curve differences are that large, so untuned comparisons are not usable.
+  - Dusk only (ISO ~1000). Whether the top band is noise-limited in daylight is not measured; a fixed-phone pair in daylight is needed before deciding on multi-frame fusion.
+- **Next:** (1) the same fixed-phone pair (GateShot default + native, 10 s each) in daylight; (2) offline prototype on `sh2`: N-frame average of aligned frames plus a spectrum reshaping filter, scored with `nat.py`'s split; (3) only then the GLES pass (advisers: inside the existing Lanczos taps; fusion needs rejection on the racer); (4) the shared estimate for viewfinder and recording.
 
 ### 2026-10-02 update: sharpness cause found, single-resample recording (UNCOMMITTED on branch `inapp-capture-stabilizer`)
 - The 2026-09-28 state is committed as `a90d5c9` on the local branch `inapp-capture-stabilizer` (not pushed).
