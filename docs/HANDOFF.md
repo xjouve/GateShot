@@ -1,10 +1,25 @@
-# GateShot — Session Handoff (2026-09-08, capture section 2026-09-28)
+# GateShot — Session Handoff (capture section last updated 2026-10-06)
 
-## ▶ RESUME HERE (2026-09-28): in-app capture + own stabilizer (UNCOMMITTED)
+## ▶ RESUME HERE (2026-10-07): stabilizer validated, sharpness in progress
 
-**Direction change since 2026-09-08:** GateShot records video itself again, through the Camera2 periscope path and its own stabilizer; there is no handoff to the Oppo camera app. The full dated history, with every measurement, is in `docs/tickets/021-in-app-telephoto-capture.md`.
+**Direction since 2026-09-28:** GateShot records video itself, through the Camera2 periscope path and its own stabilizer; there is no handoff to the Oppo camera app. The full dated history up to 2026-09-28 is in `docs/tickets/021-in-app-telephoto-capture.md`; everything since is in the dated sections below (newest facts first within 2026-10-06).
 
-**All of this work is uncommitted on `main`** (see `git status`: `ui/capture/`, `ui/home/`, the new `processing/stabilize` classes and tests, the icon, and ticket 021). Commit it to a branch before experimenting further.
+**State at the end of 2026-10-06**
+- Branch `inapp-capture-stabilizer`, local only (not pushed), clean tree. Commits of the day: `840060c` (stabilizer + viewfinder), `7da5566`, `c61e61c` (debug props for ISP modes), `1f64226` (docs).
+- The phone (CPH2791) runs `build/qa/stab_m9/sh2/sweep.apk` = `c61e61c`. Debug props are reset. `adb logcat -G 8M` was set (not persistent across a reboot).
+- **Stabilizer: validated by the user** ("it looks good to me now"). Recording: level with native on a 20x pan, far steadier framing than native on a 20x still. Viewfinder: one frame late, held on the image path.
+- **Sharpness: measured, nothing built yet.** Native is ~2x cleaner (detail/noise) in every band at dusk and sharpens a different band than the ISP does for us; the camera's own quality modes give no free gain.
+
+**Tomorrow, in this order**
+1. **Daylight pair, phone fixed, 20x, same scene:** 10 s GateShot (default modes), 10 s native. Score with `build/qa/stab_m9/sh2/nat.py` (detail / noise per band, tone-matched). It decides whether multi-frame averaging is worth building: tonight's result is at ISO ~1000.
+2. **Offline prototype** on `sh2/ex_nx.mp4` + `sh2/native.mp4`: N-frame average of aligned frames, then a filter that raises 0.25-0.5 cycles/px (~1.6-1.9x in amplitude at the top) and lowers 0.125-0.25; score with the same split. Target: detail/noise at or above native's in each band, detail ratio ~1.
+3. **GLES pass** only after 2: sharpen inside the existing 36 Lanczos taps of the encode shader (advisers); averaging needs per-pixel rejection for the moving racer.
+4. **Shared estimate** for viewfinder and recording: while recording the viewfinder estimate is late on up to 65% of frames. It also frees the fast cores for 3.
+
+**Working rules the user set on 2026-10-06**
+- Put design decisions to both advisers (Fable and GPT Astra: `consult` with `advisor='all'`), then decide.
+- Do not ask for more native clips than needed: 23 native teleconverter clips are on the PC (`build/qa/stab_m1`..`m9`, `camspike`, measured in `stab_m9/nat_all/survey.txt`), plus `g2/native_still.mp4` and `sh2/native.mp4`.
+- Never drive the phone (`input tap`) without the user's go-ahead; a touch-idle check is not proof it is on a desk. When the phone is on its side, the home screen is in landscape (Record button tap `1114 576`), in portrait `540 990`; the capture screen is always portrait.
 
 ### 2026-10-06 update: two outside reviews, measurement gate and seeded search (UNCOMMITTED, installed on the phone)
 - **Reviews.** Fable (read the repo and logs, scripts in `build/qa/stab_m9/fable/`) and GPT Astra (read-only) were each asked for an independent plan. Both put the image measurement first and keep the live L1 planner. Both reject 60 fps for now, a Gyroflow-style planner, and a rolling-shutter mesh.
