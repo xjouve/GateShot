@@ -32,6 +32,24 @@
 - **Next, in order:** (1) one real 20x pan and one still with this build; (2) estimator noise 0.5 -> ~0.2 px per step (full-resolution sparse patches instead of the 3x-reduced centre square), A/B offline on raw frame pairs first; (3) a full-resolution scorer that prints its fixed-phone floor; (4) bridge a frame without a measurement by registering its two neighbours; (5) manual exposure cap. Astra also flags that `finish()` can wait up to 1 s for measurements before encoding the tail; measure the stop latency.
 - `rec.sh` was run today while the phone was in the user's hands (the idle check looked at touch input only). Check the gyro, or ask, before driving the phone.
 
+### 2026-10-06 (evening): stabilizer validated by the user and committed (`840060c`, local, not pushed); sharpness is next
+- **User verdict on `vf4.apk`:** "it looks good to me now. I think we can validate the stabilizer and continue to the sharpener". That build is commit `840060c`.
+- **Left open in the stabilizer:** while recording, the viewfinder estimate was late on 108, 195 and 16 of 300 frames (estimate 26-36 ms; the recording's estimate went up to 111 ms), so the half-size estimate did not cure it; idle it is 17-18 ms and never late. The fix to try is one shared estimate per frame for viewfinder and recording (the half-size estimate is 0.03 px rms from the full one on real pairs), which also frees the fast cores for a sharpening pass. It changes the recording's measurement, so it needs a recording to confirm.
+- **Where native is sharper** (`build/qa/stab_m9/sh1/spec.py`, same scene `g2`, frames registered onto one grid, contrast-normalised power spectrum, ratio native / GateShot per band in cycles per GateShot output px):
+
+  | patch | 0.02-0.06 | 0.06-0.125 | 0.125-0.25 | 0.25-0.375 | 0.375-0.5 |
+  |---|---|---|---|---|---|
+  | stone wall (in focus) | 0.92 | 0.79 | 0.79 | 2.28 | 2.28 |
+  | flowers (in focus) | 0.86 | 0.66 | 0.85 | 2.47 | 2.70 |
+  | grass (background) | 0.29 | 0.24 | 0.21 | 0.35 | 0.30 |
+
+  - Native's advantage is confined to the upper half of the 1080p range (about 1.5x in amplitude); below it GateShot carries slightly more. Above GateShot's limit native's 4K holds only 1.6-1.7% of the power of its own 0.25-0.5 band: at 20x its 4K has no detail beyond 1080p. So 4K output is not the route (consistent with the `k4` test).
+  - On the grass GateShot carries 3-5x more power than native: noise or texture that native smooths. Not tone-matched, so part of every ratio is the tone curve (native is visibly brighter); `crop_flowers.png` shows native's edge enhancement.
+- **Exposure smear is not the cause on a still** (`sh1/smear.py`, Fable's check): per frame, the 0.25-0.5 band power falls only to 0.92-0.94 of the steadiest tenth at the median gyro smear (1.9 px in 5 ms) and to 0.73-0.80 in the worst tenth. A 1.9 px smear should cut it far more, so the image moves less during the exposure than the gyro says: more evidence that the OIS is working on its own. Pans not checked.
+- **Sharpening pass, offline** (`sh1/usm.py`, unsharp mask on the GateShot frames): sigma 0.7 px, amount 1.0 brings the 0.25-0.5 band to native's level (ratio 0.95-1.03 and 0.70-0.83) but over-lifts 0.125-0.25 (ratio 0.52-0.56) and multiplies the grass power (ratio 0.14-0.09). So: a narrower kernel than a Gaussian unsharp mask, with coring, and probably noise reduction first.
+- **Advisers on sharpness (Fable and Astra, consult of the evening):** find the cause before building; sharpen inside the existing 36 Lanczos taps (detail = Lanczos sum minus a Gaussian-weighted sum of the same taps, cored, no extra fetches) before any multi-frame fusion; fusion only if the band proves noise-limited (with 0.4 px alignment error an N-frame average is itself a blur that cuts 0.375 cycles/px to 0.64, and it ghosts on the racer); measure with tone-matched clips, edge MTF with overshoot, flat-patch noise, and a coherent/incoherent split between two frames of one clip, not Laplacian variance or MTF50 alone.
+- **Next:** (1) EDGE_MODE / NOISE_REDUCTION_MODE sweep on a fixed phone (the app sets neither; the camera offers edge modes 0-3 and NR modes 0-4), with the frame rate logged; (2) the cored sharpen in the Lanczos pass, kernel chosen offline against the table above with the measurement fixed as the advisers say; (3) the shared estimate.
+
 ### 2026-10-02 update: sharpness cause found, single-resample recording (UNCOMMITTED on branch `inapp-capture-stabilizer`)
 - The 2026-09-28 state is committed as `a90d5c9` on the local branch `inapp-capture-stabilizer` (not pushed).
 - **Cause of the ~2x sharpness gap** (`build/qa/stab_m9/sharp.py`, on native frames): one bilinear sub-pixel resample at 1:1 keeps only ~50% of the Laplacian variance, two keep ~33%; bicubic ~85%, Lanczos ~93%. That alone reproduces the measured GateShot/native ratio (0.53–0.62). Codec, exposure and AF are not needed to explain it.
