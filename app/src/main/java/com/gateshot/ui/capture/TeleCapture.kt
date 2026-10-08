@@ -341,6 +341,11 @@ class TeleCapture(private val context: Context, private val view: TextureView) {
                     catch (_: Exception) {}
                 }
             }
+            // Debug-only (adb shell setprop debug.gateshot.dump <frames>): uncompressed centre of
+            // that many consecutive camera frames, to measure noise before the encoder.
+            debugProp("debug.gateshot.dump").toIntOrNull()?.takeIf { it in 1..120 }?.let {
+                r.ringDump(File(logDir, "${base}_ring.rgba"), it)
+            }
             mediaRecorder.start()
             stabilizer.restartRecordingPath()
             r.setEncoder(mediaRecorder.surface, size.width, size.height)

@@ -58,6 +58,10 @@ internal class OpticalStage(
     /** Per slot: that offset minus the wanted sub-pixel one (ring px); undone at encode. */
     private val slotErr = Array(RING) { FloatArray(2) }
     private var prevErr = FloatArray(2)               // GL thread
+    // Debug-only: the centre of consecutive ring frames, uncompressed (see [dump]).
+    private var dumpFile: java.io.File? = null
+    private var dumpBuf: ByteBuffer? = null
+    private var dumpFrames = 0
     private var warmed = false
     private val slotTs = LongArray(RING)
     private val slotGyro = arrayOfNulls<GyroStabilizer.Correction>(RING)
@@ -165,6 +169,13 @@ internal class OpticalStage(
      *  the camera frame may be wider (4:3 stream). */
     private fun windowX() = windowFraction() * (9f / 16f) * srcH / srcW
 
+    /** Debug-only: write the centre [DUMP] px of [frames] consecutive ring frames of the next
+     *  recording to [file] as raw RGBA, to measure the camera's noise before the encoder. */
+    fun dump(file: java.io.File, frames: Int) {
+        dumpFile = file; dumpFrames = frames
+        dumpBuf = ByteBuffer.allocateDirect(frames * DUMP * DUMP * 4)
+    }
+
     /** Render the current camera frame into the ring and queue its measurement. */
     fun addFrame(ts: Long, gyro: GyroStabilizer.Correction) {
         if (!active) return
@@ -202,6 +213,14 @@ internal class OpticalStage(
         slotErr[slot] = err
         slotOff[slot] = floatArrayOf((px / srcH).toFloat(), (py / srcH).toFloat())
         drawCamera(ringW, ringH, slotOff[slot][0], slotOff[slot][1])
+        dumpBuf?.let { b ->
+            val k = (index0 - DUMP_SKIP).toInt()
+            if (k in 0 until dumpFrames) {
+                b.position(k * DUMP * DUMP * 4)
+                GLES20.glReadPixels((ringW - DUMP) / 2, (ringH - DUMP) / 2, DUMP, DUMP,
+                    GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, b.slice())
+            }
+        }
         slotTs[slot] = ts
         slotGyro[slot] = gyro
 
@@ -358,6 +377,14 @@ internal class OpticalStage(
         }
         while (nextEncode < next) encodeOne(nextEncode++, next - 1, encode)
         active = false
+        dumpBuf?.let { b ->
+            val n = (next - DUMP_SKIP).coerceIn(0L, dumpFrames.toLong()).toInt()
+            b.position(0); b.limit(n * DUMP * DUMP * 4)
+            try { java.io.FileOutputStream(dumpFile!!).channel.use { it.write(b) } }
+            catch (e: Exception) { Log.w(TAG, "ring dump: ${e.message}") }
+            Log.i(TAG, "ring dump: $n frames ${DUMP}x$DUMP RGBA of ring ${ringW}x$ringH")
+            dumpBuf = null; dumpFile = null
+        }
         if (statEst > 0) Log.i(TAG, "optical: est ${"%.1f".format(statEstMs / statEst)}ms avg, " +
             "rejected=$statRejected gated=$statGated dropped=$statDropped l1Missing=$statL1Missing " +
             "plan ${"%.1f".format(if (statPlans > 0) statPlanMs / statPlans else 0.0)}ms avg frames=$next")
@@ -551,6 +578,8 @@ internal class OpticalStage(
 
     companion object {
         private const val TAG = "OpticalStage"
+        private const val DUMP = 512             // debug ring dump: square side, px
+        private const val DUMP_SKIP = 60         // and the frames skipped before it
         const val LOOKAHEAD = 30                 // frames (1.0 s at 30 fps): L1 path look-ahead
         private const val OPTICAL_WINDOW = 12    // +/- frames for the optical leftover smoothing
         private const val L1_MARGIN = 0.8f       // share of the buffer margin the L1 path may use

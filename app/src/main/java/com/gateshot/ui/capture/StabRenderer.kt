@@ -140,6 +140,9 @@ class StabRenderer(
     }
 
     /** Attach (or detach with null) the encoder input surface. Blocks until done. */
+    /** Debug-only: see [OpticalStage.dump]. Call before [setEncoder]. */
+    fun ringDump(file: java.io.File, frames: Int) = runOnGl { stage.dump(file, frames) }
+
     fun setEncoder(surface: Surface?, width: Int, height: Int) = runOnGl {
         if (encoderEgl != EGL14.EGL_NO_SURFACE) {
             stage.finish(::encodeFrame)
