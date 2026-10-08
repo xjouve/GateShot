@@ -140,6 +140,11 @@ class StabRenderer(
     }
 
     /** Attach (or detach with null) the encoder input surface. Blocks until done. */
+    /** Strength and coring threshold of the recording's reshaping pass (see [OpticalStage.reshape]). */
+    fun setReshape(strength: Float, core: Float) {
+        if (::stage.isInitialized) { stage.reshape = strength; stage.core = core }
+    }
+
     /** Debug-only: see [OpticalStage.dump]. Call before [setEncoder]. */
     fun ringDump(file: java.io.File, frames: Int) = runOnGl { stage.dump(file, frames) }
 

@@ -78,10 +78,22 @@ class TeleCapture(private val context: Context, private val view: TextureView) {
 
     private var lastResultLog = 0L
     private var keysLogged = false
+    // Debug-only (adb shell setprop debug.gateshot.reshape <strength> / .core <grey levels>):
+    // fixed strength (0 = off) and coring threshold of the reshaping pass; read at configure().
+    private var reshapeDebug: Float? = null
+    private var coreDebug: Float? = null
+    @Volatile private var reshapeNow = 0f
     @Volatile private var unlockAfterFocus = false
     /** Once a second, log what the HAL actually applied (stabilization, AF). */
     private val resultLogger = object : CameraCaptureSession.CaptureCallback() {
         override fun onCaptureCompleted(s: CameraCaptureSession, r: CaptureRequest, result: TotalCaptureResult) {
+            // The reshaping pass lifts the finest detail, which at high gain is mostly noise: its
+            // strength falls with the ISO. Off at 30x, where the HAL's own upscale leaves no
+            // real detail in those bands (not measured there).
+            val iso = result.get(CaptureResult.SENSOR_SENSITIVITY) ?: 0
+            reshapeNow = reshapeDebug ?: if (zoomLevel >= 30) 0f
+                else OpticalStage.RESHAPE / (1f + iso / OpticalStage.RESHAPE_ISO)
+            renderer?.setReshape(reshapeNow, coreDebug ?: OpticalStage.RESHAPE_CORE)
             val af = result.get(CaptureResult.CONTROL_AF_STATE)
             if (unlockAfterFocus && (af == CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED ||
                     af == CaptureResult.CONTROL_AF_STATE_NOT_FOCUSED_LOCKED)) {
@@ -126,6 +138,7 @@ class TeleCapture(private val context: Context, private val view: TextureView) {
                 "focus=${result.get(CaptureResult.LENS_FOCUS_DISTANCE)} " +
                 "edge=${result.get(CaptureResult.EDGE_MODE)} nr=${result.get(CaptureResult.NOISE_REDUCTION_MODE)} " +
                 "tnr=${vendorResultInt(result, "com.mediatek.nrfeature.3dnrmode")} " +
+                "reshape=${"%.2f".format(reshapeNow)} " +
                 "ainr=${vendorResultInt(result, "com.mediatek.videoainrfeature.videoAinrModes")} " +
                 "skew=${(result.get(CaptureResult.SENSOR_ROLLING_SHUTTER_SKEW) ?: 0L) / 1000}us " +
                 "crop=${result.get(CaptureResult.SCALER_CROP_REGION)} " +
@@ -209,6 +222,8 @@ class TeleCapture(private val context: Context, private val view: TextureView) {
             // in ways the gyro model does not know about.
             builder.set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE,
                 CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
+            reshapeDebug = debugProp("debug.gateshot.reshape").toFloatOrNull()
+            coreDebug = debugProp("debug.gateshot.core").toFloatOrNull()?.let { it / 255f }
             // Debug-only sweep (adb shell setprop debug.gateshot.edge / .nr <mode>): the ISP's
             // edge-enhancement and noise-reduction modes; unset leaves the template's.
             debugProp("debug.gateshot.edge").toIntOrNull()?.let {

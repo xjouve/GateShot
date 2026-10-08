@@ -49,6 +49,16 @@ internal class OpticalStage(
     private var smallFbo = 0
     private var progEnc = 0
     private var progLuma = 0
+    private var progShape = 0
+    // Reshaping pass: the Lanczos output goes to this buffer first (encoder size).
+    private var outTex = 0
+    private var outFbo = 0
+    private var outW = 0
+    private var outH = 0
+    /** Strength of the reshaping pass on the recording (0 = off, one pass as before). */
+    @Volatile var reshape = 0f
+    /** Its coring threshold (0..1 luma): smaller detail is left as it is. */
+    @Volatile var core = RESHAPE_CORE
     // Ring frame size: the buffered part of the source at 1:1 (srcW/gyroCropZoom), so a
     // ring frame is an exact texel copy and the only resample is the one at encode.
     private var ringW = 0
@@ -471,10 +481,40 @@ internal class OpticalStage(
     /** Draw ring frame of the frame being encoded into the current (encoder) surface. */
     fun drawEncoded(ts: Long, width: Int, height: Int) {
         val slot = slotTs.indexOf(ts)
+        val s = reshape
+        if (s > 0f) ensureOut(width, height)
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, if (s > 0f) outFbo else 0)
         GLES20.glViewport(0, 0, width, height)
         GLES20.glUseProgram(progEnc)
         GLES20.glUniform2f(GLES20.glGetUniformLocation(progEnc, "uSize"), ringW.toFloat(), ringH.toFloat())
         drawRing(progEnc, ringTex[slot])
+        if (s > 0f) {
+            // Second pass, on exact output texels: lift the fine bands of the luma towards the
+            // native camera's spectrum (build/qa/stab_m9/d1/reshape.py).
+            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+            GLES20.glUseProgram(progShape)
+            GLES20.glUniform2f(GLES20.glGetUniformLocation(progShape, "uTexel"), 1f / width, 1f / height)
+            GLES20.glUniform3f(GLES20.glGetUniformLocation(progShape, "uK"), SHAPE_A, SHAPE_D, SHAPE_B)
+            GLES20.glUniform2f(GLES20.glGetUniformLocation(progShape, "uST"), s, core)
+            setWarp(1f, 0f, 0f, 0f, 1f, 0f)
+            drawRing(progShape, outTex)
+        }
+    }
+
+    private fun ensureOut(w: Int, h: Int) {
+        if (outTex != 0 && w == outW && h == outH) return
+        freeOut()
+        val t = IntArray(1); val f = IntArray(1)
+        GLES20.glGenTextures(1, t, 0); GLES20.glGenFramebuffers(1, f, 0)
+        outTex = t[0]; outFbo = f[0]; outW = w; outH = h
+        attach(outTex, outFbo, w, h)
+    }
+
+    private fun freeOut() {
+        if (outTex == 0) return
+        GLES20.glDeleteTextures(1, intArrayOf(outTex), 0)
+        GLES20.glDeleteFramebuffers(1, intArrayOf(outFbo), 0)
+        outTex = 0
     }
 
     /** mat3 (column-major) for t = (ta*a + tb*b + tc, ua*a + ub*b + uc). */
@@ -517,6 +557,7 @@ internal class OpticalStage(
         if (progEnc == 0) {
             progEnc = link(VERTEX_2D, FRAGMENT_LANCZOS)
             progLuma = link(VERTEX_2D, FRAGMENT_LUMA)
+            progShape = link(VERTEX_2D, FRAGMENT_SHAPE)
         }
         ringTex = IntArray(RING).also { GLES20.glGenTextures(RING, it, 0) }
         ringFbo = IntArray(RING).also { GLES20.glGenFramebuffers(RING, it, 0) }
@@ -573,11 +614,22 @@ internal class OpticalStage(
     fun release() {
         active = false
         freeRing()
+        freeOut()
         workers.shutdown(); l1ExecX.shutdown(); l1ExecY.shutdown()
     }
 
     companion object {
         private const val TAG = "OpticalStage"
+        // Reshaping pass. Kernel K on the output grid: centre 1 + A + D + B, the 4 neighbours
+        // -A/4, the 4 diagonals -D/4, the 4 at distance two -B/4; fitted to the native camera's
+        // detail per band on a fixed daylight scene at 20x (band power x0.94 / 0.99 / 1.96 / 4.4).
+        // Applied to the luma as Y + strength * core(K*Y - Y).
+        private const val SHAPE_A = 1.4445f
+        private const val SHAPE_D = -0.0988f
+        private const val SHAPE_B = -0.4476f
+        const val RESHAPE = 0.8f                 // strength at low ISO
+        const val RESHAPE_ISO = 3200f            // strength = RESHAPE / (1 + ISO / RESHAPE_ISO)
+        const val RESHAPE_CORE = 1f / 255f       // detail below one grey level is not lifted
         private const val DUMP = 512             // debug ring dump: square side, px
         private const val DUMP_SKIP = 60         // and the frames skipped before it
         const val LOOKAHEAD = 30                 // frames (1.0 s at 30 fps): L1 path look-ahead
@@ -650,6 +702,31 @@ internal class OpticalStage(
                     }
                 }
                 gl_FragColor = vec4(acc / sum, 1.0);
+            }
+        """
+        private const val FRAGMENT_SHAPE = """
+            #ifdef GL_FRAGMENT_PRECISION_HIGH
+            precision highp float;
+            #else
+            precision mediump float;
+            #endif
+            uniform sampler2D sTex;
+            uniform vec2 uTexel;
+            uniform vec3 uK;
+            uniform vec2 uST;
+            varying vec2 vTex;
+            float y(float i, float j) {
+                return dot(texture2D(sTex, vTex + vec2(i, j) * uTexel).rgb, vec3(0.299, 0.587, 0.114));
+            }
+            void main() {
+                vec3 c = texture2D(sTex, vTex).rgb;
+                float y0 = dot(c, vec3(0.299, 0.587, 0.114));
+                float n1 = y(1.0, 0.0) + y(-1.0, 0.0) + y(0.0, 1.0) + y(0.0, -1.0);
+                float nd = y(1.0, 1.0) + y(-1.0, 1.0) + y(1.0, -1.0) + y(-1.0, -1.0);
+                float n2 = y(2.0, 0.0) + y(-2.0, 0.0) + y(0.0, 2.0) + y(0.0, -2.0);
+                float d = uK.x * (y0 - 0.25 * n1) + uK.y * (y0 - 0.25 * nd) + uK.z * (y0 - 0.25 * n2);
+                d -= clamp(d, -uST.y, uST.y);
+                gl_FragColor = vec4(c + uST.x * d, 1.0);
             }
         """
         // 3x3 box average before the 3:1 downsample (anti-aliasing), then luma.
