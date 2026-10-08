@@ -125,6 +125,8 @@ class TeleCapture(private val context: Context, private val view: TextureView) {
                 "iso=${result.get(CaptureResult.SENSOR_SENSITIVITY)} " +
                 "focus=${result.get(CaptureResult.LENS_FOCUS_DISTANCE)} " +
                 "edge=${result.get(CaptureResult.EDGE_MODE)} nr=${result.get(CaptureResult.NOISE_REDUCTION_MODE)} " +
+                "tnr=${vendorResultInt(result, "com.mediatek.nrfeature.3dnrmode")} " +
+                "ainr=${vendorResultInt(result, "com.mediatek.videoainrfeature.videoAinrModes")} " +
                 "skew=${(result.get(CaptureResult.SENSOR_ROLLING_SHUTTER_SKEW) ?: 0L) / 1000}us " +
                 "crop=${result.get(CaptureResult.SCALER_CROP_REGION)} " +
                 "afRegions=${result.get(CaptureResult.CONTROL_AF_REGIONS)?.joinToString()} " +
@@ -214,6 +216,14 @@ class TeleCapture(private val context: Context, private val view: TextureView) {
             }
             debugProp("debug.gateshot.nr").toIntOrNull()?.let {
                 builder.set(CaptureRequest.NOISE_REDUCTION_MODE, it); Log.i(TAG, "requesting NOISE_REDUCTION_MODE $it")
+            }
+            // Debug-only (adb shell setprop debug.gateshot.tnr / .ainr <0|1>): MediaTek's temporal
+            // and AI video noise reduction; unset leaves the HAL's default.
+            debugProp("debug.gateshot.tnr").toIntOrNull()?.let {
+                setVendorInt(builder, "com.mediatek.nrfeature.3dnrmode", it); Log.i(TAG, "requesting 3dnrmode $it")
+            }
+            debugProp("debug.gateshot.ainr").toIntOrNull()?.let {
+                setVendorInt(builder, "com.mediatek.videoainrfeature.videoAinrModes", it); Log.i(TAG, "requesting videoAinrModes $it")
             }
             // Debug-only experiment (adb shell setprop debug.gateshot.ois 1): request
             // hardware OIS, to measure whether the periscope lens really stabilizes.
@@ -420,6 +430,14 @@ class TeleCapture(private val context: Context, private val view: TextureView) {
             builder.set(ctor.newInstance(name, java.lang.Integer::class.java) as CaptureRequest.Key<Int>, value)
         } catch (_: Exception) { /* Unsupported on other devices. */ }
     }
+
+    /** Debug log only: a vendor int the HAL echoes in the result, or null. */
+    @Suppress("UNCHECKED_CAST")
+    private fun vendorResultInt(result: TotalCaptureResult, name: String): Int? = try {
+        val ctor = CaptureResult.Key::class.java.getDeclaredConstructor(String::class.java, Class::class.java)
+        ctor.isAccessible = true
+        result.get(ctor.newInstance(name, java.lang.Integer::class.java) as CaptureResult.Key<Int>)
+    } catch (_: Exception) { null }
 
     @Suppress("UNCHECKED_CAST")
     private fun setVendorIntArray(builder: CaptureRequest.Builder, name: String, value: IntArray) {
